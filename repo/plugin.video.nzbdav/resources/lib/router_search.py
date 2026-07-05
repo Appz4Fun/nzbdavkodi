@@ -50,9 +50,19 @@ def _build_provider_jobs(
             get_configured_indexers,
             search_direct_indexers,
         )
+        from resources.lib.search_planner import SearchQuery
 
+        search_type, title = search_args
+        query = SearchQuery(
+            search_type=search_type,
+            title=title,
+            year=common_kwargs.get("year", ""),
+            imdb=common_kwargs.get("imdb", ""),
+            season=common_kwargs.get("season", ""),
+            episode=common_kwargs.get("episode", ""),
+            tvdb=common_kwargs.get("tvdb", ""),
+        )
         kwargs = dict(
-            common_kwargs,
             indexers=get_configured_indexers(),
             max_results=_read_max_results(provider_settings_getter),
         )
@@ -61,7 +71,7 @@ def _build_provider_jobs(
                 "direct indexers",
                 "Direct indexer",
                 search_direct_indexers,
-                search_args,
+                (query,),
                 kwargs,
             )
         )

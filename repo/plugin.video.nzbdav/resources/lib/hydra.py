@@ -37,7 +37,7 @@ from resources.lib.http_util import (
 )
 from resources.lib.indexer_store import load_provider_caps, save_provider_caps
 from resources.lib.newznab_caps import fetch_caps
-from resources.lib.search_planner import plan_newznab_search
+from resources.lib.search_planner import SearchQuery, plan_newznab_search
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
 
@@ -295,23 +295,17 @@ def _read_hydra_settings(settings_getter):
     return base_url, api_key, None
 
 
-def _plan_hydra_search(base_url, api_key, search_type, fields):
+def _plan_hydra_search(base_url, api_key, query, settings_getter):
     """Build the Newznab search plan and caps-availability flag."""
-    max_results = _resolve_max_results(fields["settings_getter"])
+    max_results = _resolve_max_results(settings_getter)
     caps, has_provider_caps = _get_hydra_caps_for_search(base_url, api_key)
     plan = plan_newznab_search(
         provider_kind="nzbhydra2",
         host=base_url,
-        search_type=search_type,
-        title=fields["title"],
-        year=fields["year"],
-        imdb=fields["imdb"],
-        season=fields["season"],
-        episode=fields["episode"],
+        query=query,
         caps=caps,
         api_key=api_key,
         max_results=max_results,
-        tvdb=fields["tvdb"],
     )
     return plan, has_provider_caps
 
@@ -351,16 +345,18 @@ def search_hydra(
     if settings_error:
         return [], settings_error
 
-    fields = {
-        "title": title,
-        "year": year,
-        "imdb": imdb,
-        "season": season,
-        "episode": episode,
-        "settings_getter": settings_getter,
-        "tvdb": tvdb,
-    }
-    plan, has_provider_caps = _plan_hydra_search(base_url, api_key, search_type, fields)
+    query = SearchQuery(
+        search_type=search_type,
+        title=title,
+        year=year,
+        imdb=imdb,
+        season=season,
+        episode=episode,
+        tvdb=tvdb,
+    )
+    plan, has_provider_caps = _plan_hydra_search(
+        base_url, api_key, query, settings_getter
+    )
     return _execute_hydra_plan(base_url, plan, title, has_provider_caps)
 
 

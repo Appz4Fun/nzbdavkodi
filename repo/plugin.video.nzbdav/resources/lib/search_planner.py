@@ -4,6 +4,7 @@
 """Shared Newznab search query planning."""
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from resources.lib.http_util import clean_search_query
 from resources.lib.indexer_presets import (
@@ -11,6 +12,20 @@ from resources.lib.indexer_presets import (
     DOGNZB_TVSEARCH_FALLBACK_HOSTS,
     host_contains,
 )
+
+
+class SearchQuery(NamedTuple):
+    """Identity of one search request. Keep NZBHydra2/Prowlarr symmetric:
+    both providers receive the same SearchQuery."""
+
+    search_type: str
+    title: str
+    year: str = ""
+    imdb: str = ""
+    season: str = ""
+    episode: str = ""
+    tvdb: str = ""
+    tmdb_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -23,17 +38,18 @@ class NewznabSearchPlan:
 def plan_newznab_search(
     provider_kind,
     host,
-    search_type,
-    title,
-    year=None,
-    imdb=None,
-    season=None,
-    episode=None,
+    query,
     caps=None,
     api_key="",
     max_results=25,
-    tvdb=None,
 ):
+    search_type = query.search_type
+    title = query.title
+    year = query.year
+    imdb = query.imdb
+    season = query.season
+    episode = query.episode
+    tvdb = query.tvdb
     base = {"apikey": api_key, "o": "xml", "limit": max_results}
     # Strip query-breaking '&' from the keyword title once, so every q=title
     # branch below (and its title fallback) searches a term the indexer can

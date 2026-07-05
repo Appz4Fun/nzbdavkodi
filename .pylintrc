@@ -23,8 +23,9 @@ disable=
     # Python 3.8 target -- no f-strings
     consider-using-f-string,
     # Complexity thresholds too strict for filter/router logic
-    too-many-arguments,
-    too-many-positional-arguments,
+    # (too-many-arguments / too-many-positional-arguments re-enabled after the
+    # Lizard A1-A4 param-bundling refactors; limits in [DESIGN] track the
+    # Lizard parameter-count threshold of 8)
     too-many-locals,
     too-many-branches,
     too-many-statements,
@@ -66,6 +67,12 @@ disable=
     global-statement,
     # arguments-differ used intentionally (log_message override)
     arguments-differ
+
+[DESIGN]
+# Track the Lizard parameter-count threshold (8) rather than pylint's default
+# of 5. Pylint counts `self`, Lizard does too — one shared bar for both tools.
+max-args=8
+max-positional-arguments=8
 
 [FORMAT]
 max-line-length=120

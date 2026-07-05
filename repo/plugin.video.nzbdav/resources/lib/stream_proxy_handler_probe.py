@@ -61,10 +61,9 @@ class _FallbackProbeMixin:  # pylint: disable=too-few-public-methods
             # downloaded THIS offset yet), not a wrong-file mismatch.
             if self._probe_fallback_current_range(
                 source,
-                failed_byte,
-                range_end,
-                expected_length,
-                probe_bases,
+                _sp.FallbackRangeProbe(
+                    failed_byte, range_end, expected_length, probe_bases
+                ),
                 auth_header=source_auth,
                 stream_url=source_url,
                 cache_ctx=ctx,
@@ -104,17 +103,17 @@ class _FallbackProbeMixin:  # pylint: disable=too-few-public-methods
             # Range not yet available on the peer (still downloading) or a
             # probe hiccup — transient, do not condemn the source.
             return _sp._FALLBACK_INCONCLUSIVE
-        classification = self._classify_fallback_fingerprint(
-            ctx,
-            source,
+        cfg = self._fingerprint_probe_cfg(
             expected_length,
             probe_bases,
             current_range,
             primary_url,
-            fallback_url=source_url,
-            fallback_auth=source_auth,
-            primary_auth=primary_auth,
+            source_url,
+            source_auth,
+            primary_auth,
+            False,
         )
+        classification = self._classify_fallback_fingerprint(ctx, source, cfg)
         if classification is _sp._FALLBACK_INCONCLUSIVE:
             # A probe couldn't be completed (5xx / timeout / empty body) so
             # we can't PROVE same-or-different yet. Stay eligible.
@@ -144,10 +143,9 @@ class _FallbackProbeMixin:  # pylint: disable=too-few-public-methods
         source_url, source_auth = identity[0], identity[1]
         current_digest = self._fetch_fallback_current_range_digest(
             source,
-            failed_byte,
-            range_end,
-            expected_length,
-            probe_bases,
+            _sp.FallbackRangeProbe(
+                failed_byte, range_end, expected_length, probe_bases
+            ),
             auth_header=source_auth,
             stream_url=source_url,
             cache_ctx=ctx,
@@ -254,17 +252,17 @@ class _FallbackProbeMixin:  # pylint: disable=too-few-public-methods
         ctx[auth_hint_key] = (id(source), identity["source_auth"])
         ctx[primary_auth_hint_key] = identity["primary_auth"]
         try:
-            if self._validate_fallback_fingerprint(
-                ctx,
-                source,
+            cfg = self._fingerprint_probe_cfg(
                 expected_length,
                 probe_bases,
-                primary_url=identity["primary_url"],
-                fallback_url=identity["source_url"],
-                fallback_auth=identity["source_auth"],
-                primary_auth=identity["primary_auth"],
-                cache_fallback_range_bytes=True,
-            ):
+                None,
+                identity["primary_url"],
+                identity["source_url"],
+                identity["source_auth"],
+                identity["primary_auth"],
+                True,
+            )
+            if self._validate_fallback_fingerprint(ctx, source, cfg):
                 source["validated"] = True
                 # Prevalidation succeeded after earlier INCONCLUSIVE probes
                 # (still-downloading at first contact): clear any transient

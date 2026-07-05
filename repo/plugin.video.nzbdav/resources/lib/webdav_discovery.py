@@ -153,13 +153,11 @@ def _scan_subdir_worker(
         try:
             result = _webdav.find_video_file(
                 subdir,
-                depth + 1,
-                visited,
-                True,
-                settings,
-                title_hint_tokens=hint_tokens,
-                title_hint_episode_tags=hint_episode_tags,
+                hints=_webdav.TitleHints(
+                    tokens=hint_tokens, episode_tags=hint_episode_tags
+                ),
                 min_video_size=min_video_size,
+                _state=(depth + 1, visited, True, settings),
             )
         except Exception as e:  # pylint: disable=broad-except
             xbmc.log(

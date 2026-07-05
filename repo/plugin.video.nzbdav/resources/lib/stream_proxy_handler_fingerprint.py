@@ -27,41 +27,18 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
             cache[content_length] = tuple(fingerprint_ranges(content_length))
         return cache[content_length]
 
-    def _validate_fallback_fingerprint(
-        self,
-        ctx,
-        source,
-        content_length,
-        probe_bases,
-        current_range=None,
-        primary_url=None,
-        fallback_url=None,
-        fallback_auth=_sp._AUTH_HEADER_NOT_PROVIDED,
-        primary_auth=_sp._AUTH_HEADER_NOT_PROVIDED,
-        cache_fallback_range_bytes=False,
-    ):
+    def _validate_fallback_fingerprint(self, ctx, source, cfg):
         """Return True only when every sampled range provably matches.
 
         Bool wrapper over :meth:`_classify_fallback_fingerprint`. A
         transient INCONCLUSIVE probe is treated as a non-match here — the
         prevalidation caller only wants to mark a source ``validated`` when
         it is byte-proven, and a transient miss simply stays unvalidated to
-        be retried later.
+        be retried later. ``cfg`` is the bundled probe config from
+        :meth:`_fingerprint_probe_cfg`.
         """
         return (
-            self._classify_fallback_fingerprint(
-                ctx,
-                source,
-                content_length,
-                probe_bases,
-                current_range,
-                primary_url,
-                fallback_url,
-                fallback_auth,
-                primary_auth,
-                cache_fallback_range_bytes,
-            )
-            is _sp._FALLBACK_MATCH
+            self._classify_fallback_fingerprint(ctx, source, cfg) is _sp._FALLBACK_MATCH
         )
 
     def _resolve_fingerprint_identity(
@@ -76,62 +53,37 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
             fallback_auth = self._fallback_source_auth(source)
         return primary_auth, fallback_url, fallback_auth
 
-    def _classify_fallback_fingerprint(
-        self,
-        ctx,
-        source,
-        content_length,
-        probe_bases,
-        current_range=None,
-        primary_url=None,
-        fallback_url=None,
-        fallback_auth=_sp._AUTH_HEADER_NOT_PROVIDED,
-        primary_auth=_sp._AUTH_HEADER_NOT_PROVIDED,
-        cache_fallback_range_bytes=False,
-    ):
+    def _classify_fallback_fingerprint(self, ctx, source, cfg):
         """Classify sampled bytes as MATCH / MISMATCH / INCONCLUSIVE.
 
         A digest that is PRESENT on both sides and differs is a definitive
         MISMATCH (wrong file). A digest that cannot be fetched (empty body,
         probe 5xx / timeout) is INCONCLUSIVE — we can't prove same-or-
-        different yet, so the caller keeps the source eligible.
+        different yet, so the caller keeps the source eligible. ``cfg`` is
+        the bundled probe config from :meth:`_fingerprint_probe_cfg`.
         """
         primary_auth, fallback_url, fallback_auth = self._resolve_fingerprint_identity(
-            ctx, source, primary_auth, fallback_url, fallback_auth
+            ctx, source, cfg["primary_auth"], cfg["fallback_url"], cfg["fallback_auth"]
         )
-        ranges = tuple(self._fallback_fingerprint_ranges(ctx, content_length))
+        content_length = cfg["content_length"]
         cfg = self._fingerprint_probe_cfg(
             content_length,
-            probe_bases,
-            current_range,
-            primary_url,
+            cfg["probe_bases"],
+            cfg["current_range"],
+            cfg["primary_url"],
             fallback_url,
             fallback_auth,
             primary_auth,
-            cache_fallback_range_bytes,
+            cfg["cache_fallback_range_bytes"],
         )
+        ranges = tuple(self._fallback_fingerprint_ranges(ctx, content_length))
         if len(ranges) > 1 and _sp._FALLBACK_FINGERPRINT_WORKERS > 1:
-            return self._classify_parallel_from_cfg(ctx, ranges, cfg)
+            return self._classify_fallback_fingerprint_parallel(ctx, ranges, cfg)
         for start, end in ranges:
             verdict = self._classify_one_fingerprint_range(start, end, ctx, cfg)
             if verdict != _sp._FALLBACK_MATCH:
                 return verdict
         return _sp._FALLBACK_MATCH
-
-    def _classify_parallel_from_cfg(self, ctx, ranges, cfg):
-        """Dispatch to the parallel classifier, unpacking the shared cfg dict."""
-        return self._classify_fallback_fingerprint_parallel(
-            ctx,
-            ranges,
-            cfg["content_length"],
-            cfg["probe_bases"],
-            cfg["current_range"],
-            cfg["primary_url"],
-            cfg["fallback_url"],
-            cfg["fallback_auth"],
-            cfg["primary_auth"],
-            cfg["cache_fallback_range_bytes"],
-        )
 
     @staticmethod
     def _fingerprint_probe_cfg(
@@ -163,14 +115,7 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
         current-range short circuit, byte-caching flag).
         """
         fallback_digest = self._fetch_fallback_fingerprint_digest(
-            (start, end),
-            cfg["content_length"],
-            cfg["probe_bases"],
-            cfg["current_range"],
-            cfg["fallback_url"],
-            cfg["fallback_auth"],
-            cache_ctx=ctx,
-            cache_range_bytes=cfg["cache_fallback_range_bytes"],
+            (start, end), cfg, cache_ctx=ctx
         )
         if not fallback_digest:
             return _sp._FALLBACK_INCONCLUSIVE
@@ -189,18 +134,17 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
             return _sp._FALLBACK_MISMATCH
         return _sp._FALLBACK_MATCH
 
-    def _fetch_fallback_fingerprint_digest(
-        self,
-        byte_range,
-        content_length,
-        probe_bases,
-        current_range,
-        fallback_url,
-        fallback_auth,
-        cache_ctx=None,
-        cache_range_bytes=False,
-    ):
-        """Return the fallback digest for one sampled byte range."""
+    def _fetch_fallback_fingerprint_digest(self, byte_range, cfg, cache_ctx):
+        """Return the fallback digest for one sampled byte range.
+
+        ``cfg`` is the bundled probe config from :meth:`_fingerprint_probe_cfg`.
+        """
+        content_length = cfg["content_length"]
+        probe_bases = cfg["probe_bases"]
+        current_range = cfg["current_range"]
+        fallback_url = cfg["fallback_url"]
+        fallback_auth = cfg["fallback_auth"]
+        cache_range_bytes = cfg["cache_fallback_range_bytes"]
         start, end = byte_range
         if current_range and current_range[:2] == (start, end):
             return current_range[2]
@@ -233,42 +177,27 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
         )
 
     def _primary_fingerprint_range_matches(
-        self,
-        ctx,
-        start,
-        end,
-        fallback_digest,
-        content_length,
-        probe_bases,
-        primary_url,
-        primary_auth,
-        cache_lock,
+        self, ctx, start, end, fallback_digest, cfg, cache_lock
     ):
-        """Return whether one sampled primary range matches fallback."""
+        """Return whether one sampled primary range matches fallback.
+
+        ``cfg`` is the bundled probe config from :meth:`_fingerprint_probe_cfg`.
+        """
         primary_digest = self._fetch_primary_fallback_range_digest_threadsafe(
-            ctx,
-            primary_auth,
-            start,
-            end,
-            content_length,
-            probe_bases,
-            primary_url,
-            cache_lock,
+            ctx, cfg["primary_auth"], start, end, cfg, cache_lock
         )
         return bool(primary_digest and primary_digest == fallback_digest)
 
     def _fetch_primary_fallback_range_digest_threadsafe(
-        self,
-        ctx,
-        auth_header,
-        start,
-        end,
-        content_length,
-        probe_bases,
-        primary_url,
-        cache_lock,
+        self, ctx, auth_header, start, end, cfg, cache_lock
     ):
-        """Return a primary digest while preserving the shared selection cache."""
+        """Return a primary digest while preserving the shared selection cache.
+
+        ``cfg`` is the bundled probe config from :meth:`_fingerprint_probe_cfg`.
+        """
+        content_length = cfg["content_length"]
+        probe_bases = cfg["probe_bases"]
+        primary_url = cfg["primary_url"]
         if cache_lock is None:
             return self._fetch_primary_fallback_range_digest(
                 ctx, auth_header, start, end, content_length, probe_bases, primary_url
@@ -325,53 +254,22 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
         except TypeError:
             executor.shutdown(wait=False)
 
-    def _validate_fallback_fingerprint_parallel(
-        self,
-        ctx,
-        ranges,
-        content_length,
-        probe_bases,
-        current_range,
-        primary_url,
-        fallback_url,
-        fallback_auth,
-        primary_auth,
-        cache_fallback_range_bytes=False,
-    ):
+    def _validate_fallback_fingerprint_parallel(self, ctx, ranges, cfg):
         """Return True only when every parallel-probed range provably matches.
 
         Bool wrapper over :meth:`_classify_fallback_fingerprint_parallel`.
+        ``cfg`` is the bundled probe config from :meth:`_fingerprint_probe_cfg`.
         """
         return (
-            self._classify_fallback_fingerprint_parallel(
-                ctx,
-                ranges,
-                content_length,
-                probe_bases,
-                current_range,
-                primary_url,
-                fallback_url,
-                fallback_auth,
-                primary_auth,
-                cache_fallback_range_bytes,
-            )
+            self._classify_fallback_fingerprint_parallel(ctx, ranges, cfg)
             is _sp._FALLBACK_MATCH
         )
 
-    def _classify_fallback_fingerprint_parallel(
-        self,
-        ctx,
-        ranges,
-        content_length,
-        probe_bases,
-        current_range,
-        primary_url,
-        fallback_url,
-        fallback_auth,
-        primary_auth,
-        cache_fallback_range_bytes=False,
-    ):
-        """Classify fingerprint ranges with bounded parallel range probes."""
+    def _classify_fallback_fingerprint_parallel(self, ctx, ranges, cfg):
+        """Classify fingerprint ranges with bounded parallel range probes.
+
+        ``cfg`` is the bundled probe config from :meth:`_fingerprint_probe_cfg`.
+        """
         workers = min(_sp._FALLBACK_FINGERPRINT_WORKERS, len(ranges))
         fallback_digests = {}
         # Shared lock for the primary-digest cache: parallel workers
@@ -384,17 +282,6 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
         # A single mismatched range otherwise pays full latency for all
         # in-flight probes.
         executor = _sp.ThreadPoolExecutor(max_workers=workers)
-
-        cfg = self._fingerprint_probe_cfg(
-            content_length,
-            probe_bases,
-            current_range,
-            primary_url,
-            fallback_url,
-            fallback_auth,
-            primary_auth,
-            cache_fallback_range_bytes,
-        )
         return self._run_parallel_fingerprint_probes(
             ctx, ranges, cfg, executor, cache_lock, fallback_digests
         )
@@ -439,13 +326,8 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
             future = executor.submit(
                 self._fetch_fallback_fingerprint_digest,
                 (start, end),
-                cfg["content_length"],
-                cfg["probe_bases"],
-                current_range,
-                cfg["fallback_url"],
-                cfg["fallback_auth"],
+                cfg,
                 cache_ctx=ctx,
-                cache_range_bytes=cfg["cache_fallback_range_bytes"],
             )
             fallback_futures[future] = (start, end)
 
@@ -461,9 +343,7 @@ class _FingerprintMixin:  # pylint: disable=too-few-public-methods
                     cfg["primary_auth"],
                     start,
                     end,
-                    cfg["content_length"],
-                    cfg["probe_bases"],
-                    cfg["primary_url"],
+                    cfg,
                     cache_lock,
                 )
             ] = (start, end)

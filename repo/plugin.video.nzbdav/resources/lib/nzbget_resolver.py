@@ -1171,8 +1171,7 @@ def _run_nzbget_backend(
     settings_getter,
     on_success,
     on_failure,
-    download_pubdate=None,
-    download_size=None,
+    download_identity=(None, None),
     completed_job=None,
     dupe=None,
 ):
@@ -1181,11 +1180,12 @@ def _run_nzbget_backend(
     Calls ``on_success(video_url)`` exactly once on success, or
     ``on_failure(message)`` exactly once on any failure (``message`` is ``None``
     for the silent cancel exit); this core guarantees a single terminal callback
-    and owns the progress dialog. ``download_pubdate``/``download_size`` record
-    the selected result's identity in the ledger for the picker's "DL" tag;
-    ``completed_job`` is the corroborated history match played directly (nothing
-    submitted) when its ``dest_dir`` still holds a playable video over SMB.
-    ``dupe`` is the picker-computed NZBGet Smart-Duplicates submission (#372).
+    and owns the progress dialog. ``download_identity`` is the
+    ``(download_pubdate, download_size)`` pair recording the selected result's
+    identity in the ledger for the picker's "DL" tag; ``completed_job`` is the
+    corroborated history match played directly (nothing submitted) when its
+    ``dest_dir`` still holds a playable video over SMB. ``dupe`` is the
+    picker-computed NZBGet Smart-Duplicates submission (#372).
     """
     dialog = None
     leave_job = False
@@ -1207,7 +1207,7 @@ def _run_nzbget_backend(
             dupe=dupe,
         )
         leave_job = _reuse_or_submit(
-            ctx, nzb_url, title, completed_job, (download_pubdate, download_size)
+            ctx, nzb_url, title, completed_job, download_identity
         )
     except Exception as exc:  # pylint: disable=broad-except
         # str(exc) can echo the indexer nzb_url (apikey=...) or the
@@ -1291,8 +1291,10 @@ def resolve_and_play_nzbget(
         settings_getter,
         on_success,
         on_failure,
-        download_pubdate=params.get("_download_pubdate"),
-        download_size=params.get("_download_size"),
+        download_identity=(
+            params.get("_download_pubdate"),
+            params.get("_download_size"),
+        ),
         completed_job=params.get("_nzbget_completed_job"),
         dupe=params.get("_nzbget_dupe"),
     )
@@ -1336,8 +1338,10 @@ def play_nzbget(
         settings_getter,
         on_success,
         on_failure,
-        download_pubdate=resolve_params.get("_download_pubdate"),
-        download_size=resolve_params.get("_download_size"),
+        download_identity=(
+            resolve_params.get("_download_pubdate"),
+            resolve_params.get("_download_size"),
+        ),
         completed_job=resolve_params.get("_nzbget_completed_job"),
         dupe=resolve_params.get("_nzbget_dupe"),
     )

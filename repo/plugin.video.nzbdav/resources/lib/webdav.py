@@ -12,6 +12,7 @@ public stream-URL helpers, and re-exports the moved names so existing imports
 """
 
 import base64
+from typing import NamedTuple, Optional
 from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -24,11 +25,26 @@ from resources.lib.webdav_match import (
     _title_hint_match_score,
 )
 
+
+class TitleHints(NamedTuple):
+    """Requested-release name hint (plus its pre-parsed forms) for discovery.
+
+    ``title_hint`` is the optional requested scene title; ``tokens`` and
+    ``episode_tags`` are its pre-parsed forms threaded through recursion so the
+    hint is parsed once per discovery rather than once per folder level.
+    """
+
+    title_hint: Optional[str] = None
+    tokens: Optional[tuple] = None
+    episode_tags: Optional[tuple] = None
+
+
 # Re-exported for callers/tests that resolve these names on ``webdav``.
 __all__ = [
     "_episode_tags",
     "_hint_tokens",
     "_title_hint_match_score",
+    "TitleHints",
     "_get_settings",
     "_http_head",
     "probe_webdav_reachable",
@@ -533,37 +549,30 @@ def folder_video_total_bytes(
 
 def find_video_file(
     folder_path,
-    _depth=0,
-    _visited=None,
-    _already_encoded=False,
-    _settings=None,
-    settings_getter=None,
-    title_hint=None,
-    title_hint_tokens=None,
-    title_hint_episode_tags=None,
+    hints=None,
     min_video_size=0,
+    settings_getter=None,
+    _state=None,
 ):
     """Browse a WebDAV folder and find the requested (or largest) video file.
 
     Args:
         folder_path: WebDAV folder path to scan (may be absolute or relative).
-        _depth: Internal recursion depth counter (used to cap traversal).
-        _visited: Internal set of already-scanned paths; catches a hostile
-            or misconfigured server that returns its parent (or itself) as
-            a child and would otherwise recurse until the depth cap.
-        _already_encoded: Internal flag set by the recursive call when the
-            supplied ``folder_path`` came from a PROPFIND ``<D:href>`` (which
-            the server already URL-encoded for us). Without this, recursive
-            descents double-encode ``%20`` → ``%2520`` and every subdirectory
-            lookup 404s.
-        title_hint: Optional requested release name (e.g. the selected scene
-            title). When supplied and a folder/pack holds several candidate
-            videos, the one whose name matches the hint — especially the
-            requested SxxExx episode — is preferred over the largest video.
+        hints: Optional :class:`TitleHints` carrying the requested release name
+            (``title_hint``) plus its pre-parsed ``tokens``/``episode_tags``.
+            When a ``title_hint`` is supplied and a folder/pack holds several
+            candidate videos, the one whose name matches the hint — especially
+            the requested SxxExx episode — is preferred over the largest video.
             When omitted, the historical largest-video behavior is preserved.
-        title_hint_tokens / title_hint_episode_tags: Internal pre-parsed forms
-            of ``title_hint`` threaded through recursion so the hint is parsed
-            once per discovery rather than once per folder level.
+        _state: Internal ``(depth, visited, already_encoded, settings)`` recursion
+            tuple; external callers never pass it (default
+            ``(0, None, False, None)``). ``depth`` caps traversal; ``visited`` is
+            the set of already-scanned paths that catches a hostile or
+            misconfigured server returning its parent (or itself) as a child;
+            ``already_encoded`` is set by the recursive call when ``folder_path``
+            came from a PROPFIND ``<D:href>`` (already URL-encoded) so recursive
+            descents do not double-encode ``%20`` → ``%2520`` and 404; ``settings``
+            reuses an already-read settings dict.
         min_video_size: Optional minimum plausible size (bytes) for the real
             single-file video, precomputed by the resolver from the advertised
             release size (#282). A current-level candidate whose size is a
@@ -593,11 +602,15 @@ def find_video_file(
     """
     from resources.lib import webdav_discovery
 
+    if hints is None:
+        hints = TitleHints()
+    _depth, _visited, _already_encoded, _settings = _state or (0, None, False, None)
+
     if _depth > 2:
         return None
 
     hint_tokens, hint_episode_tags = webdav_discovery._resolve_hint_sets(
-        title_hint, title_hint_tokens, title_hint_episode_tags
+        hints.title_hint, hints.tokens, hints.episode_tags
     )
 
     _visited = webdav_discovery._mark_visited(folder_path, _visited)
@@ -694,9 +707,9 @@ def find_video_stream_for_folder(
     settings = _read_settings(settings_getter)
     video_path = find_video_file(
         folder_path,
-        _settings=settings,
-        title_hint=title_hint,
+        hints=TitleHints(title_hint=title_hint),
         min_video_size=min_video_size,
+        _state=(0, None, False, settings),
     )
     if not video_path:
         return None, None, None

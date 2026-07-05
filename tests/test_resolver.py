@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+# ^ 9-14-arg test signatures come from stacked @patch decorators; scheduled for
+#   fixture consolidation in the complexity-reduction Phase C1 wave, after
+#   which this module-level disable comes off.
 
 import sys
 import threading
@@ -14,6 +18,7 @@ from resources.lib.resolver import (
     _POLL_INTERVAL_MAX,
     _POLL_INTERVAL_MIN,
     MAX_POLL_ITERATIONS,
+    PollContext,
     _cache_bust_url,
     _clear_kodi_playback_state,
     _completed_job_stream,
@@ -2061,7 +2066,7 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
     def poll_ready(*args, **kwargs):
         call_order.append("poll")
         assert mock_start_fallback.call_count == 0
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         mock_start_fallback.assert_called_once_with(
             fallback_candidates,
             candidate_loader=None,
@@ -2317,7 +2322,7 @@ def test_resolve_prefetches_fallback_loader_before_primary_submit(
 
     def poll_ready(*_args, **kwargs):
         assert loader_started.wait(timeout=1)
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         assert mock_start_fallback.call_args.args == ([],)
         loader_kwarg = mock_start_fallback.call_args.kwargs["candidate_loader"]
         assert loader_kwarg is not slow_loader
@@ -2381,7 +2386,7 @@ def test_resolve_overlaps_bookmark_cleanup_with_post_submit_poll(
 
     def poll_ready(*_args, **kwargs):
         timing["poll_start"] = _time.perf_counter()
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         _time.sleep(0.2)
         timing["poll_end"] = _time.perf_counter()
         return (
@@ -2458,7 +2463,7 @@ def test_resolve_starts_bookmark_cleanup_before_primary_submit_wait(
         timing["poll_start"] = _time.perf_counter()
         _time.sleep(0.16)
         timing["primary_submitted"] = _time.perf_counter()
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         timing["ready"] = _time.perf_counter()
         return (
             "http://webdav/content/primary/movie.mkv",
@@ -2585,7 +2590,7 @@ def test_resolve_overlaps_proxy_prepare_with_bookmark_cleanup_after_ready(
 
     def poll_ready(*_args, **kwargs):
         timing["poll_start"] = _time.perf_counter()
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         _time.sleep(0.02)
         timing["ready"] = _time.perf_counter()
         return (
@@ -2923,7 +2928,7 @@ def test_resolve_and_play_overlaps_proxy_prepare_with_bookmark_cleanup_after_rea
 
     def poll_ready(*_args, **kwargs):
         timing["poll_start"] = _time.perf_counter()
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         _time.sleep(0.02)
         timing["ready"] = _time.perf_counter()
         return (
@@ -3633,7 +3638,7 @@ def test_resolve_and_play_defers_fallback_loader_until_primary_accept(
 
     def poll_ready(*_args, **kwargs):
         assert mock_start_fallback.call_count == 0
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         return (
             "http://webdav/content/primary/movie.mkv",
             {"Authorization": "Basic primary"},
@@ -3744,7 +3749,7 @@ def test_resolve_and_play_passes_settings_getter_to_fallback_worker(
         return [{"title": "Fallback A", "link": "http://hydra/getnzb/fallback"}]
 
     def poll_ready(*_args, **kwargs):
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         return (
             "http://webdav/content/primary/movie.mkv",
             {"Authorization": "Basic primary"},
@@ -4181,7 +4186,7 @@ def test_resolve_cancels_fallback_worker_jobs_when_primary_fails(
     mock_start_fallback.return_value = fallback_state
 
     def poll_not_ready(*args, **kwargs):
-        kwargs["on_primary_submitted"]("SABnzbd_nzo_primary")
+        kwargs["poll_ctx"].on_primary_submitted("SABnzbd_nzo_primary")
         return None, {}
 
     mock_poll_until_ready.side_effect = poll_not_ready
@@ -6767,8 +6772,10 @@ def test_poll_until_ready_records_pubdate_on_submit_success(
         _make_dialog(),
         2,
         3600,
-        download_pubdate="Wed, 15 Dec 2021 12:00:00 +0000",
-        download_size="1000",
+        poll_ctx=PollContext(
+            download_pubdate="Wed, 15 Dec 2021 12:00:00 +0000",
+            download_size="1000",
+        ),
     )
 
     assert url == "http://webdav/movie.mkv"
@@ -6797,7 +6804,9 @@ def test_poll_until_ready_cache_hit_does_not_record(
         _make_dialog(),
         2,
         3600,
-        download_pubdate="Wed, 15 Dec 2021 12:00:00 +0000",
+        poll_ctx=PollContext(
+            download_pubdate="Wed, 15 Dec 2021 12:00:00 +0000",
+        ),
     )
 
     assert url == "http://webdav/cached.mkv"
@@ -8960,8 +8969,10 @@ def test_poll_until_ready_records_ledger_only_on_playable_success(
         _poll_dialog(),
         poll_interval=1,
         download_timeout=60,
-        download_pubdate="2026-01-02",
-        download_size=12345,
+        poll_ctx=PollContext(
+            download_pubdate="2026-01-02",
+            download_size=12345,
+        ),
     )
 
     assert result == ("http://webdav/movie.mkv", {"H": "1"})
@@ -8998,8 +9009,10 @@ def test_poll_until_ready_does_not_record_ledger_when_poll_fails(
         _poll_dialog(),
         poll_interval=1,
         download_timeout=60,
-        download_pubdate="2026-01-02",
-        download_size=12345,
+        poll_ctx=PollContext(
+            download_pubdate="2026-01-02",
+            download_size=12345,
+        ),
     )
 
     assert result == (None, None)

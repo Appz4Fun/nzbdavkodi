@@ -194,7 +194,7 @@ class _FallbackStandbyMixin:  # pylint: disable=too-few-public-methods
     def _resolve_standby_video_path(source, nzo_id):
         """Resolve a completed standby nzo_id to a WebDAV video path, if ready."""
         from resources.lib.nzbdav_api import get_job_history
-        from resources.lib.webdav import find_video_file
+        from resources.lib.webdav import TitleHints, find_video_file
 
         history = get_job_history(nzo_id)
         history_status = history.get("status") if isinstance(history, dict) else ""
@@ -210,7 +210,7 @@ class _FallbackStandbyMixin:  # pylint: disable=too-few-public-methods
             return None
         return find_video_file(
             _sp._storage_to_webdav_path(storage),
-            title_hint=source.get("title") or None,
+            hints=TitleHints(title_hint=source.get("title") or None),
         )
 
     def _standby_length_is_mismatch(self, ctx, content_length):
