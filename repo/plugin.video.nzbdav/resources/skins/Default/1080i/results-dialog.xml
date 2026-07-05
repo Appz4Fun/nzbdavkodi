@@ -67,7 +67,7 @@
       <left>0</left><top>60</top><width>1910</width><height>975</height>
       <orientation>vertical</orientation>
       <pagecontrol>60</pagecontrol>
-      <onleft>60</onleft>
+      <onleft>50</onleft>
       <onright>60</onright>
       <onup>50</onup>
       <ondown>50</ondown>
@@ -246,7 +246,7 @@
       <left>1910</left><top>60</top><width>10</width><height>975</height>
       <orientation>vertical</orientation>
       <onleft>50</onleft>
-      <onright>50</onright>
+      <onright>60</onright>
       <onup>60</onup>
       <ondown>60</ondown>
       <showonepage>false</showonepage>
