@@ -1911,3 +1911,22 @@ def test_poll_group_follow_ignores_stale_preexisting_success():
         result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
     assert result["outcome"] == "failed"  # stale success never played
     assert all(3 in ex for ex in seen_excludes)
+
+
+def test_backups_submit_under_their_own_release_title():
+    # Backups must NOT get decorated fallback job names: a promoted backup that
+    # completes becomes the SUCCESS history row the next picker render looks up
+    # by EXACT title (completed_history -> _tag_available_nzbget). A decorated
+    # name would hide it -- and with the wall-clock score base the replay would
+    # then re-download despite the files existing (review thread:
+    # completed-history reuse).
+    ev = None
+    with patch(_APPEND, return_value=(5, None)) as append:
+        row = {"link": "http://i/a.nzb", "title": "The.Movie.2024.1080p-GRP"}
+        _submit_dupe_backups(
+            [dict(row, score=1)],
+            "imdb=1|the-movie-2024-1080p-grp",
+            _settings({}),
+            cancel_event=ev,
+        )
+    assert append.call_args.args[1] == "The.Movie.2024.1080p-GRP"

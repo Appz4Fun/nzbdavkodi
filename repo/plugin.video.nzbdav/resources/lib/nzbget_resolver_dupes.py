@@ -36,7 +36,6 @@ def _submit_dupe_backups(backups, dupe_key, settings_getter, cancel_event=None):
     """
     submitted = []
     seen = set()
-    index = 0
     for backup in backups or []:
         if cancel_event is not None and cancel_event.is_set():
             break
@@ -44,10 +43,7 @@ def _submit_dupe_backups(backups, dupe_key, settings_getter, cancel_event=None):
         if not nzb_url:
             continue
         seen.add(nzb_url)
-        index += 1
-        nzbid = _core._append_one_backup(
-            nzb_url, backup, dupe_key, index, settings_getter
-        )
+        nzbid = _core._append_one_backup(nzb_url, backup, dupe_key, settings_getter)
         if nzbid:
             submitted.append(nzbid)
     return submitted
@@ -69,16 +65,23 @@ def _usable_backup_link(candidate, seen):
     return link
 
 
-def _append_one_backup(nzb_url, backup, dupe_key, index, settings_getter):
+def _append_one_backup(nzb_url, backup, dupe_key, settings_getter):
     """Append one duplicate backup to NZBGet and log the outcome (#372).
 
     Returns the new NZBID, or None on a failed/raised append -- the caller keeps
     iterating either way (best-effort: one bad backup never aborts the rest).
-    """
-    from resources.lib.fallback_streams import build_fallback_job_name
 
+    Submitted under the backup's OWN (undecorated) release title: a promoted
+    backup that completes becomes the SUCCESS history row the next picker
+    render matches by EXACT name (``completed_history`` ->
+    ``_tag_available_nzbget``), so the DL tag and selection-time reuse keep
+    working -- a decorated ``[fallback-...]`` name would hide it and, with the
+    wall-clock score base, a replay would re-download despite the files
+    existing. Uniqueness is not needed: dupe grouping is DupeKey-driven and
+    NZBGet keys jobs by NZBID.
+    """
     score = int(backup.get("score") or 0)
-    job_name = build_fallback_job_name(backup.get("title") or dupe_key, nzb_url, index)
+    job_name = backup.get("title") or dupe_key
     try:
         nzbid, error = _core.nzbget_api.append_nzb(
             nzb_url,
