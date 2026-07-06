@@ -94,7 +94,9 @@ def _fetch_nzb_bytes(nzb_url):
     return body
 
 
-def _append_params(nzb_name, nzb_bytes, category):
+def _append_params(
+    nzb_name, nzb_bytes, category, dupe_key="", dupe_score=0, dupe_mode="SCORE"
+):
     """Build NZBGet's modern 11-arg ``append`` params list.
 
     append(NZBFilename, Content, Category, Priority, AddToTop, AddPaused,
@@ -108,17 +110,44 @@ def _append_params(nzb_name, nzb_bytes, category):
     (the SMB completed-path mapping in nzbget_resolver depends on it rather
     than NZBGet auto-reassigning one); PPParameters=[] = no extra
     post-processing parameters.
+
+    ``dupe_key``/``dupe_score``/``dupe_mode`` implement NZBGet Smart Duplicates
+    (#372, per nzbget.com/documentation/rss/#duplicates). Defaults ``""``/``0``/
+    ``"SCORE"`` reproduce the pre-#372 single submit exactly; a fleet submit
+    passes a shared DupeKey (identifying the release) plus a per-item DupeScore
+    (pick highest) so NZBGet downloads the highest score and parks the rest in
+    history as backups, failing over on an unrepairable download.
     """
     content_b64 = base64.b64encode(nzb_bytes).decode("ascii")
     filename = "{}.nzb".format(nzb_name or "submission")
-    return [filename, content_b64, category, 0, False, False, "", 0, "SCORE", False, []]
+    return [
+        filename,
+        content_b64,
+        category,
+        0,
+        False,
+        False,
+        dupe_key or "",
+        int(dupe_score or 0),
+        (dupe_mode or "SCORE").upper(),
+        False,
+        [],
+    ]
 
 
-def append_nzb(nzb_url, nzb_name, settings_getter=None):
+def append_nzb(
+    nzb_url,
+    nzb_name,
+    settings_getter=None,
+    dupe_key="",
+    dupe_score=0,
+    dupe_mode="SCORE",
+):
     """Fetch the NZB and submit it to NZBGet via append.
 
     Returns (nzbid, error). On success (int > 0, None); on failure
-    (None, message).
+    (None, message). ``dupe_key``/``dupe_score``/``dupe_mode`` drive NZBGet
+    Smart Duplicates (#372); their defaults reproduce the pre-#372 single submit.
     """
     _base_url, _user, _password, category = _get_settings(settings_getter)
     try:
@@ -129,7 +158,9 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None):
             xbmc.LOGERROR,
         )
         return None, _redact_text(str(exc))
-    params = _append_params(nzb_name, nzb_bytes, category)
+    params = _append_params(
+        nzb_name, nzb_bytes, category, dupe_key, dupe_score, dupe_mode
+    )
     result, error = _rpc_call("append", params, settings_getter=settings_getter)
     if error is not None:
         return None, error
@@ -140,6 +171,25 @@ def append_nzb(nzb_url, nzb_name, settings_getter=None):
     if nzbid <= 0:
         return None, "append returned {!r}".format(result)
     return nzbid, None
+
+
+def config_option(name, settings_getter=None):
+    """Read one running-config option's value via the ``config`` RPC.
+
+    NZBGet's ``config`` returns the live merged config as a list of
+    ``{"Name","Value"}`` structs (options with fixed value sets come back
+    lower-cased). Returns the matched value lower-cased, or ``None`` when the
+    option is absent or the RPC fails -- callers treat it as best-effort (e.g.
+    the #372 HealthCheck=pause warning, per nzbget.com/documentation/rss).
+    """
+    rows, error = _rpc_call("config", [], settings_getter=settings_getter)
+    if error is not None or not isinstance(rows, list):
+        return None
+    target = str(name or "").lower()
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("Name", "")).lower() == target:
+            return str(row.get("Value", "")).strip().lower()
+    return None
 
 
 def _as_number(value):
@@ -404,3 +454,184 @@ def cancel_job(nzbid, settings_getter=None):
         ["HistoryFinalDelete", "", [nzbid]],
         settings_getter=settings_getter,
     )
+
+
+def cancel_jobs(nzbids, settings_getter=None):
+    """Final-delete a batch of NZBIDs from history, then the queue (#372 r3).
+
+    Used by the backup worker's post-cancel cleanup: it deletes exactly the
+    NZBIDs THIS resolve submitted (never a whole-DupeKey sweep, which could
+    wipe a fresh retry of the same release). History first -- the parked hidden
+    ``Kind=DUP`` backups -- so nothing is left to promote when the queued ones
+    go. IDs are coerced to int (listgroups can serialize NZBID as a string --
+    the same tolerance ``_same_nzbid`` applies) and deduped across types:
+    ``editqueue`` expects an integer array, and one bad member would fail the
+    whole batch. Empty input is a no-op; best-effort like ``cancel_job``.
+    """
+    ids = []
+    for nzbid in nzbids or []:
+        try:
+            value = int(str(nzbid).strip())
+        except (TypeError, ValueError):
+            continue
+        if value not in ids:
+            ids.append(value)
+    if not ids:
+        return
+    _final_delete("HistoryFinalDelete", ids, settings_getter)
+    _final_delete("GroupFinalDelete", ids, settings_getter)
+
+
+def _dupekey_match(item, dupe_key):
+    """Case-insensitive DupeKey compare (NZBGet matches keys case-insensitively)."""
+    return (
+        str(item.get("DupeKey") or "").strip().lower()
+        == str(dupe_key or "").strip().lower()
+    )
+
+
+# Sentinel returned by _promoted_group_entry for a same-key member that is
+# queued but PAUSED: not a promotion to track, yet not an exhausted group
+# either (e.g. NZBGet globally paused when the backup was promoted).
+_PAUSED_MATCH = object()
+
+
+def _promoted_group_entry(group, dupe_key, exclude_nzbid):
+    """Classify one listgroups row for the promotion scan.
+
+    Keeps ``active_group_by_dupekey`` a flat scan: the DupeKey match and the
+    exclude-NZBID skip (the failed pick itself) live here. Returns the
+    promoted-download entry dict, ``_PAUSED_MATCH`` for a same-key member that
+    is queued PAUSED (it can still resume, so the group is not exhausted), or
+    ``None`` for a non-match.
+    """
+    if not isinstance(group, dict) or not _dupekey_match(group, dupe_key):
+        return None
+    if exclude_nzbid is not None and _same_nzbid(group.get("NZBID"), exclude_nzbid):
+        return None
+    status = str(group.get("Status") or "")
+    if status.upper() == "PAUSED":
+        return _PAUSED_MATCH
+    downloaded = _as_number(group.get("DownloadedSizeMB"))
+    total = _as_number(group.get("FileSizeMB"))
+    percent = int(downloaded * 100 / total) if total else 0
+    return {
+        "present": True,
+        "nzbid": group.get("NZBID"),
+        "status": status,
+        "percent": percent,
+    }
+
+
+def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
+    """The active (non-PAUSED) queued group sharing ``dupe_key`` (#372 round 2).
+
+    After the pick fails, NZBGet promotes a duplicate backup from history into
+    the queue -- it appears in listgroups under the SAME DupeKey with its OWN new
+    NZBID and an un-paused status (other backups stay PAUSED). Returns
+    ``{"present","nzbid","status","percent"}`` for that promoted download, else
+    ``{"present": False, "paused_present": <bool>}`` -- ``paused_present`` flags
+    a same-key member queued PAUSED (e.g. NZBGet globally paused when the
+    promotion happened), which the poll must treat as "not exhausted yet"
+    rather than a failed group.
+    """
+    if not dupe_key:
+        return {"present": False, "paused_present": False, "paused_nzbids": []}
+    groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
+    if error is not None or not isinstance(groups, list):
+        return {"present": False, "paused_present": False, "paused_nzbids": []}
+    paused_nzbids = []
+    for group in groups:
+        entry = _promoted_group_entry(group, dupe_key, exclude_nzbid)
+        if entry is _PAUSED_MATCH:
+            # Collect the id: a promotion that landed while NZBGet was paused
+            # never becomes the tracked member, but a cancel must still be able
+            # to delete it directly (#372 round 5).
+            if group.get("NZBID") is not None:
+                paused_nzbids.append(group.get("NZBID"))
+        elif entry is not None:
+            return entry
+    return {
+        "present": False,
+        "paused_present": bool(paused_nzbids),
+        "paused_nzbids": paused_nzbids,
+    }
+
+
+def history_success_by_dupekey(dupe_key, exclude_nzbids=None, settings_getter=None):
+    """A SUCCESS history item sharing ``dupe_key`` (a completed group member).
+
+    Lets the poll play a duplicate backup that NZBGet already downloaded to
+    success after the pick failed (#372 round 2). ``exclude_nzbids`` filters
+    out STALE successes that predate the resolve (#372 round 4): their files
+    may be long gone -- the reuse probe already declined them -- and playing
+    one would fail "No video file found" instead of waiting for the fleet's
+    own member. Returns ``{"present","nzbid","dest_dir"}`` or
+    ``{"present": False}``.
+    """
+    if not dupe_key:
+        return {"present": False}
+    hist, error = _rpc_call("history", [False], settings_getter=settings_getter)
+    if error is not None or not isinstance(hist, list):
+        return {"present": False}
+    for item in hist:
+        entry = _success_history_entry(item, dupe_key)
+        if entry is None or _nzbid_in(entry["nzbid"], exclude_nzbids):
+            continue
+        return entry
+    return {"present": False}
+
+
+def _nzbid_in(nzbid, nzbids):
+    """True when ``nzbid`` matches any id in ``nzbids`` (str/int tolerant)."""
+    return any(_same_nzbid(nzbid, other) for other in nzbids or ())
+
+
+def success_ids_by_dupekey(dupe_key, settings_getter=None):
+    """NZBIDs of every SUCCESS history row sharing ``dupe_key`` (#372 round 4).
+
+    Snapshotted when a dupe-enabled poll starts so group-follow can exclude
+    successes that PREDATE the resolve (see ``history_success_by_dupekey``).
+    Best-effort: an RPC error or empty history yields ``[]``.
+    """
+    if not dupe_key:
+        return []
+    hist, error = _rpc_call("history", [False], settings_getter=settings_getter)
+    if error is not None or not isinstance(hist, list):
+        return []
+    ids = []
+    for item in hist:
+        entry = _success_history_entry(item, dupe_key)
+        if entry is not None and entry["nzbid"] is not None:
+            ids.append(entry["nzbid"])
+    return ids
+
+
+def _success_history_entry(item, dupe_key):
+    """Build the completed-member entry for one history row, or None.
+
+    Keeps ``history_success_by_dupekey`` a flat scan: the DupeKey match and
+    the SUCCESS/* gate (same completion guarantee as ``history_status`` — only
+    a fully post-processed row is playable) live here so the caller only
+    decides "match or keep scanning".
+    """
+    if not isinstance(item, dict) or not _dupekey_match(item, dupe_key):
+        return None
+    if not str(item.get("Status") or "").startswith("SUCCESS"):
+        return None
+    return {
+        "present": True,
+        "nzbid": item.get("NZBID"),
+        "dest_dir": _dest_dir(item),
+    }
+
+
+def _final_delete(command, ids, settings_getter):
+    """One best-effort ``editqueue`` final-delete for all ``ids`` at once.
+
+    Skips the RPC entirely when the scan matched nothing — an empty-IDs
+    editqueue would be a pointless round-trip on every cancel.
+    """
+    if not ids:
+        return
+    _rpc_call("editqueue", [command, "", ids], settings_getter=settings_getter)

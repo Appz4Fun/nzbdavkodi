@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
+# pylint: disable=cyclic-import,unused-import
 
 """NZBGet backend resolver: submit to NZBGet, wait, play from SMB.
 
@@ -8,13 +9,13 @@ here. Honors the same ``setResolvedUrl``-on-failure contract as the nzbdav
 path: exactly one resolution per exit, failures resolve False.
 """
 
+import threading
 import time
 from urllib.parse import unquote
 
 import xbmc
 import xbmcgui
 import xbmcplugin
-import xbmcvfs
 
 from resources.lib import nzbget_api
 from resources.lib.download_ledger import record_download
@@ -23,234 +24,43 @@ from resources.lib.http_util import redact_text as _redact_text
 from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
+from resources.lib.nzbget_resolver_dupes import (  # noqa: E402,F401
+    _HEALTHCHECK_LOCK,
+    _HEALTHCHECK_WARNED,
+    _MAX_EXTRA_BACKUPS,
+    _append_one_backup,
+    _cleanup_canceled_submissions,
+    _dupe_check_disabled,
+    _dupe_worker_should_skip,
+    _extra_backups_from_loader,
+    _load_extra_candidates,
+    _loader_extras_for_fleet,
+    _nothing_to_submit,
+    _snapshot_conn_getter,
+    _spawn_dupe_backups,
+    _submit_backup_fleet,
+    _submit_dupe_backups,
+    _usable_backup_link,
+    _warn_if_healthcheck_pauses,
+)
+from resources.lib.nzbget_resolver_smb import (  # noqa: E402,F401
+    _SMB_LIST_RETRY_INTERVAL,
+    _SMB_MAX_DEPTH,
+    _SMB_RESOLVE_BUDGET,
+    VIDEO_EXTENSIONS,
+    _drive_resolve_dialog,
+    _is_video_name,
+    _largest_video_in_dir,
+    _largest_video_in_tree,
+    _smb_exact_mapping,
+    _smb_fallback_mapping,
+    _smb_file_size,
+    nzbget_smb_target,
+    pick_largest_video,
+    resolve_smb_video,
+)
 
 # Same extensions the WebDAV path uses (webdav.py VIDEO_EXTENSIONS).
-VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
-
-
-def nzbget_smb_target(smb_root, dest_dir, category="", completed_base=""):
-    """Map NZBGet's server-local DestDir onto the SMB root.
-
-    ``smb_root`` points at NZBGet's *completed* base dir, exposed over SMB.
-
-    Preferred mapping (exact): when ``completed_base`` (NZBGet's configured
-    global completed DestDir) is known and is a prefix of ``dest_dir``, map the
-    *relative* remainder onto ``smb_root``. This mirrors whatever subfolder
-    layout NZBGet actually used — ``AppendCategoryDir`` on/off, a category that
-    matches or a category-specific/custom ``DestDir`` whose folder name differs
-    from the category setting (e.g. ``<completed>/films/<release>`` for category
-    ``movies``) — without guessing.
-
-    Fallback heuristic (``completed_base`` unknown / ``dest_dir`` outside it):
-    derive the category segment from ``dest_dir``'s own parent. Nest under it
-    only when a category is configured and the parent isn't already the SMB
-    root's own trailing segment (the AppendCategoryDir=no case, where the
-    parent is the completed base itself). Returns the smb:// folder URL, or
-    None if dest_dir is empty.
-    """
-    if not dest_dir:
-        return None
-    normalized = dest_dir.replace("\\", "/").rstrip("/")
-    base = smb_root.rstrip("/")
-
-    exact = _smb_exact_mapping(normalized, base, completed_base)
-    if exact is not None:
-        return exact
-
-    return _smb_fallback_mapping(normalized, base, category)
-
-
-def _smb_exact_mapping(normalized, base, completed_base):
-    """Map ``dest_dir`` onto ``base`` via the configured completed base.
-
-    Returns the smb:// URL when ``completed_base`` is known and a strict
-    prefix of ``dest_dir``, else ``None`` so the caller falls back to the
-    heuristic.
-    """
-    cb = (completed_base or "").replace("\\", "/").rstrip("/")
-    if not cb or normalized.casefold() == cb.casefold():
-        return None
-    if not (normalized + "/").casefold().startswith(cb.casefold() + "/"):
-        return None
-    rel = normalized[len(cb) :].strip("/")
-    # Guard against a doubled tail when smb_root was pointed at a
-    # subfolder of the completed base (e.g. root .../movies + rel
-    # movies/Release): drop rel's leading segment if base already ends
-    # with it.
-    rel_head = rel.split("/", 1)[0]
-    if rel_head and base.casefold().endswith("/" + rel_head.casefold()):
-        rel = rel[len(rel_head) :].strip("/")
-    if rel:
-        return "{}/{}".format(base, rel)
-    return None
-
-
-def _smb_fallback_mapping(normalized, base, category):
-    """Derive the SMB target from ``dest_dir``'s own tail segments.
-
-    Used when the completed base is unknown / outside ``dest_dir``. Returns
-    the smb:// URL, or ``None`` when ``dest_dir`` has no usable segments.
-    """
-    segments = list(filter(None, normalized.split("/")))
-    if not segments:
-        return None
-    release_folder = segments[-1]
-    parent_folder = segments[-2] if len(segments) >= 2 else ""
-    category = (category or "").strip().strip("/")
-    # Without the completed base we can't reliably tell a real category
-    # subfolder apart from the completed base's own last segment (the
-    # server-side folder name may differ from the SMB share alias). So only
-    # nest when DestDir's parent is *exactly* the configured category — the
-    # one case we can be sure about. Otherwise map the release folder directly
-    # under the SMB root (correct for AppendCategoryDir=no, and the safe
-    # default for a custom DestDir whose layout we can't confirm).
-    if (
-        category
-        and parent_folder.casefold() == category.casefold()
-        and not base.casefold().endswith("/" + category.casefold())
-    ):
-        return "{}/{}/{}".format(base, parent_folder, release_folder)
-    return "{}/{}".format(base, release_folder)
-
-
-def pick_largest_video(filenames, size_of):
-    """Return the largest video file from a list, or None.
-
-    ``size_of`` is a callable mapping filename -> size (bytes). Mirrors the
-    addon's "largest video wins" rule.
-    """
-    best = None
-    best_size = -1
-    for name in filenames:
-        lower = name.lower()
-        if not any(lower.endswith(ext) for ext in VIDEO_EXTENSIONS):
-            continue
-        size = size_of(name)
-        if size > best_size:
-            best = name
-            best_size = size
-    return best
-
-
-_SMB_LIST_RETRY_INTERVAL = 1.0
-# Total wall-clock budget to keep re-listing the SMB share after NZBGet
-# reports SUCCESS. NZBGet only enters history once its move is marked
-# complete, but the moved files can take a while longer to become listable
-# over the Samba export (observed: the containing folder's mtime landing at
-# the exact second we start looking). The old ~4s (5×1s) window lost that
-# race and failed with "No video file found on SMB share" even though the
-# download succeeded. 60s absorbs the visibility lag with wide margin.
-_SMB_RESOLVE_BUDGET = 60.0
-# Releases whose archive unpacks into a nested ``<release>/<inner>/video``
-# layout are common; descend a few levels (like the WebDAV resolver) so they
-# still resolve. Bounded to keep a pathological tree from stalling playback.
-_SMB_MAX_DEPTH = 3
-
-
-def _smb_file_size(path):
-    try:
-        return xbmcvfs.Stat(path).st_size()
-    except Exception:  # pylint: disable=broad-except
-        return 0
-
-
-def _is_video_name(name):
-    """True when ``name`` ends in one of the playable video extensions."""
-    lower = name.lower()
-    return any(lower.endswith(ext) for ext in VIDEO_EXTENSIONS)
-
-
-def _largest_video_in_dir(folder, files):
-    """Return ``(url, size)`` for the largest video file directly in ``folder``.
-
-    Considers only the given ``files`` (no descent). Returns ``(None, -1)``
-    when none are playable videos.
-    """
-    best, best_size = None, -1
-    for name in files:
-        if not _is_video_name(name):
-            continue
-        path = "{}/{}".format(folder, name)
-        size = _smb_file_size(path)
-        if size > best_size:
-            best, best_size = path, size
-    return best, best_size
-
-
-def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
-    """Return ``(url, size)`` for the largest video at or below ``folder``.
-
-    Descends up to ``depth`` levels of subdirectories so a video tucked
-    inside a top-level folder (a common archive layout) still resolves
-    instead of failing with "No video file found on SMB share". Returns
-    ``(None, -1)`` when nothing playable is found.
-    """
-    try:
-        dirs, files = xbmcvfs.listdir(folder)
-    except Exception:  # pylint: disable=broad-except
-        return None, -1
-    best, best_size = _largest_video_in_dir(folder, files)
-    if depth > 0:
-        for sub in dirs:
-            url, size = _largest_video_in_tree("{}/{}".format(folder, sub), depth - 1)
-            if url is not None and size > best_size:
-                best, best_size = url, size
-    return best, best_size
-
-
-def _drive_resolve_dialog(dialog, now, deadline, budget):
-    """Advance the resolve progress bar; return True if the user canceled.
-
-    No-op (returns False) when no ``dialog`` is supplied. Otherwise drives the
-    progress bar over the resolve window so the user sees a "finishing up"
-    indicator instead of being dropped back to the home screen while the file
-    settles onto the share.
-    """
-    if dialog is None:
-        return False
-    if dialog.iscanceled():
-        return True
-    elapsed = budget - max(0.0, deadline - now)
-    percent = int(min(100.0, elapsed * 100.0 / budget)) if budget else 100
-    dialog.update(percent, _string(30219))
-    return False
-
-
-def resolve_smb_video(
-    smb_folder,
-    monitor=None,
-    dialog=None,
-    interval=_SMB_LIST_RETRY_INTERVAL,
-    budget=_SMB_RESOLVE_BUDGET,
-):
-    """List an SMB folder and return the largest video file URL, or None.
-
-    Searches the folder tree (top level plus nested subdirectories, see
-    ``_largest_video_in_tree``) and keeps retrying until a video appears or
-    the wall-clock ``budget`` (seconds, ``time.monotonic``) elapses — long
-    enough to absorb the lag between NZBGet reporting SUCCESS and the moved
-    files becoming visible over SMB. Sleeps ``interval`` seconds between
-    attempts via ``Monitor.waitForAbort`` so it stays cancelable and honors
-    Kodi shutdown. When a ``dialog`` (DialogProgress) is supplied, it shows a
-    progress bar over the wait and its Cancel button aborts the search.
-    Returns None if no video file appears within the budget.
-    """
-    if monitor is None:
-        monitor = xbmc.Monitor()
-    deadline = time.monotonic() + budget
-    while True:
-        url, _size = _largest_video_in_tree(smb_folder)
-        if url is not None:
-            return url
-        now = time.monotonic()
-        if now >= deadline:
-            return None
-        if _drive_resolve_dialog(dialog, now, deadline, budget):
-            return None
-        if monitor.waitForAbort(interval):
-            return None
-
-
 _POLL_INTERVAL = 2.0
 
 # listgroups Status values that mean the job is still actively downloading
@@ -261,34 +71,89 @@ _POLL_INTERVAL = 2.0
 _DOWNLOAD_STATUSES = frozenset({"DOWNLOADING", "FETCHING"})
 
 
+# After a tracked member fails, wait up to this long for NZBGet to promote a
+# duplicate backup into the queue before declaring the whole group failed (#372
+# round 2). Promotion is immediate server-side; this only absorbs the poll gap.
+_PROMOTION_GRACE = 20
+
+
 def poll_nzbget_job(
-    nzbid, dialog, monitor, timeout, settings_getter=None, interval=_POLL_INTERVAL
+    nzbid,
+    dialog,
+    monitor,
+    timeout,
+    settings_getter=None,
+    interval=_POLL_INTERVAL,
+    dupe_key="",
+    fleet=None,
 ):
-    """Wait for an NZBGet job to reach a terminal state.
+    """Wait for an NZBGet job (or its duplicate group) to reach a terminal state.
 
     Returns a dict with "outcome" in {"success","failed","canceled",
     "timeout","aborted"} and, on success, "dest_dir". Drives the progress
-    dialog: download % from listgroups, then a post-processing message
-    once the job leaves the active queue.
+    dialog: download % from listgroups, then a post-processing message once the
+    job leaves the active queue.
+
+    When ``dupe_key`` is set (#372 round 2) the poll follows NZBGet's automatic
+    failover: if the tracked member fails, a promoted backup (a new active NZBID
+    under the same DupeKey) is tracked instead, or an already-completed group
+    member is played, before the resolve is reported failed. ``fleet`` carries
+    two callables: ``is_submitting`` (the backup worker's ``Thread.is_alive``)
+    keeps the poll from declaring the group exhausted while backups are still
+    being appended, and ``owned_nzbids`` (the pick + the worker's appends so
+    far) scopes failover tracking to THIS resolve -- an overlapping play of the
+    same release shares the stable DupeKey, and its active download must never
+    be adopted (or later canceled). NZBGet preserves NZBIDs across
+    history<->queue moves, so our promoted backup always surfaces under an id
+    we submitted.
 
     ``timeout`` is enforced against the wall clock (``time.monotonic``) so a
     slow/stalled NZBGet box whose RPCs take far longer than ``interval``
     can't stretch the configured budget — see the sibling nzbdav poll loop.
     """
     deadline = time.monotonic() + timeout
+    state = {
+        "current": nzbid,
+        "promotion_deadline": None,
+        "exclude": None,
+        "paused_nzbids": (),
+    }
+    if dupe_key:
+        state["stale_successes"] = _preexisting_success_ids(dupe_key, settings_getter)
     while time.monotonic() < deadline:
         if dialog.iscanceled():
-            return {"outcome": "canceled"}
-        group = nzbget_api.group_status(nzbid, settings_getter=settings_getter)
-        if group["present"]:
-            _update_active_dialog(dialog, group)
-        else:
-            terminal = _poll_history_outcome(nzbid, dialog, settings_getter)
-            if terminal is not None:
-                return terminal
+            # Carry the CURRENTLY tracked NZBID (the promoted backup once
+            # failover switched; None in group-follow mode) and any
+            # paused-promoted member ids, so the cancel path can final-delete
+            # exactly this resolve's downloads.
+            return {
+                "outcome": "canceled",
+                "nzbid": state["current"],
+                "paused_nzbids": state["paused_nzbids"],
+            }
+        terminal = _poll_tick(state, dialog, settings_getter, dupe_key, fleet)
+        if terminal is not None:
+            return terminal
         if monitor.waitForAbort(interval):
             return {"outcome": "aborted"}
     return {"outcome": "timeout"}
+
+
+def _preexisting_success_ids(dupe_key, settings_getter):
+    """Same-key SUCCESS rows already in history when the poll starts (#372 r4).
+
+    Group-follow must IGNORE them: they predate this resolve (their files may
+    be long gone -- the picker's reuse probe already declined them), and
+    playing one would fail "No video file found" instead of waiting for this
+    fleet's own member to complete. Best-effort: an RPC error yields ``()``
+    (fail-open to the pre-round-4 behavior).
+    """
+    try:
+        return tuple(
+            nzbget_api.success_ids_by_dupekey(dupe_key, settings_getter=settings_getter)
+        )
+    except Exception:  # pylint: disable=broad-except
+        return ()
 
 
 def _update_active_dialog(dialog, group):
@@ -306,22 +171,156 @@ def _update_active_dialog(dialog, group):
         dialog.update(group["percent"], _string(30219))
 
 
-def _poll_history_outcome(nzbid, dialog, settings_getter):
-    """Resolve a job that has left the queue via the NZBGet history.
+def _poll_tick(state, dialog, settings_getter, dupe_key, fleet=None):
+    """One poll iteration. Returns a terminal outcome dict, or None to continue.
 
-    Returns the terminal outcome dict (success/failed) once the history row
-    appears, or ``None`` during the brief queue->history hand-off gap (after
-    showing post-processing) so the poll loop keeps waiting.
+    Tracks ``state["current"]`` (the NZBID being followed). When it leaves the
+    queue as a failure and ``dupe_key`` is set, drops into group-follow mode
+    (``current=None``): plays an already-completed group member, or switches to a
+    promoted backup, or -- if none appears within ``_PROMOTION_GRACE`` -- reports
+    the group failed.
     """
-    hist = nzbget_api.history_status(nzbid, settings_getter=settings_getter)
-    if hist["present"]:
-        if hist["success"]:
-            return {"outcome": "success", "dest_dir": hist["dest_dir"]}
+    if state["current"] is not None:
+        outcome = _tick_tracked_member(state, dialog, settings_getter, dupe_key)
+        if outcome is not _FOLLOW_GROUP:
+            return outcome
+    return _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet)
+
+
+# Sentinel returned by _tick_tracked_member so "the tracked member failed but
+# its DupeKey group may fail over" is distinguishable from both a terminal
+# outcome dict and the plain keep-waiting None.
+_FOLLOW_GROUP = object()
+
+
+def _tick_tracked_member(state, dialog, settings_getter, dupe_key):
+    """Poll the currently tracked NZBID (the ``state["current"]`` branch).
+
+    Returns a terminal outcome dict, None to keep waiting, or ``_FOLLOW_GROUP``
+    when the member failed under a ``dupe_key`` and the caller must drop into
+    group-follow mode for this same tick (no extra poll interval is lost).
+    """
+    current = state["current"]
+    group = nzbget_api.group_status(current, settings_getter=settings_getter)
+    if group["present"]:
+        _update_active_dialog(dialog, group)
+        state["promotion_deadline"] = None
+        return None
+    hist = nzbget_api.history_status(current, settings_getter=settings_getter)
+    if not hist["present"]:
+        # Not in queue, not yet in history — brief hand-off gap; keep waiting.
+        dialog.update(100, _string(30219))
+        return None
+    if hist["success"]:
+        return {"outcome": "success", "dest_dir": hist["dest_dir"]}
+    if not dupe_key:
         return {"outcome": "failed", "status": hist["status"]}
-    # Not in queue, not yet in history — brief gap during the hand-off; show
-    # post-processing and keep waiting.
+    # The tracked member failed but a DupeKey group may fail over. Remember
+    # its id: NZBGet's queue->history transition is not atomic, so it can
+    # still linger in listgroups for a tick -- exclude it below so the
+    # promotion scan can't re-select the failed member as its own promotion.
+    state["exclude"] = current
+    state["current"] = None
+    state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
+    return _FOLLOW_GROUP
+
+
+def _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet):
+    """Group-follow mode: the tracked member failed; follow the DupeKey group.
+
+    Plays an already-completed group member, re-tracks a promoted backup THIS
+    resolve owns, or -- once the promotion grace expires with nothing pending
+    -- reports the group exhausted. A foreign same-key active (an overlapping
+    play of the same release) is never adopted: the poll holds instead, its
+    SUCCESS is played via the history lookup, and its failure frees the key
+    for OUR parked backups.
+    """
+    succeeded = nzbget_api.history_success_by_dupekey(
+        dupe_key,
+        exclude_nzbids=state.get("stale_successes"),
+        settings_getter=settings_getter,
+    )
+    if succeeded["present"]:
+        return {"outcome": "success", "dest_dir": succeeded["dest_dir"]}
+    promoted = nzbget_api.active_group_by_dupekey(
+        dupe_key, exclude_nzbid=state["exclude"], settings_getter=settings_getter
+    )
+    if _adopt_owned_promotion(state, dialog, promoted, fleet):
+        return None
+    foreign_active = promoted["present"]
+    state["paused_nzbids"] = _owned_paused_ids(promoted, fleet)
+    if (
+        state["promotion_deadline"] is not None
+        and time.monotonic() >= state["promotion_deadline"]
+    ):
+        if not _promotion_still_pending(promoted, fleet, foreign_active):
+            # No backup was promoted within the grace window -> group exhausted.
+            return {"outcome": "failed", "status": "FAILURE/DUPE"}
+        # A promotion can still materialize: extend the grace so it keeps its
+        # window (bounded by the outer poll timeout either way).
+        state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
     dialog.update(100, _string(30219))
     return None
+
+
+def _adopt_owned_promotion(state, dialog, promoted, fleet):
+    """Track a promoted backup THIS resolve owns; False otherwise (#372 r5).
+
+    A present-but-foreign active (an overlapping play of this release under
+    the same stable DupeKey) is left to the caller to HOLD on -- it must never
+    become ``state["current"]``, which the cancel path final-deletes.
+    """
+    if not promoted["present"] or not _owned_nzbid(promoted["nzbid"], fleet):
+        return False
+    state["current"] = promoted["nzbid"]
+    state["promotion_deadline"] = None
+    state["paused_nzbids"] = ()
+    _update_active_dialog(dialog, promoted)
+    return True
+
+
+def _owned_paused_ids(promoted, fleet):
+    """This resolve's paused-promoted member ids from the promotion scan.
+
+    Foreign paused same-key rows (another play's) are dropped -- they must
+    never reach the cancel set.
+    """
+    return tuple(
+        nzbid
+        for nzbid in promoted.get("paused_nzbids") or ()
+        if _owned_nzbid(nzbid, fleet)
+    )
+
+
+def _owned_nzbid(nzbid, fleet):
+    """Whether ``nzbid`` belongs to THIS resolve (#372 round 5).
+
+    ``fleet["owned_nzbids"]`` returns the pick plus every backup the worker has
+    appended so far; NZBGet preserves NZBIDs across history<->queue moves, so a
+    promoted backup of OURS always matches. Without a fleet (plain polls,
+    direct test calls) everything counts as owned -- the pre-round-5 behavior.
+    """
+    owned = (fleet or {}).get("owned_nzbids")
+    if owned is None:
+        return True
+    return nzbid in tuple(owned())
+
+
+def _promotion_still_pending(promoted, fleet, foreign_active=False):
+    """True while group exhaustion must NOT be declared at grace expiry.
+
+    Three waits: the backup worker is still appending candidates (a
+    fast-failing pick can beat a slow indexer's 30s NZB fetch); a same-key
+    member sits PAUSED in the queue (e.g. NZBGet globally paused when the
+    backup was promoted) -- it can still resume; or a FOREIGN same-key active
+    exists (an overlapping play of this release) -- its outcome will either
+    hand us a playable SUCCESS or free the key for our backups. All bounded by
+    the outer poll timeout.
+    """
+    is_submitting = (fleet or {}).get("is_submitting")
+    if is_submitting is not None and is_submitting():
+        return True
+    return foreign_active or bool(promoted.get("paused_present"))
 
 
 _DEFAULT_TIMEOUT = 3600
@@ -424,26 +423,69 @@ def _reuse_completed_job(
     )
 
 
-def _handle_poll_failure(outcome, nzbid, settings_getter, on_failure):
+def _handle_poll_failure(
+    outcome,
+    nzbid,
+    settings_getter,
+    on_failure,
+    cancel_event=None,
+    poll_result=None,
+    submitted_nzbids=None,
+):
     """Dispatch a non-success poll outcome to its failure callback.
 
     Returns ``(handled, leave_job)``: ``handled`` is True when ``outcome`` was
     a terminal failure (the caller returns), ``leave_job`` documents the
     timeout/abort policy of deliberately NOT canceling the job so it can
     finish for a later retry. The success outcome returns ``(False, False)``
-    so the caller proceeds to the SMB resolve.
+    so the caller proceeds to the SMB resolve. ``poll_result`` (the poll's
+    terminal dict) carries the currently tracked member and any
+    paused-promoted member ids; ``submitted_nzbids`` are the backup worker's
+    appends so far.
     """
     if outcome in ("timeout", "aborted"):
         on_failure(_string(30101))
         return True, True
     if outcome == "canceled":
-        nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
+        if cancel_event is not None:
+            cancel_event.set()  # stop the backup worker first
+        nzbget_api.cancel_jobs(
+            _canceled_resolve_nzbids(nzbid, poll_result, submitted_nzbids),
+            settings_getter=settings_getter,
+        )
         on_failure(None)
         return True, False
     if outcome == "failed":
         on_failure(_string(30220))
         return True, False
     return False, False
+
+
+def _canceled_resolve_nzbids(nzbid, poll_result, submitted_nzbids):
+    """Every NZBID this resolve may have running at cancel (#372 round 5).
+
+    ID-SCOPED, never a whole-DupeKey sweep: an overlapping play of the same
+    release (another client, or an already-queued retry) shares the stable
+    DupeKey and must survive this cancel. Covers the tracked member (the
+    promoted backup once failover switched), any paused-promoted members (a
+    promotion that landed while NZBGet was paused never becomes tracked), the
+    worker's submitted backups (the parked hidden DUP rows -- ``cancel_jobs``
+    deletes history before queue, so nothing of OURS is left to promote; a
+    manual final-delete does not trigger NZBGet's failover), and the original
+    pick. An append still in flight at cancel is covered by the worker's own
+    drain cleanup.
+    """
+    result = poll_result or {}
+    ids = []
+    for candidate in [
+        result.get("nzbid"),
+        *(result.get("paused_nzbids") or ()),
+        *(submitted_nzbids or []),
+        nzbid,
+    ]:
+        if candidate is not None and candidate not in ids:
+            ids.append(candidate)
+    return ids
 
 
 def _resolve_completed_smb(
@@ -481,6 +523,15 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         self.settings_getter = None
         self.on_success = None
         self.on_failure = None
+        # NZBGet Smart-Duplicates submission (#372): the picker-computed
+        # {"key","pick_score","backups"} dict, threaded from the resolve params.
+        self.dupe = None
+        # Set on user-cancel so the background backup worker stops submitting
+        # more duplicates (#372 round 2).
+        self.cancel_event = threading.Event()
+        # NZBIDs the backup worker has appended so far -- the cancel path
+        # deletes exactly these (plus pick/tracked), never a whole-key sweep.
+        self.submitted_nzbids = []
 
 
 def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
@@ -519,7 +570,13 @@ def _close_dialog(dialog):
 
 
 def _build_submit_ctx(
-    settings_getter, smb_root, dialog, timeout, on_success, on_failure
+    settings_getter,
+    smb_root,
+    dialog,
+    timeout,
+    on_success,
+    on_failure,
+    dupe=None,
 ):
     """Read the per-submit NZBGet context once for the submit flow.
 
@@ -528,7 +585,14 @@ def _build_submit_ctx(
     target must include that segment), and the global completed base used to
     map a history DestDir onto the SMB root regardless of category/custom
     layout (None when unavailable -> nzbget_smb_target falls back). Attaches
-    the flow's getter + callbacks so the submit helpers can stay low-arity.
+    the flow's getter + callbacks so the submit helpers can stay low-arity, plus
+    the picker-computed NZBGet Smart-Duplicates submission (#372).
+
+    The getter is kept AS-IS (``None`` on the real Kodi handle-based path): the
+    primary submit + poll must read auth via ``_get_settings``'s raw
+    ``xbmcaddon`` branch so an intentionally blank ``nzbget_username`` is not
+    default-substituted to ``nzbget``. The background backup thread instead reads
+    from a main-thread SNAPSHOT (see ``_spawn_dupe_backups``).
     """
     interval = _read_poll_interval(settings_getter)
     _u, _user, _pw, category = nzbget_api._get_settings(settings_getter=settings_getter)
@@ -537,6 +601,7 @@ def _build_submit_ctx(
     ctx.settings_getter = settings_getter
     ctx.on_success = on_success
     ctx.on_failure = on_failure
+    ctx.dupe = dupe
     return ctx
 
 
@@ -548,14 +613,37 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     reuse an existing job by name here: a bare name match has no
     size/pubdate/indexer corroboration, so a same-named repost could play the
     wrong job; NZBGet's own dupe handling covers a still-in-flight re-submit.
+
+    When the picker computed a Smart-Duplicates submission (#372), the pick is
+    submitted with the shared DupeKey at the top DupeScore so NZBGet keeps it the
+    active download (the one this poll tracks); otherwise it is a plain single
+    submit unchanged from pre-#372. Once queued, the release's duplicate backups
+    are submitted off-thread so NZBGet can fail over to one if the pick is
+    unrepairable.
     """
     getter = ctx.settings_getter
-    nzbid, error = nzbget_api.append_nzb(nzb_url, title, settings_getter=getter)
+    dupe_key = (ctx.dupe or {}).get("key") or ""
+    nzbid, error = _submit_pick(ctx, nzb_url, title, dupe_key)
     if not nzbid:
         # Surface the specific (already-redacted) NZBGet message — auth vs dupe
         # vs "append returned 0" — per the spec error table, else the generic.
         ctx.on_failure(error or _string(30222))
         return False
+
+    # Pick is queued at the top DupeScore: submit the release's duplicate backups
+    # so NZBGet can fail over to one if the pick is unrepairable (#372). Off-thread
+    # so it never delays the poll below; scores (not order) keep the pick active.
+    backups_thread = _spawn_dupe_backups(ctx) if dupe_key else None
+
+    def _backups_still_submitting():
+        # Don't exhaust the failover grace while the backup worker is still
+        # appending candidates (a fast-fail pick can beat a slow indexer).
+        return backups_thread is not None and backups_thread.is_alive()
+
+    def _owned_fleet_nzbids():
+        # The pick plus every backup appended so far -- failover tracking and
+        # cancel stay scoped to exactly this resolve's downloads.
+        return [nzbid] + list(getattr(ctx, "submitted_nzbids", None) or [])
 
     result = poll_nzbget_job(
         nzbid,
@@ -564,19 +652,61 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         ctx.timeout,
         settings_getter=getter,
         interval=ctx.interval,
+        dupe_key=dupe_key,
+        fleet={
+            "is_submitting": _backups_still_submitting,
+            "owned_nzbids": _owned_fleet_nzbids,
+        },
     )
     handled, leave_job = _handle_poll_failure(
-        result["outcome"], nzbid, getter, ctx.on_failure
+        result["outcome"],
+        nzbid,
+        getter,
+        ctx.on_failure,
+        cancel_event=ctx.cancel_event,
+        poll_result=result,
+        submitted_nzbids=list(getattr(ctx, "submitted_nzbids", None) or []),
     )
     if handled:
         return leave_job
+    _play_completed_download(
+        ctx, result["dest_dir"], title, download_pubdate, download_size
+    )
+    return leave_job
 
-    # Download completed (now SUCCESS history): record the post-date before the
-    # SMB mapping, which can still fail without un-completing it. Fail-soft.
+
+def _submit_pick(ctx, nzb_url, title, dupe_key):
+    """Append the pick, with the #372 Smart-Duplicates fields when computed.
+
+    The pick carries the shared DupeKey at the top DupeScore so NZBGet keeps it
+    the active download; without a ``dupe_key`` this is a plain single submit
+    unchanged from pre-#372. Returns ``append_nzb``'s ``(nzbid, error)``.
+    """
+    dupe = ctx.dupe or {}
+    return nzbget_api.append_nzb(
+        nzb_url,
+        title,
+        settings_getter=ctx.settings_getter,
+        dupe_key=dupe_key,
+        dupe_score=int(dupe.get("pick_score") or 0) if dupe_key else 0,
+        dupe_mode="SCORE",
+    )
+
+
+def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_size):
+    """Ledger-record the completed download, then resolve+play it over SMB.
+
+    Recording happens BEFORE the SMB mapping, which can still fail without
+    un-completing the download (fail-soft): the picker's "DL" tag must reflect
+    the box's history even when the share is unreachable right now. The whole
+    fleet's post-dates are recorded, not just the pick's: failover can complete
+    under ANY same-name backup (a different upload with its own pubdate), and
+    the picker's repost-guard only tags rows whose pubdate the ledger knows.
+    """
     record_download(title, download_pubdate, download_size)
-
+    _record_fleet_pubdates(getattr(ctx, "dupe", None), title)
     video_url = _resolve_completed_smb(
-        result["dest_dir"],
+        dest_dir,
         ctx.smb_root,
         ctx.category,
         ctx.completed_base,
@@ -585,10 +715,26 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     )
     if not video_url:
         ctx.on_failure(_string(30223))
-        return leave_job
-
+        return
     ctx.on_success(video_url)
-    return leave_job
+
+
+def _record_fleet_pubdates(dupe, title):
+    """Ledger-record every same-name backup's post-date under ``title`` (#372).
+
+    Any fleet member can become the SUCCESS row the next picker render reuses
+    (the poll follows a promoted backup), and each is a different upload with
+    its own pubdate. Recording the whole fleet keeps the repost-guard's
+    purpose intact -- an unrelated same-name repost from another day is still
+    rejected (its pubdate is never recorded). Loader extras need no entries:
+    NZBHydra collapsed them, so no picker row carries their pubdate; their
+    completion tags through the pick's own recorded row. record_download is
+    best-effort and dedups epochs, so double-recording is harmless.
+    """
+    for backup in (dupe or {}).get("backups") or []:
+        pubdate = backup.get("pubdate")
+        if pubdate:
+            record_download(title, pubdate)
 
 
 def _run_nzbget_backend(
@@ -597,19 +743,21 @@ def _run_nzbget_backend(
     settings_getter,
     on_success,
     on_failure,
-    download_pubdate=None,
-    download_size=None,
+    download_identity=(None, None),
     completed_job=None,
+    dupe=None,
 ):
     """Shared NZBGet flow: reuse completed files, else submit -> poll -> SMB.
 
     Calls ``on_success(video_url)`` exactly once on success, or
     ``on_failure(message)`` exactly once on any failure (``message`` is ``None``
     for the silent cancel exit); this core guarantees a single terminal callback
-    and owns the progress dialog. ``download_pubdate``/``download_size`` record
-    the selected result's identity in the ledger for the picker's "DL" tag;
-    ``completed_job`` is the corroborated history match played directly (nothing
-    submitted) when its ``dest_dir`` still holds a playable video over SMB.
+    and owns the progress dialog. ``download_identity`` is the
+    ``(download_pubdate, download_size)`` pair recording the selected result's
+    identity in the ledger for the picker's "DL" tag; ``completed_job`` is the
+    corroborated history match played directly (nothing submitted) when its
+    ``dest_dir`` still holds a playable video over SMB. ``dupe`` is the
+    picker-computed NZBGet Smart-Duplicates submission (#372).
     """
     dialog = None
     leave_job = False
@@ -622,10 +770,16 @@ def _run_nzbget_backend(
         dialog = xbmcgui.DialogProgress()
         dialog.create(_addon_name(), _string(30218))
         ctx = _build_submit_ctx(
-            settings_getter, smb_root, dialog, timeout, on_success, on_failure
+            settings_getter,
+            smb_root,
+            dialog,
+            timeout,
+            on_success,
+            on_failure,
+            dupe=dupe,
         )
         leave_job = _reuse_or_submit(
-            ctx, nzb_url, title, completed_job, (download_pubdate, download_size)
+            ctx, nzb_url, title, completed_job, download_identity
         )
     except Exception as exc:  # pylint: disable=broad-except
         # str(exc) can echo the indexer nzb_url (apikey=...) or the
@@ -709,9 +863,12 @@ def resolve_and_play_nzbget(
         settings_getter,
         on_success,
         on_failure,
-        download_pubdate=params.get("_download_pubdate"),
-        download_size=params.get("_download_size"),
+        download_identity=(
+            params.get("_download_pubdate"),
+            params.get("_download_size"),
+        ),
         completed_job=params.get("_nzbget_completed_job"),
+        dupe=params.get("_nzbget_dupe"),
     )
 
 
@@ -753,7 +910,10 @@ def play_nzbget(
         settings_getter,
         on_success,
         on_failure,
-        download_pubdate=resolve_params.get("_download_pubdate"),
-        download_size=resolve_params.get("_download_size"),
+        download_identity=(
+            resolve_params.get("_download_pubdate"),
+            resolve_params.get("_download_size"),
+        ),
         completed_job=resolve_params.get("_nzbget_completed_job"),
+        dupe=resolve_params.get("_nzbget_dupe"),
     )
