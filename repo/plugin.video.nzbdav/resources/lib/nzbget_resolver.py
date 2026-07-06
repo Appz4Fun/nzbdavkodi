@@ -108,16 +108,25 @@ def poll_nzbget_job(
     can't stretch the configured budget — see the sibling nzbdav poll loop.
     """
     deadline = time.monotonic() + timeout
-    state = {"current": nzbid, "promotion_deadline": None, "exclude": None}
+    state = {
+        "current": nzbid,
+        "promotion_deadline": None,
+        "exclude": None,
+        "paused_nzbids": (),
+    }
     if dupe_key:
         state["stale_successes"] = _preexisting_success_ids(dupe_key, settings_getter)
     while time.monotonic() < deadline:
         if dialog.iscanceled():
             # Carry the CURRENTLY tracked NZBID (the promoted backup once
-            # failover switched; None in group-follow mode) so the cancel path
-            # can final-delete it directly -- the DupeKey sweep alone can miss
-            # it on a transient listgroups error.
-            return {"outcome": "canceled", "nzbid": state["current"]}
+            # failover switched; None in group-follow mode) and any
+            # paused-promoted member ids, so the cancel path can final-delete
+            # exactly this resolve's downloads.
+            return {
+                "outcome": "canceled",
+                "nzbid": state["current"],
+                "paused_nzbids": state["paused_nzbids"],
+            }
         terminal = _poll_tick(state, dialog, settings_getter, dupe_key, is_submitting)
         if terminal is not None:
             return terminal
@@ -232,8 +241,10 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting):
     if promoted["present"]:
         state["current"] = promoted["nzbid"]
         state["promotion_deadline"] = None
+        state["paused_nzbids"] = ()
         _update_active_dialog(dialog, promoted)
         return None
+    state["paused_nzbids"] = tuple(promoted.get("paused_nzbids") or ())
     if (
         state["promotion_deadline"] is not None
         and time.monotonic() >= state["promotion_deadline"]
@@ -367,9 +378,9 @@ def _handle_poll_failure(
     nzbid,
     settings_getter,
     on_failure,
-    dupe_key="",
     cancel_event=None,
-    tracked_nzbid=None,
+    poll_result=None,
+    submitted_nzbids=None,
 ):
     """Dispatch a non-success poll outcome to its failure callback.
 
@@ -377,8 +388,10 @@ def _handle_poll_failure(
     a terminal failure (the caller returns), ``leave_job`` documents the
     timeout/abort policy of deliberately NOT canceling the job so it can
     finish for a later retry. The success outcome returns ``(False, False)``
-    so the caller proceeds to the SMB resolve. ``tracked_nzbid`` is the poll's
-    currently followed member (the promoted backup once failover switched).
+    so the caller proceeds to the SMB resolve. ``poll_result`` (the poll's
+    terminal dict) carries the currently tracked member and any
+    paused-promoted member ids; ``submitted_nzbids`` are the backup worker's
+    appends so far.
     """
     if outcome in ("timeout", "aborted"):
         on_failure(_string(30101))
@@ -386,7 +399,10 @@ def _handle_poll_failure(
     if outcome == "canceled":
         if cancel_event is not None:
             cancel_event.set()  # stop the backup worker first
-        _cancel_resolve_downloads(nzbid, tracked_nzbid, dupe_key, settings_getter)
+        nzbget_api.cancel_jobs(
+            _canceled_resolve_nzbids(nzbid, poll_result, submitted_nzbids),
+            settings_getter=settings_getter,
+        )
         on_failure(None)
         return True, False
     if outcome == "failed":
@@ -395,21 +411,31 @@ def _handle_poll_failure(
     return False, False
 
 
-def _cancel_resolve_downloads(nzbid, tracked_nzbid, dupe_key, settings_getter):
-    """Delete everything a canceled resolve may have running (#372 rounds 2-3).
+def _canceled_resolve_nzbids(nzbid, poll_result, submitted_nzbids):
+    """Every NZBID this resolve may have running at cancel (#372 round 5).
 
-    DupeKey sweep first (hidden parked backups deleted so NZBGet has nothing to
-    promote into the gap), then the currently tracked NZBID directly (the
-    promoted backup once failover switched -- the sweep alone can miss it on a
-    transient listgroups error), then the original pick (its Kind=NZB history
-    failure row is skipped by the sweep's Kind=DUP-only filter). Each step is
-    best-effort; together they cover each other's blind spots.
+    ID-SCOPED, never a whole-DupeKey sweep: an overlapping play of the same
+    release (another client, or an already-queued retry) shares the stable
+    DupeKey and must survive this cancel. Covers the tracked member (the
+    promoted backup once failover switched), any paused-promoted members (a
+    promotion that landed while NZBGet was paused never becomes tracked), the
+    worker's submitted backups (the parked hidden DUP rows -- ``cancel_jobs``
+    deletes history before queue, so nothing of OURS is left to promote; a
+    manual final-delete does not trigger NZBGet's failover), and the original
+    pick. An append still in flight at cancel is covered by the worker's own
+    drain cleanup.
     """
-    if dupe_key:
-        nzbget_api.cancel_dupekey_group(dupe_key, settings_getter=settings_getter)
-    if tracked_nzbid is not None and tracked_nzbid != nzbid:
-        nzbget_api.cancel_job(tracked_nzbid, settings_getter=settings_getter)
-    nzbget_api.cancel_job(nzbid, settings_getter=settings_getter)
+    result = poll_result or {}
+    ids = []
+    for candidate in [
+        result.get("nzbid"),
+        *(result.get("paused_nzbids") or ()),
+        *(submitted_nzbids or []),
+        nzbid,
+    ]:
+        if candidate is not None and candidate not in ids:
+            ids.append(candidate)
+    return ids
 
 
 def _resolve_completed_smb(
@@ -453,6 +479,9 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         # Set on user-cancel so the background backup worker stops submitting
         # more duplicates (#372 round 2).
         self.cancel_event = threading.Event()
+        # NZBIDs the backup worker has appended so far -- the cancel path
+        # deletes exactly these (plus pick/tracked), never a whole-key sweep.
+        self.submitted_nzbids = []
 
 
 def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
@@ -576,9 +605,9 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         nzbid,
         getter,
         ctx.on_failure,
-        dupe_key=dupe_key,
         cancel_event=ctx.cancel_event,
-        tracked_nzbid=result.get("nzbid"),
+        poll_result=result,
+        submitted_nzbids=list(getattr(ctx, "submitted_nzbids", None) or []),
     )
     if handled:
         return leave_job

@@ -371,10 +371,14 @@ def _spawn_dupe_backups(ctx):
         )
         return None
     cancel_event = ctx.cancel_event
+    # Share the appended-ids list with the resolve thread: the cancel path
+    # deletes exactly these (id-scoped, never a whole-DupeKey sweep).
+    submitted_ids = getattr(ctx, "submitted_nzbids", None)
+    if submitted_ids is None:
+        submitted_ids = []
 
     def _worker():
         reached_submit = False
-        submitted_ids = []
         try:
             if _core._dupe_worker_should_skip(getter, cancel_event):
                 return
@@ -393,10 +397,10 @@ def _spawn_dupe_backups(ctx):
         finally:
             # If a cancel arrived while a backup's append was already in flight,
             # that backup can land in NZBGet AFTER _handle_poll_failure's
-            # one-shot cancel_dupekey_group sweep -- and NZBGet would then
-            # promote the orphan as the group's new active download. Clean up
-            # once the worker has drained, scoped to this resolve's own
-            # submissions (#372 r2 cancel-race, r3 retry-race).
+            # one-shot id-scoped cancel -- and NZBGet would then promote the
+            # orphan as the group's new active download. Clean up once the
+            # worker has drained, scoped to this resolve's own submissions
+            # (#372 r2 cancel-race, r3 retry-race).
             if reached_submit and cancel_event.is_set() and submitted_ids:
                 _core._cleanup_canceled_submissions(getter, submitted_ids)
 

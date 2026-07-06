@@ -594,7 +594,7 @@ def test_resolve_cancel_deletes_job_and_resolves_false():
         "resources.lib.nzbget_resolver.poll_nzbget_job",
         return_value={"outcome": "canceled"},
     ), patch(
-        "resources.lib.nzbget_resolver.nzbget_api.cancel_job"
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs"
     ) as cancel:
         resolve_and_play_nzbget(
             7,
@@ -602,6 +602,7 @@ def test_resolve_cancel_deletes_job_and_resolves_false():
             settings_getter=_full_settings(),
         )
     cancel.assert_called_once()
+    assert cancel.call_args.args[0] == [42]  # id-scoped: just the pick
     assert plugin.setResolvedUrl.call_args[0][1] is False
 
 
@@ -1517,30 +1518,25 @@ def test_poll_canceled_carries_tracked_nzbid_after_failover():
 
 
 def test_handle_poll_failure_cancel_also_cancels_promoted_backup():
-    # With failover already switched to backup 9, cancel must delete the group,
-    # then the tracked backup directly, then the original pick (whose Kind=NZB
-    # failure row the sweep's Kind=DUP-only filter skips).
+    # With failover already switched to backup 9, cancel must delete the
+    # tracked backup as well as the original pick.
     import threading
 
-    calls = []
+    deleted = []
     with patch(
-        "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
-        side_effect=lambda k, settings_getter=None: calls.append(("group", k)),
-    ), patch(
-        "resources.lib.nzbget_resolver.nzbget_api.cancel_job",
-        side_effect=lambda n, settings_getter=None: calls.append(("job", n)),
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs",
+        side_effect=lambda ids, settings_getter=None: deleted.append(list(ids)),
     ):
         handled, leave = _handle_poll_failure(
             "canceled",
             5,
             _settings({}),
             lambda m: None,
-            dupe_key="k",
             cancel_event=threading.Event(),
-            tracked_nzbid=9,
+            poll_result={"outcome": "canceled", "nzbid": 9},
         )
     assert (handled, leave) == (True, False)
-    assert calls == [("group", "k"), ("job", 9), ("job", 5)]
+    assert deleted == [[9, 5]]  # tracked backup first, then the pick
 
 
 def test_poll_holds_failover_while_promotion_sits_paused():
@@ -1594,28 +1590,21 @@ def test_poll_without_dupe_key_fails_on_primary_failure_unchanged():
     act.assert_not_called()  # never consults the group without a dupe_key
 
 
-def test_handle_poll_failure_cancel_deletes_group_and_stops_worker():
+def test_handle_poll_failure_cancel_deletes_own_jobs_and_stops_worker():
     import threading
 
     ev = threading.Event()
-    calls = []
+    deleted = []
     with patch(
-        "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
-        side_effect=lambda k, settings_getter=None: calls.append(("group", k)),
-    ), patch(
-        "resources.lib.nzbget_resolver.nzbget_api.cancel_job",
-        side_effect=lambda n, settings_getter=None: calls.append(("job", n)),
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs",
+        side_effect=lambda ids, settings_getter=None: deleted.append(list(ids)),
     ):
         handled, leave = _handle_poll_failure(
-            "canceled", 5, _settings({}), lambda m: None, dupe_key="k", cancel_event=ev
+            "canceled", 5, _settings({}), lambda m: None, cancel_event=ev
         )
     assert (handled, leave) == (True, False)
     assert ev.is_set()  # backup worker signaled to stop
-    # Group sweep FIRST (backups deleted so nothing can be promoted), then the
-    # tracked NZBID is canceled directly as well: the DupeKey scan alone can
-    # miss the pick (transient listgroups error, or the pick already parked in
-    # history as a Kind=NZB failure row the Kind=DUP-only sweep skips).
-    assert calls == [("group", "k"), ("job", 5)]
+    assert deleted == [[5]]  # id-scoped: only this resolve's pick
 
 
 def test_submit_dupe_backups_stops_on_cancel_event():
@@ -1764,7 +1753,6 @@ def test_spawn_dupe_backups_cleans_own_submissions_on_cancel_after_submit():
     ctx = _dupe_ctx(dupe)
     ctx.cancel_event = ev
     cleaned = []
-    swept = []
 
     def _submit(backups, key, getter, cancel_event=None):
         ev.set()  # cancel observed only after this submit's append is already away
@@ -1777,13 +1765,9 @@ def test_spawn_dupe_backups_cleans_own_submissions_on_cancel_after_submit():
     ), patch(
         "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs",
         side_effect=lambda ids, settings_getter=None: cleaned.append(list(ids)),
-    ), patch(
-        "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
-        side_effect=lambda k, settings_getter=None: swept.append(k),
     ):
         _spawn_dupe_backups(ctx)
     assert cleaned == [[7]]  # exactly this worker's submissions deleted
-    assert not swept  # never a whole-DupeKey sweep (would kill a fresh retry)
 
 
 def test_spawn_dupe_backups_does_not_clean_up_on_normal_completion():
@@ -1800,9 +1784,6 @@ def test_spawn_dupe_backups_does_not_clean_up_on_normal_completion():
     ), patch(
         "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs",
         side_effect=lambda ids, settings_getter=None: cleaned.append(list(ids)),
-    ), patch(
-        "resources.lib.nzbget_resolver.nzbget_api.cancel_dupekey_group",
-        side_effect=lambda k, settings_getter=None: cleaned.append(("sweep", k)),
     ):
         _spawn_dupe_backups(_dupe_ctx(dupe))
     assert not cleaned  # no cancel -> everything submitted is left intact
@@ -1973,3 +1954,60 @@ def test_completed_download_records_fleet_pubdates():
     assert ("The Title", "Mon, 01 Jun 2026 10:00:00 +0000") in recorded  # the pick
     assert ("The Title", "Tue, 02 Jun 2026 11:00:00 +0000") in recorded  # backup
     assert len(recorded) == 2  # pubdate-less backup skipped
+
+
+def test_cancel_is_scoped_to_this_resolves_nzbids():
+    # Cancel must delete exactly the NZBIDs THIS resolve owns -- the pick, the
+    # tracked/promoted member, any paused-promoted member, and the worker's
+    # submitted backups -- never a whole-DupeKey sweep: an overlapping play of
+    # the same release (another client / an already-queued retry) shares the
+    # stable key and must survive this cancel (round-5 review findings:
+    # paused NZBIDs + overlapping resolves).
+    import threading
+
+    deleted = []
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs",
+        side_effect=lambda ids, settings_getter=None: deleted.append(list(ids)),
+    ):
+        handled, leave = _handle_poll_failure(
+            "canceled",
+            5,
+            _settings({}),
+            lambda m: None,
+            cancel_event=threading.Event(),
+            poll_result={"outcome": "canceled", "nzbid": 9, "paused_nzbids": (12,)},
+            submitted_nzbids=[7, 8],
+        )
+    assert (handled, leave) == (True, False)
+    assert deleted == [
+        [9, 12, 7, 8, 5]
+    ]  # tracked, paused, submitted, pick -- ours only
+
+
+def test_poll_canceled_carries_paused_nzbids():
+    # The canceled outcome must carry the paused-promoted member ids seen in
+    # group-follow so the cancel path can delete them directly (the DupeKey
+    # sweep is gone; only ids this resolve owns are ever canceled).
+    dialog = _Dialog()
+
+    def _act(dupe_key, exclude_nzbid=None, settings_getter=None):
+        dialog.canceled = True  # user cancels while the group holds on paused
+        return {"present": False, "paused_present": True, "paused_nzbids": [12]}
+
+    with patch(_GS, side_effect=_seq_group_status({1: [False]})), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+    ), patch(_ACT, side_effect=_act), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
+    assert result["outcome"] == "canceled"
+    assert tuple(result["paused_nzbids"]) == (12,)

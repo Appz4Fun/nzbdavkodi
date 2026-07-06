@@ -526,18 +526,26 @@ def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
     rather than a failed group.
     """
     if not dupe_key:
-        return {"present": False, "paused_present": False}
+        return {"present": False, "paused_present": False, "paused_nzbids": []}
     groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
     if error is not None or not isinstance(groups, list):
-        return {"present": False, "paused_present": False}
-    paused_present = False
+        return {"present": False, "paused_present": False, "paused_nzbids": []}
+    paused_nzbids = []
     for group in groups:
         entry = _promoted_group_entry(group, dupe_key, exclude_nzbid)
         if entry is _PAUSED_MATCH:
-            paused_present = True
+            # Collect the id: a promotion that landed while NZBGet was paused
+            # never becomes the tracked member, but a cancel must still be able
+            # to delete it directly (#372 round 5).
+            if group.get("NZBID") is not None:
+                paused_nzbids.append(group.get("NZBID"))
         elif entry is not None:
             return entry
-    return {"present": False, "paused_present": paused_present}
+    return {
+        "present": False,
+        "paused_present": bool(paused_nzbids),
+        "paused_nzbids": paused_nzbids,
+    }
 
 
 def history_success_by_dupekey(dupe_key, exclude_nzbids=None, settings_getter=None):
@@ -606,70 +614,6 @@ def _success_history_entry(item, dupe_key):
         "nzbid": item.get("NZBID"),
         "dest_dir": _dest_dir(item),
     }
-
-
-def cancel_dupekey_group(dupe_key, settings_getter=None):
-    """Delete every member of a DupeKey group on user-cancel (#372 round 2).
-
-    Removes the parked duplicate backups (hidden ``Kind=DUP`` history records,
-    fetched with ``history(Hidden=true)``) FIRST so NZBGet has nothing to promote,
-    then the queued members (the active pick / a promoted backup). Best-effort --
-    a single ``editqueue`` per bucket deletes all matching NZBIDs at once.
-
-    ``history(Hidden=true)`` also returns VISIBLE rows (a prior ``Kind=NZB``
-    ``SUCCESS/*`` for a stable DupeKey), so the history delete is restricted to
-    ``Kind=DUP``: only untried parked backups can be promoted, and this must never
-    ``HistoryFinalDelete`` a completed success (which would wipe its files).
-    """
-    if not dupe_key:
-        return
-    hist, error = _rpc_call("history", [True], settings_getter=settings_getter)
-    if error is None and isinstance(hist, list):
-        _final_delete(
-            "HistoryFinalDelete",
-            _dup_backup_history_ids(hist, dupe_key),
-            settings_getter,
-        )
-    groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
-    if error is None and isinstance(groups, list):
-        _final_delete(
-            "GroupFinalDelete",
-            _queued_group_ids(groups, dupe_key),
-            settings_getter,
-        )
-
-
-def _dup_backup_history_ids(hist, dupe_key):
-    """NZBIDs of the parked ``Kind=DUP`` backups sharing ``dupe_key``.
-
-    The ``Kind=DUP`` gate is the safety invariant: ``history(Hidden=true)``
-    also returns visible ``Kind=NZB`` rows (e.g. a prior SUCCESS/* for a
-    stable DupeKey), and ``HistoryFinalDelete`` on a completed success would
-    wipe its files. Only untried parked backups can be promoted.
-    """
-    return [
-        item.get("NZBID")
-        for item in hist
-        if isinstance(item, dict)
-        and _dupekey_match(item, dupe_key)
-        and str(item.get("Kind") or "").upper() == "DUP"
-        and item.get("NZBID") is not None
-    ]
-
-
-def _queued_group_ids(groups, dupe_key):
-    """NZBIDs of the queued listgroups members sharing ``dupe_key``.
-
-    Matches the active pick and any promoted backup; no Kind gate needed —
-    listgroups only ever returns queued downloads, never history rows.
-    """
-    return [
-        group.get("NZBID")
-        for group in groups
-        if isinstance(group, dict)
-        and _dupekey_match(group, dupe_key)
-        and group.get("NZBID") is not None
-    ]
 
 
 def _final_delete(command, ids, settings_getter):

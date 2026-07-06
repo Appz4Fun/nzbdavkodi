@@ -90,8 +90,10 @@ copy and repairs that with its own par2. The add-on **follows this failover
 live within the same play**: it tracks the promoted backup (a new download
 under the same duplicate set) and plays it when it completes — or plays a
 backup that already finished — instead of reporting a failed playback.
-Canceling the play removes the whole duplicate set so NZBGet doesn't keep a
-backup running. Beyond the exact same-name reposts, the backup pool also
+Canceling the play removes everything this play submitted or was following
+(the pick, any promoted backup, and the parked backups), so NZBGet doesn't
+keep a backup running -- while another play of the same release stays
+untouched. Beyond the exact same-name reposts, the backup pool also
 includes same-content mirrors and NZBHydra's deferred duplicate uploads as
 lowest-priority backups.
 
