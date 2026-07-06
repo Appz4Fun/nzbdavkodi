@@ -85,7 +85,7 @@ def poll_nzbget_job(
     settings_getter=None,
     interval=_POLL_INTERVAL,
     dupe_key="",
-    is_submitting=None,
+    fleet=None,
 ):
     """Wait for an NZBGet job (or its duplicate group) to reach a terminal state.
 
@@ -97,11 +97,15 @@ def poll_nzbget_job(
     When ``dupe_key`` is set (#372 round 2) the poll follows NZBGet's automatic
     failover: if the tracked member fails, a promoted backup (a new active NZBID
     under the same DupeKey) is tracked instead, or an already-completed group
-    member is played, before the resolve is reported failed. ``is_submitting`` (a
-    predicate, the backup worker's ``Thread.is_alive``) keeps the poll from
-    declaring the group exhausted while backups are still being appended -- a
-    fast-failing pick can hit the promotion grace before a slow indexer's
-    ``append_nzb`` has landed a backup.
+    member is played, before the resolve is reported failed. ``fleet`` carries
+    two callables: ``is_submitting`` (the backup worker's ``Thread.is_alive``)
+    keeps the poll from declaring the group exhausted while backups are still
+    being appended, and ``owned_nzbids`` (the pick + the worker's appends so
+    far) scopes failover tracking to THIS resolve -- an overlapping play of the
+    same release shares the stable DupeKey, and its active download must never
+    be adopted (or later canceled). NZBGet preserves NZBIDs across
+    history<->queue moves, so our promoted backup always surfaces under an id
+    we submitted.
 
     ``timeout`` is enforced against the wall clock (``time.monotonic``) so a
     slow/stalled NZBGet box whose RPCs take far longer than ``interval``
@@ -127,7 +131,7 @@ def poll_nzbget_job(
                 "nzbid": state["current"],
                 "paused_nzbids": state["paused_nzbids"],
             }
-        terminal = _poll_tick(state, dialog, settings_getter, dupe_key, is_submitting)
+        terminal = _poll_tick(state, dialog, settings_getter, dupe_key, fleet)
         if terminal is not None:
             return terminal
         if monitor.waitForAbort(interval):
@@ -167,7 +171,7 @@ def _update_active_dialog(dialog, group):
         dialog.update(group["percent"], _string(30219))
 
 
-def _poll_tick(state, dialog, settings_getter, dupe_key, is_submitting=None):
+def _poll_tick(state, dialog, settings_getter, dupe_key, fleet=None):
     """One poll iteration. Returns a terminal outcome dict, or None to continue.
 
     Tracks ``state["current"]`` (the NZBID being followed). When it leaves the
@@ -180,7 +184,7 @@ def _poll_tick(state, dialog, settings_getter, dupe_key, is_submitting=None):
         outcome = _tick_tracked_member(state, dialog, settings_getter, dupe_key)
         if outcome is not _FOLLOW_GROUP:
             return outcome
-    return _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting)
+    return _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet)
 
 
 # Sentinel returned by _tick_tracked_member so "the tracked member failed but
@@ -221,12 +225,15 @@ def _tick_tracked_member(state, dialog, settings_getter, dupe_key):
     return _FOLLOW_GROUP
 
 
-def _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting):
+def _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet):
     """Group-follow mode: the tracked member failed; follow the DupeKey group.
 
-    Plays an already-completed group member, re-tracks a promoted backup, or --
-    once the promotion grace expires with no backup still being appended --
-    reports the group exhausted.
+    Plays an already-completed group member, re-tracks a promoted backup THIS
+    resolve owns, or -- once the promotion grace expires with nothing pending
+    -- reports the group exhausted. A foreign same-key active (an overlapping
+    play of the same release) is never adopted: the poll holds instead, its
+    SUCCESS is played via the history lookup, and its failure frees the key
+    for OUR parked backups.
     """
     succeeded = nzbget_api.history_success_by_dupekey(
         dupe_key,
@@ -238,18 +245,15 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting):
     promoted = nzbget_api.active_group_by_dupekey(
         dupe_key, exclude_nzbid=state["exclude"], settings_getter=settings_getter
     )
-    if promoted["present"]:
-        state["current"] = promoted["nzbid"]
-        state["promotion_deadline"] = None
-        state["paused_nzbids"] = ()
-        _update_active_dialog(dialog, promoted)
+    if _adopt_owned_promotion(state, dialog, promoted, fleet):
         return None
-    state["paused_nzbids"] = tuple(promoted.get("paused_nzbids") or ())
+    foreign_active = promoted["present"]
+    state["paused_nzbids"] = _owned_paused_ids(promoted, fleet)
     if (
         state["promotion_deadline"] is not None
         and time.monotonic() >= state["promotion_deadline"]
     ):
-        if not _promotion_still_pending(promoted, is_submitting):
+        if not _promotion_still_pending(promoted, fleet, foreign_active):
             # No backup was promoted within the grace window -> group exhausted.
             return {"outcome": "failed", "status": "FAILURE/DUPE"}
         # A promotion can still materialize: extend the grace so it keeps its
@@ -259,18 +263,64 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, is_submitting):
     return None
 
 
-def _promotion_still_pending(promoted, is_submitting):
+def _adopt_owned_promotion(state, dialog, promoted, fleet):
+    """Track a promoted backup THIS resolve owns; False otherwise (#372 r5).
+
+    A present-but-foreign active (an overlapping play of this release under
+    the same stable DupeKey) is left to the caller to HOLD on -- it must never
+    become ``state["current"]``, which the cancel path final-deletes.
+    """
+    if not promoted["present"] or not _owned_nzbid(promoted["nzbid"], fleet):
+        return False
+    state["current"] = promoted["nzbid"]
+    state["promotion_deadline"] = None
+    state["paused_nzbids"] = ()
+    _update_active_dialog(dialog, promoted)
+    return True
+
+
+def _owned_paused_ids(promoted, fleet):
+    """This resolve's paused-promoted member ids from the promotion scan.
+
+    Foreign paused same-key rows (another play's) are dropped -- they must
+    never reach the cancel set.
+    """
+    return tuple(
+        nzbid
+        for nzbid in promoted.get("paused_nzbids") or ()
+        if _owned_nzbid(nzbid, fleet)
+    )
+
+
+def _owned_nzbid(nzbid, fleet):
+    """Whether ``nzbid`` belongs to THIS resolve (#372 round 5).
+
+    ``fleet["owned_nzbids"]`` returns the pick plus every backup the worker has
+    appended so far; NZBGet preserves NZBIDs across history<->queue moves, so a
+    promoted backup of OURS always matches. Without a fleet (plain polls,
+    direct test calls) everything counts as owned -- the pre-round-5 behavior.
+    """
+    owned = (fleet or {}).get("owned_nzbids")
+    if owned is None:
+        return True
+    return nzbid in tuple(owned())
+
+
+def _promotion_still_pending(promoted, fleet, foreign_active=False):
     """True while group exhaustion must NOT be declared at grace expiry.
 
-    Two waits: the backup worker is still appending candidates (a fast-failing
-    pick can beat a slow indexer's 30s NZB fetch), or a same-key member sits
-    PAUSED in the queue (e.g. NZBGet globally paused when the backup was
-    promoted) -- it can still resume, so the group is not exhausted. Both are
-    bounded by the outer poll timeout.
+    Three waits: the backup worker is still appending candidates (a
+    fast-failing pick can beat a slow indexer's 30s NZB fetch); a same-key
+    member sits PAUSED in the queue (e.g. NZBGet globally paused when the
+    backup was promoted) -- it can still resume; or a FOREIGN same-key active
+    exists (an overlapping play of this release) -- its outcome will either
+    hand us a playable SUCCESS or free the key for our backups. All bounded by
+    the outer poll timeout.
     """
+    is_submitting = (fleet or {}).get("is_submitting")
     if is_submitting is not None and is_submitting():
         return True
-    return bool(promoted.get("paused_present"))
+    return foreign_active or bool(promoted.get("paused_present"))
 
 
 _DEFAULT_TIMEOUT = 3600
@@ -590,6 +640,11 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         # appending candidates (a fast-fail pick can beat a slow indexer).
         return backups_thread is not None and backups_thread.is_alive()
 
+    def _owned_fleet_nzbids():
+        # The pick plus every backup appended so far -- failover tracking and
+        # cancel stay scoped to exactly this resolve's downloads.
+        return [nzbid] + list(getattr(ctx, "submitted_nzbids", None) or [])
+
     result = poll_nzbget_job(
         nzbid,
         ctx.dialog,
@@ -598,7 +653,10 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         settings_getter=getter,
         interval=ctx.interval,
         dupe_key=dupe_key,
-        is_submitting=_backups_still_submitting,
+        fleet={
+            "is_submitting": _backups_still_submitting,
+            "owned_nzbids": _owned_fleet_nzbids,
+        },
     )
     handled, leave_job = _handle_poll_failure(
         result["outcome"],

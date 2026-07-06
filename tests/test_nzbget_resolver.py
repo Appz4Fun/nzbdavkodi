@@ -1486,7 +1486,7 @@ def test_poll_waits_for_backup_submitter_before_declaring_failed():
             60,
             interval=0,
             dupe_key="k",
-            is_submitting=_is_submitting,
+            fleet={"is_submitting": _is_submitting},
         )
     assert result["outcome"] == "failed"
     assert calls["n"] >= 3  # it kept waiting while the submitter was alive
@@ -2011,3 +2011,97 @@ def test_poll_canceled_carries_paused_nzbids():
         result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
     assert result["outcome"] == "canceled"
     assert tuple(result["paused_nzbids"]) == (12,)
+
+
+def test_group_follow_never_adopts_a_foreign_active_download():
+    # An overlapping play of the same release shares the stable DupeKey, so
+    # active_group_by_dupekey can return THEIR active download. Group-follow
+    # must not track (or later cancel) an NZBID this resolve doesn't own -- it
+    # holds instead, bounded by the outer timeout; their SUCCESS is played via
+    # the history lookup and their failure frees the key for OUR backups
+    # (review finding: keep failover tracking scoped to this resolve).
+    dialog = _Dialog()
+    foreign = {"present": True, "nzbid": 77, "status": "DOWNLOADING", "percent": 5}
+    act_results = [foreign, {"present": False, "paused_present": False}]
+
+    def _act(dupe_key, exclude_nzbid=None, settings_getter=None):
+        return act_results.pop(0) if act_results else {"present": False}
+
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        _GS, side_effect=_seq_group_status({1: [False]})
+    ), patch(
+        _HS,
+        return_value={
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+    ), patch(
+        _ACT, side_effect=_act
+    ), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            fleet={"owned_nzbids": lambda: (1, 7, 8)},  # 77 is NOT ours
+        )
+    assert result["outcome"] == "failed"
+    # Two _ACT calls prove the foreign-active tick HELD (did not fail, did not
+    # track 77) and only the truly-empty second tick exhausted the group.
+    assert not act_results
+
+
+def test_group_follow_tracks_owned_promoted_backup():
+    # NZBGet preserves NZBIDs across history<->queue moves, so OUR promoted
+    # backup surfaces with the id we submitted -- with an owned filter present
+    # it must still be tracked to success.
+    dialog = _Dialog()
+    hs = {
+        1: {
+            "present": True,
+            "success": False,
+            "status": "FAILURE/HEALTH",
+            "dest_dir": "",
+        },
+        9: {
+            "present": True,
+            "success": True,
+            "status": "SUCCESS/ALL",
+            "dest_dir": "/dl/B",
+        },
+    }
+    with patch(
+        _GS, side_effect=_seq_group_status({1: [False], 9: [True, False]})
+    ), patch(
+        _HS, side_effect=lambda n, settings_getter=None: hs.get(n, {"present": False})
+    ), patch(
+        _ACT,
+        return_value={
+            "present": True,
+            "nzbid": 9,
+            "status": "DOWNLOADING",
+            "percent": 5,
+        },
+    ), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            fleet={"owned_nzbids": lambda: (1, 9)},
+        )
+    assert result == {"outcome": "success", "dest_dir": "/dl/B"}

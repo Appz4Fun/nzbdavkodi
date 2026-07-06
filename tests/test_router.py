@@ -4360,3 +4360,38 @@ def test_same_name_backups_carry_their_own_pubdates():
             selected, [selected, backup_row], {"type": "movie", "imdb": "tt0133093"}
         )
     assert dupe["backups"][0]["pubdate"] == "Tue, 02 Jun 2026 11:00:00 +0000"
+
+
+def test_play_auto_select_attaches_nzbget_completed_hint():
+    # auto_select_best resolves without a picker render, so
+    # _tag_available_nzbget never tagged the row: an already-completed best
+    # release would re-submit -- and with the wall-clock score base NZBGet
+    # would RE-DOWNLOAD it instead of the reuse path playing the existing SMB
+    # files. The auto-select branch must run the NZBGet completed lookup first
+    # (review finding: reuse before auto-select submission).
+    from resources.lib.router_play import _handle_play_auto_select
+
+    best = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    captured = {}
+
+    def fake_resolve(handle, params):
+        captured["params"] = params
+
+    def fake_tag(results, settings_getter=None):
+        for row in results:
+            row["_nzbget_completed_job"] = {"dest_dir": "/dl/done", "bytes": 1}
+        return {}
+
+    with patch("resources.lib.resolver.resolve", side_effect=fake_resolve), patch(
+        "resources.lib.router._nzbget_mode_enabled", return_value=True
+    ), patch("resources.lib.router._tag_available_nzbget", side_effect=fake_tag), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        return_value=None,
+    ), patch(
+        "resources.lib.router._get_addon_setting", _dupe_setting_getter({})
+    ):
+        _handle_play_auto_select(7, best, [best])
+    assert captured["params"]["_nzbget_completed_job"] == {
+        "dest_dir": "/dl/done",
+        "bytes": 1,
+    }

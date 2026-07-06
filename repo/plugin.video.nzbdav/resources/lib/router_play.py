@@ -262,6 +262,32 @@ def _handle_play_filter_and_select(handle, results, title, year, notify, identit
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
 
 
+def _ensure_nzbget_completed_hint(selected, settings_getter=None):
+    """Attach the NZBGet completed-history reuse hint to a picker-less pick.
+
+    Auto-select resolves without a picker render, so ``_tag_available_nzbget``
+    never tagged the row -- an already-completed release would re-submit, and
+    with the wall-clock score base NZBGet would RE-DOWNLOAD it instead of the
+    reuse path playing the existing SMB files. Tags the single row in place
+    (``_attach_selected_result_metadata`` then copies the hint). No-op when the
+    hint is already attached or NZBGet mode is off; best-effort -- a failed
+    lookup degrades to the plain submit.
+    """
+    import resources.lib.router as _router
+
+    if not isinstance(selected, dict) or selected.get("_nzbget_completed_job"):
+        return
+    try:
+        if not _router._nzbget_mode_enabled(settings_getter):
+            return
+        _router._tag_available_nzbget([selected], settings_getter=settings_getter)
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: NZBGet completed lookup for auto-select failed: {}".format(error),
+            xbmc.LOGDEBUG,
+        )
+
+
 def _handle_play_auto_select(handle, best, filtered, identity=None):
     """Resolve the auto-selected best release through the handle-based resolver."""
     import resources.lib.router as _router
@@ -276,6 +302,7 @@ def _handle_play_auto_select(handle, best, filtered, identity=None):
         ),
     }
     _attach_nzbget_dupe(resolver_params, best, filtered, identity)
+    _ensure_nzbget_completed_hint(best)
     _router._attach_selected_result_metadata(resolver_params, best)
     resolve(handle, resolver_params)
 
@@ -683,6 +710,7 @@ def _handle_search_auto_select(params, best, filtered):
         _router._fallback_candidate_loader_for_selection(best, filtered)
     )
     _attach_nzbget_dupe(resolver_params, best, filtered, _identity_from_params(params))
+    _ensure_nzbget_completed_hint(best)
     _router._attach_selected_result_metadata(resolver_params, best)
     resolve_and_play(best["link"], best["title"], params=resolver_params)
 

@@ -38,24 +38,26 @@ def test_hydra_import_does_not_read_kodi_settings(monkeypatch):
         )
         importlib.reload(hydra)
 
-        hydra.xbmcaddon.Addon.assert_called_once_with("plugin.video.nzbdav")
+        # Importing hydra is fully side-effect free: no Addon is even
+        # constructed until a live-Kodi settings read actually happens
+        # (router_search imports this module at module scope).
+        hydra.xbmcaddon.Addon.assert_not_called()
         fake_addon.getSetting.assert_not_called()
 
     importlib.reload(hydra)
 
 
-def test_search_hydra_reuses_module_level_addon_for_kodi_settings(monkeypatch):
+def test_search_hydra_reads_kodi_settings_via_lazy_addon(monkeypatch):
     fake_addon = MagicMock()
     fake_addon.getSetting.side_effect = lambda key: {
         "hydra_url": "http://hydra:5076",
         "hydra_api_key": "testkey",
         "max_results": "33",
     }.get(key, "")
-    monkeypatch.setattr(hydra, "addon", fake_addon, raising=False)
 
     with patch(
         "resources.lib.hydra.xbmcaddon.Addon",
-        side_effect=RuntimeError("should reuse module-level addon"),
+        return_value=fake_addon,
     ) as mock_addon_ctor, patch("resources.lib.hydra._http_get") as mock_http, patch(
         "resources.lib.hydra.load_provider_caps"
     ) as mock_load_provider_caps:
@@ -77,22 +79,23 @@ def test_search_hydra_reuses_module_level_addon_for_kodi_settings(monkeypatch):
 
     assert error is None
     assert len(results) == 2
-    mock_addon_ctor.assert_not_called()
+    mock_addon_ctor.assert_called_with("plugin.video.nzbdav")  # lazy, per read
     assert "limit=33" in mock_http.call_args[0][0]
     fake_addon.getSetting.assert_any_call("hydra_api_key")
     fake_addon.getSetting.assert_any_call("max_results")
 
 
-def test_search_hydra_reuses_module_level_url(monkeypatch):
+def test_search_hydra_reads_url_via_lazy_addon(monkeypatch):
     fake_addon = MagicMock()
     fake_addon.getSetting.side_effect = lambda key: {
         "hydra_url": "http://hydra:5076",
         "hydra_api_key": "testkey",
         "max_results": "25",
     }.get(key, "")
-    monkeypatch.setattr(hydra, "addon", fake_addon, raising=False)
 
-    with patch("resources.lib.hydra._http_get") as mock_http, patch(
+    with patch("resources.lib.hydra.xbmcaddon.Addon", return_value=fake_addon), patch(
+        "resources.lib.hydra._http_get"
+    ) as mock_http, patch(
         "resources.lib.hydra.load_provider_caps"
     ) as mock_load_provider_caps:
         mock_load_provider_caps.return_value = {}
@@ -961,3 +964,22 @@ def test_get_settings_mirrors_schema_default_url_for_raw_getters():
         lambda key, default="": {"hydra_url": "http://box:5076/"}.get(key, default)
     )
     assert url == "http://box:5076"
+
+
+def test_hydra_import_constructs_no_module_scope_addon():
+    # router_search imports hydra at module scope (for _DEFAULT_HYDRA_URL), so
+    # importing hydra must be side-effect free: a module-scope
+    # xbmcaddon.Addon(...) would run during import in RunScript/early-GUI
+    # contexts that deliberately avoid the Kodi settings API until the safe
+    # getter path is reached (review finding: import side effect).
+    assert not hasattr(hydra, "addon")
+    # The live-Kodi branch constructs the addon lazily, per call.
+    fake = MagicMock()
+    fake.getSetting.side_effect = lambda key: {
+        "hydra_url": "http://h:5076/",
+        "hydra_api_key": "k",
+    }.get(key, "")
+    with patch("resources.lib.hydra.xbmcaddon.Addon", return_value=fake) as ctor:
+        url, api_key = hydra._get_settings()
+    assert (url, api_key) == ("http://h:5076", "k")
+    ctor.assert_called_once_with("plugin.video.nzbdav")

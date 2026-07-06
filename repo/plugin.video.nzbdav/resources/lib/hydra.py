@@ -58,7 +58,18 @@ _HYDRA_REQUEST_ERRORS = (
 )
 _SOURCE_URL_ERRORS = (AttributeError, TypeError, ValueError)
 _PUBDATE_ERRORS = (OverflowError, TypeError, ValueError)
-addon = xbmcaddon.Addon("plugin.video.nzbdav")
+
+
+def _addon():
+    """The live Kodi addon, constructed LAZILY per call.
+
+    ``router_search`` imports this module at module scope (for
+    ``_DEFAULT_HYDRA_URL``), so importing hydra must be side-effect free: a
+    module-scope ``xbmcaddon.Addon(...)`` would hit the Kodi settings API
+    during import in RunScript/early-GUI contexts that deliberately defer it
+    until a safe getter path is chosen.
+    """
+    return xbmcaddon.Addon("plugin.video.nzbdav")
 
 
 # _format_request_error, _get_text, _calculate_age imported from
@@ -82,6 +93,7 @@ def _get_settings(settings_getter=None):
         api_key = settings_getter("hydra_api_key", "")
         return configured_url, api_key
 
+    addon = _addon()
     configured_url = addon.getSetting("hydra_url").rstrip("/")
     api_key = addon.getSetting("hydra_api_key")
     return configured_url, api_key
@@ -202,7 +214,7 @@ def _resolve_max_results(settings_getter):
     if settings_getter is not None:
         raw_max = settings_getter("max_results", "25")
     else:
-        raw_max = addon.getSetting("max_results")
+        raw_max = _addon().getSetting("max_results")
     try:
         max_results = int(raw_max) if raw_max not in (None, "") else 25
     except (TypeError, ValueError):

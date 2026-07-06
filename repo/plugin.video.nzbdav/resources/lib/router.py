@@ -108,6 +108,7 @@ from resources.lib.router_fallback import (  # noqa: F401
 from resources.lib.router_play import (  # noqa: F401
     _apply_completed_job_hint,
     _attach_nzbget_dupe,
+    _ensure_nzbget_completed_hint,
     _extract_search_params,
     _filtered_or_prompt,
     _handle_play_auto_select,

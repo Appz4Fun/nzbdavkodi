@@ -301,6 +301,7 @@ def _script_play_auto_select(params, best, filtered):
     _router._attach_nzbget_dupe(
         resolver_params, best, filtered, _router._identity_from_params(params)
     )
+    _router._ensure_nzbget_completed_hint(best, _router._get_script_setting)
     _router._attach_selected_result_metadata(resolver_params, best)
     _router._script_play_stage("resolve start '{}'".format(best.get("title", "")))
     resolve_and_play(best["link"], best["title"], params=resolver_params)
