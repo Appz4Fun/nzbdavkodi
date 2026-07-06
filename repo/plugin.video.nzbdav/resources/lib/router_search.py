@@ -16,7 +16,24 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from resources.lib.http_util import pubdate_to_epoch
+from resources.lib.hydra import _DEFAULT_HYDRA_URL
 from resources.lib.nzbdav_api import completed_jobs_lookup_done
+
+# Pre-read defaults for the provider-search settings snapshot
+# (router._search_all_providers wraps every getter in _snapshot_settings_getter
+# seeded from this map, so worker threads never touch Kodi settings).
+# ``hydra_url`` seeds the schema default: the snapshot pre-reads every key, so
+# a URL left at its displayed default (absent from the profile XML) would
+# otherwise snapshot to "" and bypass the ``hydra._DEFAULT_HYDRA_URL`` mirror
+# for the whole provider-search path.
+_PROVIDER_SEARCH_SETTING_DEFAULTS = {
+    "hydra_url": _DEFAULT_HYDRA_URL,
+    "hydra_api_key": "",
+    "prowlarr_host": "",
+    "prowlarr_api_key": "",
+    "prowlarr_indexer_ids": "",
+    "max_results": "25",
+}
 
 
 def _build_provider_jobs(
@@ -335,20 +352,38 @@ def _completed_lookup_was_done(completed_jobs):
 
 
 def _hydra_duplicate_lookup_enabled(selected, settings_getter=None):
-    """Return whether the selected row should use Hydra's duplicate API."""
+    """Return whether the selected row should use Hydra's duplicate API.
+
+    With a getter, the settings gate decides -- but a row the SELECTION itself
+    identifies as Hydra still qualifies when the gate says no: the ``/play``
+    search path forces ``nzbhydra_enabled`` at query time, so a Hydra row can
+    be selected while the setting is not stored true, and the pre-getter
+    behavior (pure selection inference) must not regress for it.
+    """
     if not isinstance(selected, dict):
         return False
-    if settings_getter is not None:
-        return _hydra_lookup_enabled_by_settings(settings_getter)
+    if settings_getter is not None and _hydra_lookup_enabled_by_settings(
+        settings_getter
+    ):
+        return True
     return _hydra_lookup_enabled_by_selection(selected)
 
 
 def _hydra_lookup_enabled_by_settings(settings_getter):
-    """Hydra-duplicate gate when an explicit settings getter is available."""
+    """Hydra-duplicate gate when an explicit settings getter is available.
+
+    ``hydra_url`` falls back to its settings.xml schema default: raw-XML
+    getters (``_get_script_setting``, the dupe-loader getters) return the
+    passed fallback for a setting left at its displayed default, while the
+    live Kodi layer returns the schema default -- without the mirror a
+    default-URL Hydra setup silently fails this gate off the live path.
+    """
+    from resources.lib.hydra import _DEFAULT_HYDRA_URL
+
     enabled = settings_getter("nzbhydra_enabled", "false")
     if str(enabled).lower() != "true":
         return False
-    hydra_url = settings_getter("hydra_url", "")
+    hydra_url = settings_getter("hydra_url", _DEFAULT_HYDRA_URL)
     return bool(str(hydra_url or "").strip())
 
 

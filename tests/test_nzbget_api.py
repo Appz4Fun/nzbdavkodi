@@ -85,6 +85,75 @@ def test_append_nzb_fetches_encodes_and_returns_nzbid():
     assert params[10] == []
 
 
+def test_append_nzb_defaults_leave_dupe_fields_neutral():
+    """Absent dupe args, the append is byte-for-byte the pre-#372 single submit."""
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    captured = {}
+
+    def fake_post(url, payload, timeout=0, basic_auth=None):
+        captured["payload"] = payload
+        return '{"result": 7, "error": null}'
+
+    with patch("resources.lib.nzbget_api._http_get", return_value="<nzb/>"), patch(
+        "resources.lib.nzbget_api._http_post_json", side_effect=fake_post
+    ):
+        nzbid, error = append_nzb("http://i/x.nzb", "X", settings_getter=getter)
+
+    assert (nzbid, error) == (7, None)
+    params = captured["payload"]["params"]
+    assert params[6] == ""  # DupeKey
+    assert params[7] == 0  # DupeScore
+    assert params[8] == "SCORE"  # DupeMode
+
+
+def test_append_nzb_sends_dupe_key_score_and_mode():
+    """A Smart-Duplicates submission carries the shared DupeKey, its DupeScore,
+    and DupeMode so NZBGet groups the release and picks the highest score."""
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    captured = {}
+
+    def fake_post(url, payload, timeout=0, basic_auth=None):
+        captured["payload"] = payload
+        return '{"result": 9, "error": null}'
+
+    with patch("resources.lib.nzbget_api._http_get", return_value="<nzb/>"), patch(
+        "resources.lib.nzbget_api._http_post_json", side_effect=fake_post
+    ):
+        nzbid, error = append_nzb(
+            "http://i/x.nzb",
+            "X",
+            settings_getter=getter,
+            dupe_key="imdb=1234567",
+            dupe_score=100,
+            dupe_mode="SCORE",
+        )
+
+    assert (nzbid, error) == (9, None)
+    params = captured["payload"]["params"]
+    assert params[6] == "imdb=1234567"  # DupeKey
+    assert params[7] == 100  # DupeScore
+    assert params[8] == "SCORE"  # DupeMode
+
+
+def test_config_option_reads_named_value_lowercased():
+    """config() returns [{Name,Value}]; read one option (e.g. HealthCheck)."""
+    from resources.lib.nzbget_api import config_option
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    cfg = [
+        {"Name": "MainDir", "Value": "/downloads"},
+        {"Name": "HealthCheck", "Value": "Pause"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(cfg, None)):
+        assert config_option("HealthCheck", settings_getter=getter) == "pause"
+        assert config_option("healthcheck", settings_getter=getter) == "pause"
+    # Absent option / RPC error -> None (best-effort).
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(cfg, None)):
+        assert config_option("Missing", settings_getter=getter) is None
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
+        assert config_option("HealthCheck", settings_getter=getter) is None
+
+
 def test_append_nzb_returns_error_when_nzbid_not_positive():
     getter = _getter({"nzbget_url": "http://box:6789"})
     with patch("resources.lib.nzbget_api._http_get", return_value="<nzb/>"), patch(
@@ -493,3 +562,183 @@ def test_completed_history_keeps_newest_same_name_entry():
     with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
         jobs = completed_history(settings_getter=getter)
     assert jobs["Movie.mkv"]["bytes"] == 100 * 1048576
+
+
+def test_active_group_by_dupekey_finds_unpaused_promoted_backup():
+    from resources.lib.nzbget_api import active_group_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    groups = [
+        {"NZBID": 5, "DupeKey": "k", "Status": "PAUSED", "FileSizeMB": 100},
+        {
+            "NZBID": 9,
+            "DupeKey": "K",  # case-insensitive match
+            "Status": "DOWNLOADING",
+            "DownloadedSizeMB": 50,
+            "FileSizeMB": 100,
+        },
+        {"NZBID": 3, "DupeKey": "other", "Status": "DOWNLOADING"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(groups, None)):
+        g = active_group_by_dupekey("k", settings_getter=getter)
+    assert g["present"] is True
+    assert g["nzbid"] == 9  # the unpaused one, not the PAUSED 5 or other-key 3
+    assert g["percent"] == 50
+
+
+def test_active_group_by_dupekey_absent_when_only_paused_or_error():
+    from resources.lib.nzbget_api import active_group_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    with patch(
+        "resources.lib.nzbget_api._rpc_call",
+        return_value=([{"NZBID": 5, "DupeKey": "k", "Status": "PAUSED"}], None),
+    ):
+        assert active_group_by_dupekey("k", settings_getter=getter)["present"] is False
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
+        assert active_group_by_dupekey("k", settings_getter=getter)["present"] is False
+    assert active_group_by_dupekey("", settings_getter=getter)["present"] is False
+
+
+def test_history_success_by_dupekey_returns_completed_member():
+    from resources.lib.nzbget_api import history_success_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"NZBID": 1, "DupeKey": "k", "Status": "FAILURE/HEALTH"},
+        {"NZBID": 2, "DupeKey": "k", "Status": "SUCCESS/ALL", "DestDir": "/dl/X"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        s = history_success_by_dupekey("k", settings_getter=getter)
+    assert s["present"] is True
+    assert s["nzbid"] == 2
+    assert s["dest_dir"] == "/dl/X"
+
+
+def test_cancel_jobs_deletes_history_then_queue_and_skips_empty():
+    # cancel_jobs final-deletes a batch of NZBIDs -- history first (parked DUP
+    # backups deleted so nothing can be promoted), then the queue -- and is a
+    # no-op on empty input (round-3 review: id-scoped post-cancel cleanup).
+    from resources.lib.nzbget_api import cancel_jobs
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    calls = []
+
+    def fake_rpc(method, params, settings_getter=None):
+        calls.append((method, list(params)))
+        return (None, None)
+
+    with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
+        cancel_jobs([7, None, 9], settings_getter=getter)
+    assert calls == [
+        ("editqueue", ["HistoryFinalDelete", "", [7, 9]]),
+        ("editqueue", ["GroupFinalDelete", "", [7, 9]]),
+    ]
+    calls.clear()
+    with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
+        cancel_jobs([], settings_getter=getter)
+        cancel_jobs(None, settings_getter=getter)
+    assert not calls  # empty input -> no RPC round-trips
+
+
+def test_active_group_by_dupekey_reports_paused_presence():
+    # A same-key member queued PAUSED (e.g. NZBGet globally paused when the
+    # backup was promoted) is not a promotion -- but it is not an exhausted
+    # group either. The scan reports it so the poll can keep waiting instead of
+    # declaring FAILURE/DUPE (round-3 review finding). The excluded (just
+    # failed) member's own paused row does NOT count.
+    from resources.lib.nzbget_api import active_group_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    paused_other = {"NZBID": 9, "DupeKey": "k", "Status": "PAUSED"}
+    paused_failed = {"NZBID": 1, "DupeKey": "k", "Status": "PAUSED"}
+    with patch(
+        "resources.lib.nzbget_api._rpc_call",
+        return_value=([paused_failed, paused_other], None),
+    ):
+        got = active_group_by_dupekey("k", exclude_nzbid=1, settings_getter=getter)
+    assert got["present"] is False
+    assert got["paused_present"] is True
+    with patch(
+        "resources.lib.nzbget_api._rpc_call", return_value=([paused_failed], None)
+    ):
+        got = active_group_by_dupekey("k", exclude_nzbid=1, settings_getter=getter)
+    assert got["present"] is False
+    assert got["paused_present"] is False  # only the excluded member is paused
+
+
+def test_history_success_by_dupekey_excludes_stale_ids():
+    from resources.lib.nzbget_api import history_success_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"NZBID": 3, "DupeKey": "k", "Status": "SUCCESS/ALL", "DestDir": "/old"},
+        {"NZBID": 9, "DupeKey": "k", "Status": "SUCCESS/ALL", "DestDir": "/new"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        got = history_success_by_dupekey(
+            "k", exclude_nzbids=(3,), settings_getter=getter
+        )
+    assert got["present"] is True and got["nzbid"] == 9
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=([hist[0]], None)):
+        got = history_success_by_dupekey(
+            "k", exclude_nzbids=(3,), settings_getter=getter
+        )
+    assert got["present"] is False
+
+
+def test_success_ids_by_dupekey_lists_matching_success_rows():
+    from resources.lib.nzbget_api import success_ids_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    hist = [
+        {"NZBID": 3, "DupeKey": "k", "Status": "SUCCESS/ALL"},
+        {"NZBID": 4, "DupeKey": "k", "Status": "FAILURE/PAR"},
+        {"NZBID": 5, "DupeKey": "other", "Status": "SUCCESS/ALL"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(hist, None)):
+        assert success_ids_by_dupekey("k", settings_getter=getter) == [3]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
+        assert not success_ids_by_dupekey("k", settings_getter=getter)
+
+
+def test_active_group_by_dupekey_collects_paused_nzbids():
+    # A promotion that lands while NZBGet is paused never becomes the tracked
+    # member -- the cancel path still needs its NZBID, so the scan reports the
+    # paused same-key ids alongside paused_present (round-5 review finding).
+    from resources.lib.nzbget_api import active_group_by_dupekey
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    rows = [
+        {"NZBID": 1, "DupeKey": "k", "Status": "PAUSED"},  # excluded (failed pick)
+        {"NZBID": 9, "DupeKey": "k", "Status": "PAUSED"},
+        {"NZBID": 12, "DupeKey": "k", "Status": "PAUSED"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(rows, None)):
+        got = active_group_by_dupekey("k", exclude_nzbid=1, settings_getter=getter)
+    assert got["present"] is False
+    assert got["paused_present"] is True
+    assert got["paused_nzbids"] == [9, 12]
+
+
+def test_cancel_jobs_coerces_and_dedups_string_nzbids():
+    # listgroups can serialize NZBIDs as strings (the module tolerates that
+    # via _same_nzbid elsewhere); editqueue expects an integer ID array, so
+    # the batch deleter must coerce -- and dedup across types -- or one string
+    # member fails the whole HistoryFinalDelete/GroupFinalDelete batch
+    # (round-6 review finding).
+    from resources.lib.nzbget_api import cancel_jobs
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    calls = []
+
+    def fake_rpc(method, params, settings_getter=None):
+        calls.append((method, list(params)))
+        return (None, None)
+
+    with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
+        cancel_jobs(["9", 9, 7, None, "junk"], settings_getter=getter)
+    assert calls == [
+        ("editqueue", ["HistoryFinalDelete", "", [9, 7]]),
+        ("editqueue", ["GroupFinalDelete", "", [9, 7]]),
+    ]

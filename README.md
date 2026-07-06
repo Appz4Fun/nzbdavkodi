@@ -120,7 +120,9 @@ Full walkthrough:
   remux and fMP4 HLS tiers for large or Dolby Vision files.
 - **Self-healing fallback streams** that switch to a verified, byte-identical
   alternate release mid-playback without stopping or rewinding.
-- **Optional NZBGet backend** as an alternative to nzbdav.
+- **Optional NZBGet backend** as an alternative to nzbdav, with
+  [Smart Duplicates failover](https://appz4fun.github.io/nzbdavkodi/features/nzbget-backend/#smart-duplicates-failover)
+  to a same-release backup when a download turns out unrepairable.
 
 Each feature is documented in full under
 [Features](https://appz4fun.github.io/nzbdavkodi/features/).

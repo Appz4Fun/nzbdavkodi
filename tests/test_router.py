@@ -17,11 +17,13 @@ from resources.lib.router import (
     _fallback_candidate_loader_for_selection,
     _format_info_line,
     _format_size,
+    _get_script_setting,
     _get_tmdb_poster,
     _handle_play,
     _handle_search,
     _prowlarr_indexers_response_ok,
     _safe_resolve_handle,
+    _snapshot_settings_getter,
     _tag_available,
     _test_connection,
     _test_hydra_connection,
@@ -461,7 +463,12 @@ def test_search_all_providers_uses_script_settings_getter_without_kodi_addon(
     mock_addon.assert_not_called()
     hydra_search.assert_called_once()
     assert hydra_search.call_args.kwargs["settings_getter"] is not setting
-    assert hydra_search.call_args.kwargs["settings_getter"]("hydra_url") == ""
+    # An unset hydra_url snapshots to the schema default (the mirror in
+    # _PROVIDER_SEARCH_SETTING_DEFAULTS), matching the live Kodi settings layer.
+    from resources.lib.hydra import _DEFAULT_HYDRA_URL
+
+    snap_getter = hydra_search.call_args.kwargs["settings_getter"]
+    assert snap_getter("hydra_url") == _DEFAULT_HYDRA_URL
 
 
 @patch("resources.lib.router.telemetry.log_timing")
@@ -3926,3 +3933,501 @@ def test_xml_root_name_rejects_internal_entity_on_stdlib_fallback(monkeypatch):
     )
 
     assert _xml_root_name(payload) == ""
+
+
+# ---------------------------------------------------------------------------
+# #372 picker-computed NZBGet Smart-Duplicates submission
+# ---------------------------------------------------------------------------
+
+
+def _dupe_setting_getter(values):
+    """Stand-in for router._get_addon_setting(addon, key, default)."""
+    return lambda addon, key, default="": values.get(key, default)
+
+
+def test_release_dupe_key_is_release_scoped_with_content_prefix():
+    # The key is scoped to the SELECTED RELEASE NAME (its slug), with a canonical
+    # content id prefixed for namespacing -- so a different release of the same
+    # content gets a DIFFERENT key.
+    from resources.lib.router_play import _release_dupe_key
+
+    rel = "The Matrix 1999 1080p BluRay x264-GRP"
+    assert (
+        _release_dupe_key({"type": "movie", "imdb": "tt1234567"}, rel)
+        == "imdb=1234567|the-matrix-1999-1080p-bluray-x264-grp"
+    )
+    assert (
+        _release_dupe_key({"type": "movie", "tmdb_id": "603"}, rel)
+        == "themoviedb=603|the-matrix-1999-1080p-bluray-x264-grp"
+    )
+    # No content id -> namespaced release-name key (still release-scoped).
+    assert _release_dupe_key({"type": "movie"}, rel).startswith("nzbdav:the-matrix-")
+    # A different release of the same movie gets a different key (no over-group).
+    k1080 = _release_dupe_key({"imdb": "tt42"}, "Movie 2024 1080p")
+    k2160 = _release_dupe_key({"imdb": "tt42"}, "Movie 2024 2160p")
+    assert k1080 != k2160
+    # Unusable release name -> no key (plain submit).
+    assert _release_dupe_key({"imdb": "tt42"}, "") == ""
+
+
+def test_release_dupe_key_episode_prefixes_tvdb_then_imdb_with_se():
+    from resources.lib.router_play import _release_dupe_key
+
+    ep = {"type": "episode", "season": "2", "episode": "10"}
+    rel = "Dexter S02E10 1080p WEB-DL-GRP"
+    assert _release_dupe_key(dict(ep, tvdb="13434"), rel).startswith(
+        "tvdbid=13434-S02-E10|"
+    )
+    assert _release_dupe_key(dict(ep, imdb="tt944947"), rel).startswith(
+        "imdb=944947-S02-E10|"
+    )
+    # No id -> namespaced release-name key (still distinct per episode name).
+    assert _release_dupe_key(dict(ep), rel).startswith("nzbdav:")
+
+
+def test_nzbget_dupe_submission_scores_pick_highest_and_backups_descending():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Movie 2024 1080p"}
+    filtered = [
+        selected,
+        {"link": "http://i/a.nzb", "title": "The Movie 2024 1080p"},  # same name
+        {"link": "http://i/b.nzb", "title": "the  movie  2024  1080P"},  # norm-equal
+        {"link": "http://i/c.nzb", "title": "Different Movie"},  # different
+    ]
+    identity = {"type": "movie", "imdb": "tt42", "title": "The Movie", "year": "2024"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ):
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    # Release-scoped key: content id prefix + the pick's normalized release name.
+    assert dupe["key"] == "imdb=42|the-movie-2024-1080p"
+    assert [b["link"] for b in dupe["backups"]] == ["http://i/a.nzb", "http://i/b.nzb"]
+    # Pick strictly highest; backups strictly-lower descending.
+    assert all(b["score"] < dupe["pick_score"] for b in dupe["backups"])
+    assert [b["score"] for b in dupe["backups"]] == sorted(
+        [b["score"] for b in dupe["backups"]], reverse=True
+    )
+
+
+def test_nzbget_dupe_submission_none_when_no_same_name_backups():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "Unique Release"}
+    filtered = [selected, {"link": "http://i/x.nzb", "title": "Other Release"}]
+    identity = {"type": "movie", "imdb": "tt7"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ):
+        assert (
+            _nzbget_dupe_submission_for_selection(selected, filtered, identity) is None
+        )
+
+
+def test_nzbget_dupe_submission_none_when_no_release_name():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    # No usable release name on the pick -> no key -> no submission.
+    selected = {"link": "http://i/pick.nzb", "title": ""}
+    filtered = [selected, {"link": "http://i/a.nzb", "title": ""}]
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ):
+        assert (
+            _nzbget_dupe_submission_for_selection(selected, filtered, {"imdb": "tt1"})
+            is None
+        )
+
+
+def test_nzbget_dupe_submission_none_when_backend_or_setting_off():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "X"}
+    filtered = [selected, {"link": "http://i/a.nzb", "title": "X"}]
+    identity = {"type": "movie", "imdb": "tt1"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "false"}),
+    ):
+        assert (
+            _nzbget_dupe_submission_for_selection(selected, filtered, identity) is None
+        )
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter(
+            {"nzbget_enabled": "true", "fallback_streams_enabled": "false"}
+        ),
+    ):
+        assert (
+            _nzbget_dupe_submission_for_selection(selected, filtered, identity) is None
+        )
+
+
+def test_nzbget_dupe_submission_caps_backups_by_setting():
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "X"}
+    filtered = [selected] + [
+        {"link": "http://i/{}.nzb".format(n), "title": "X"} for n in range(10)
+    ]
+    identity = {"type": "movie", "imdb": "tt1"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "3"}),
+    ):
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    assert len(dupe["backups"]) == 3
+
+
+def test_release_dupe_key_episode_without_numeric_se_stays_distinct():
+    # Episode context with missing/non-numeric season+episode must NOT emit a
+    # movie/show-level key that merges episodes. It drops the (unreliable) content
+    # id and falls back to the release-name key, which keeps distinct episodes
+    # apart (the merge bug's regression guard).
+    from resources.lib.router_play import _release_dupe_key
+
+    ep = {"type": "episode", "imdb": "tt111"}  # show imdb, no numeric S/E
+    k1 = _release_dupe_key(ep, "The Show S01E02 1080p GRP")
+    k2 = _release_dupe_key(ep, "The Show S02E05 1080p GRP")
+    assert k1.startswith("nzbdav:") and k2.startswith("nzbdav:")  # no show-level id
+    assert k1 != k2  # distinct episodes never collide
+    # A numeric S/E does prefix the canonical episode id, still release-scoped.
+    keyed = _release_dupe_key(
+        {"type": "episode", "imdb": "tt111", "season": "1", "episode": "2"},
+        "The Show S01E02 1080p GRP",
+    )
+    assert keyed.startswith("imdb=111-S01-E02|")
+
+
+def test_script_play_resolve_selected_attaches_nzbget_dupe_end_to_end():
+    # End-to-end through the ACTUAL TMDBHelper play path (RunScript -> script-play):
+    # identity -> DupeKey -> _nzbget_dupe reaches the resolver params.
+    from resources.lib import router_scriptplay
+
+    params = {
+        "type": "movie",
+        "title": "The Matrix",
+        "year": "1999",
+        "imdb": "tt0133093",
+    }
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [selected, {"link": "http://i/b.nzb", "title": "The Matrix 1999 1080p"}]
+    captured = {}
+
+    def fake_rap(link, title, params=None):
+        captured["params"] = params
+
+    def fake_script_setting(key, default=""):
+        return {"nzbget_enabled": "true"}.get(key, default)
+
+    with patch("resources.lib.resolver.resolve_and_play", side_effect=fake_rap), patch(
+        "resources.lib.router._get_script_setting", fake_script_setting
+    ), patch(
+        "resources.lib.router._completed_lookup_was_done", return_value=True
+    ), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        return_value=None,
+    ), patch(
+        "resources.lib.router._attach_selected_result_metadata"
+    ), patch(
+        "resources.lib.router._script_play_stage"
+    ):
+        router_scriptplay._script_play_resolve_selected(params, selected, filtered, {})
+
+    dupe = captured["params"]["_nzbget_dupe"]
+    assert dupe["key"] == "imdb=0133093|the-matrix-1999-1080p"
+    assert [b["link"] for b in dupe["backups"]] == ["http://i/b.nzb"]
+    assert dupe["backups"][0]["score"] < dupe["pick_score"]
+
+
+def test_attach_nzbget_dupe_builds_loader_with_thread_safe_getter():
+    # The backup worker runs the fallback loader OFF-THREAD. On the handle-based
+    # /play path resolver_params carries a loader built with a None getter, which
+    # would call xbmcaddon.Addon().getSetting off the main thread (CoreELEC crash
+    # class). _attach_nzbget_dupe must instead build the dupe loader with the
+    # pure-XML _get_script_setting (round-2 review finding: off-thread getSetting).
+    from resources.lib import router_play
+
+    seen = {}
+
+    def _factory(selected, results, settings_getter=None):
+        seen["getter"] = settings_getter
+        return "FRESH_LOADER"
+
+    # Handle path: no "_settings_getter"; a stale None-getter loader is present.
+    params = {"_fallback_candidate_loader": "STALE_NONE_GETTER_LOADER"}
+    stub_dupe = {"key": "k", "pick_score": 2, "backups": [{"link": "u", "score": 1}]}
+    with patch(
+        "resources.lib.router_play._nzbget_dupe_submission_for_selection",
+        return_value=stub_dupe,
+    ), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        side_effect=_factory,
+    ):
+        router_play._attach_nzbget_dupe(params, {"link": "p"}, [{"link": "p"}], {})
+
+    assert seen.get("getter") is _get_script_setting
+    assert params["_nzbget_dupe"]["loader"] == "FRESH_LOADER"
+
+
+def test_nzbget_dupe_submission_reports_standby_max_for_extras_bound():
+    # The submission carries max_backups so the backup worker can bound its loader
+    # extras against the same "Maximum standby fallback streams" cap (round-2
+    # review finding: extras must count against the standby cap).
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [
+        selected,
+        {"link": "http://i/b.nzb", "title": "The Matrix 1999 1080p"},
+        {"link": "http://i/c.nzb", "title": "The Matrix 1999 1080p"},
+    ]
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "2"}),
+    ):
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    assert dupe["max_backups"] == 2  # min(fallback_streams_max, hard cap)
+    assert len(dupe["backups"]) == 2  # same-name backups already capped at 2
+
+
+def test_hydra_duplicate_lookup_enabled_with_default_url_left_unset():
+    # Handle-path dupe loaders are built with the raw-XML _get_script_setting,
+    # which returns the passed fallback for settings left at their displayed
+    # default. With NZBHydra enabled but hydra_url untouched (schema default
+    # http://localhost:5076, absent from profile XML), the settings gate must
+    # still enable Hydra's duplicate-upload lookup -- matching the live-Kodi
+    # branch, which returns the schema default (round-3 #372 review finding).
+    from resources.lib.router_search import _hydra_duplicate_lookup_enabled
+
+    def stored(key, default=""):
+        return {"nzbhydra_enabled": "true"}.get(key, default)
+
+    assert (
+        _hydra_duplicate_lookup_enabled(
+            {"indexer": "NZBHydra2", "link": "http://h/x"}, settings_getter=stored
+        )
+        is True
+    )
+
+
+def test_provider_search_defaults_mirror_hydra_schema_url():
+    # _search_all_providers snapshots settings through
+    # _PROVIDER_SEARCH_SETTING_DEFAULTS before any provider reads them; a
+    # hydra_url left at its displayed default (absent from profile XML) must
+    # snapshot to the schema default -- seeding "" here bypassed the
+    # hydra._DEFAULT_HYDRA_URL mirror on the whole provider-search path
+    # (merge-QA finding).
+    from resources.lib.hydra import _DEFAULT_HYDRA_URL
+    from resources.lib.router_search import _PROVIDER_SEARCH_SETTING_DEFAULTS
+
+    assert _PROVIDER_SEARCH_SETTING_DEFAULTS["hydra_url"] == _DEFAULT_HYDRA_URL
+    # And through the real snapshot machinery with nothing stored:
+    snap = _snapshot_settings_getter(
+        lambda key, default="": default, _PROVIDER_SEARCH_SETTING_DEFAULTS
+    )
+    assert snap("hydra_url", "") == _DEFAULT_HYDRA_URL
+
+
+def test_hydra_duplicate_lookup_falls_back_to_selection_inference():
+    # The /play path FORCES nzbhydra_enabled=true at search time, so a Hydra row
+    # can be selected while the setting is not stored true. The getter-based
+    # gate alone would then drop Hydra's deferred duplicate uploads from the
+    # dupe-backup loader -- the pre-getter behavior (selection inference) must
+    # win when the settings gate says no (round-4 review finding).
+    from resources.lib.router_search import _hydra_duplicate_lookup_enabled
+
+    def stored(key, default=""):
+        return {}.get(key, default)  # nothing stored: nzbhydra_enabled absent
+
+    hydra_row = {"indexer": "NZBHydra2", "link": "http://h/x"}
+    plain_row = {"indexer": "SomeIndexer", "link": "http://i/x"}
+    assert _hydra_duplicate_lookup_enabled(hydra_row, settings_getter=stored) is True
+    assert _hydra_duplicate_lookup_enabled(plain_row, settings_getter=stored) is False
+
+
+def test_nzbget_dupe_scores_ride_on_the_wall_clock_base():
+    # Every fresh submission's DupeScores sit on a minutes-since-epoch base so a
+    # replay (which only reaches the submit path when the completed files are
+    # gone or unverifiable) OUTRANKS any prior same-key SUCCESS in history --
+    # NZBGet then re-downloads instead of dupe-deleting the re-submission into
+    # a failed playback (review threads: replay dupe scores).
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [selected, {"link": "http://i/b.nzb", "title": "The Matrix 1999 1080p"}]
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ), patch("resources.lib.router_play._dupe_score_base", return_value=100000):
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    assert dupe["score_base"] == 100000
+    assert dupe["pick_score"] == 100000  # the pick IS the base
+    assert [b["score"] for b in dupe["backups"]] == [100000 - 1]  # below it
+    # The real base is wall-clock derived: strictly positive, inside NZBGet's
+    # 32-bit int score range, and different across nearby submissions -- a
+    # replay 30s after a SUCCESS must OUTRANK it, not tie it (equal is not
+    # higher, so a tie would suppress the re-download).
+    from resources.lib.router_play import _dupe_score_base
+
+    now = 1_800_000_000.0  # some 2027 wall clock
+    with patch("resources.lib.router_play.time.time", return_value=now):
+        first = _dupe_score_base()
+    with patch("resources.lib.router_play.time.time", return_value=now + 30):
+        retry = _dupe_score_base()
+    assert first > 0
+    assert retry - first >= 30  # sub-minute retries strictly outrank
+    assert _dupe_score_base() < 2_000_000_000  # far inside int32 for decades
+
+
+def test_attach_nzbget_dupe_allows_loader_only_submission():
+    # NZBHydra collapses mirrors into one picker row -> no same-name backups --
+    # but the fallback loader can still supply same-content duplicate uploads.
+    # The attach must then produce a loader-only submission (empty backups,
+    # DupeKey + based pick score) instead of dropping the widened pool
+    # (review thread: loader-only duplicate backups).
+    from resources.lib import router_play
+
+    params = {}
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [selected]  # single row: no same-name backups
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        return_value="LOADER",
+    ), patch(
+        "resources.lib.router_play._dupe_score_base", return_value=100000
+    ):
+        router_play._attach_nzbget_dupe(params, selected, filtered, identity)
+    dupe = params["_nzbget_dupe"]
+    assert dupe["backups"] == []
+    assert dupe["loader"] == "LOADER"
+    assert dupe["key"] == "imdb=0133093|the-matrix-1999-1080p"
+    assert dupe["pick_score"] == 100000  # the pick IS the base
+    assert dupe["score_base"] == 100000
+
+
+def test_attach_nzbget_dupe_no_loader_only_when_loader_absent():
+    # Single row AND no loader (pool provably has no peers) -> plain submit.
+    from resources.lib import router_play
+
+    params = {}
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        return_value=None,
+    ):
+        router_play._attach_nzbget_dupe(
+            params, selected, [selected], {"type": "movie", "imdb": "tt0133093"}
+        )
+    assert "_nzbget_dupe" not in params
+
+
+def test_same_name_backups_carry_their_own_pubdates():
+    # Each same-name backup is a DIFFERENT upload with its own post-date. The
+    # submission must carry it so a follow-to-backup success can be ledger-
+    # recorded under the backup's identity -- else the picker's repost-guard
+    # rejects the completed backup's row on replay (review thread: record the
+    # promoted backup's own identity).
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {
+        "link": "http://i/pick.nzb",
+        "title": "The Matrix 1999 1080p",
+        "pubdate": "Mon, 01 Jun 2026 10:00:00 +0000",
+    }
+    backup_row = {
+        "link": "http://i/b.nzb",
+        "title": "The Matrix 1999 1080p",
+        "pubdate": "Tue, 02 Jun 2026 11:00:00 +0000",
+    }
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true"}),
+    ):
+        dupe = _nzbget_dupe_submission_for_selection(
+            selected, [selected, backup_row], {"type": "movie", "imdb": "tt0133093"}
+        )
+    assert dupe["backups"][0]["pubdate"] == "Tue, 02 Jun 2026 11:00:00 +0000"
+
+
+def test_play_auto_select_attaches_nzbget_completed_hint():
+    # auto_select_best resolves without a picker render, so
+    # _tag_available_nzbget never tagged the row: an already-completed best
+    # release would re-submit -- and with the wall-clock score base NZBGet
+    # would RE-DOWNLOAD it instead of the reuse path playing the existing SMB
+    # files. The auto-select branch must run the NZBGet completed lookup first
+    # (review finding: reuse before auto-select submission).
+    from resources.lib.router_play import _handle_play_auto_select
+
+    best = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    captured = {}
+
+    def fake_resolve(handle, params):
+        captured["params"] = params
+
+    def fake_tag(results, settings_getter=None):
+        for row in results:
+            row["_nzbget_completed_job"] = {"dest_dir": "/dl/done", "bytes": 1}
+        return {}
+
+    with patch("resources.lib.resolver.resolve", side_effect=fake_resolve), patch(
+        "resources.lib.router._nzbget_mode_enabled", return_value=True
+    ), patch("resources.lib.router._tag_available_nzbget", side_effect=fake_tag), patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection",
+        return_value=None,
+    ), patch(
+        "resources.lib.router._get_addon_setting", _dupe_setting_getter({})
+    ):
+        _handle_play_auto_select(7, best, [best])
+    assert captured["params"]["_nzbget_completed_job"] == {
+        "dest_dir": "/dl/done",
+        "bytes": 1,
+    }
+
+
+def test_retry_pick_outranks_bigger_earlier_fleet_within_seconds():
+    # A retry can fall through automatically seconds after a prior SUCCESS
+    # (reuse probe miss). Intra-fleet offsets must ride BELOW the base
+    # (pick == base exactly) so a later, smaller fleet still outranks every
+    # member of an earlier, bigger one -- base+count offsets let an old
+    # 5-backup pick (base+6) beat a 3-seconds-later loader-only retry
+    # (round-6 review finding).
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    five_backups = [selected] + [
+        {"link": "http://i/b{}.nzb".format(i), "title": "The Matrix 1999 1080p"}
+        for i in range(5)
+    ]
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "5"}),
+    ):
+        with patch("resources.lib.router_play._dupe_score_base", return_value=100000):
+            old = _nzbget_dupe_submission_for_selection(
+                selected, five_backups, identity
+            )
+        with patch(
+            "resources.lib.router_play._dupe_score_base", return_value=100003
+        ):  # retry 3 "seconds" later, only one backup this time
+            retry = _nzbget_dupe_submission_for_selection(
+                selected, [selected, five_backups[1]], identity
+            )
+    old_max = max([old["pick_score"]] + [b["score"] for b in old["backups"]])
+    assert retry["pick_score"] > old_max  # strictly higher -> NZBGet re-downloads
+    # Intra-fleet ordering is preserved below the base.
+    assert retry["pick_score"] == 100003
+    assert all(b["score"] < retry["pick_score"] for b in retry["backups"])

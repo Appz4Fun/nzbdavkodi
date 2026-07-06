@@ -298,6 +298,10 @@ def _script_play_auto_select(params, best, filtered):
     else:
         resolver_params["_completed_job_lookup_done"] = True
     resolver_params["_settings_getter"] = _router._get_script_setting
+    _router._attach_nzbget_dupe(
+        resolver_params, best, filtered, _router._identity_from_params(params)
+    )
+    _router._ensure_nzbget_completed_hint(best, _router._get_script_setting)
     _router._attach_selected_result_metadata(resolver_params, best)
     _router._script_play_stage("resolve start '{}'".format(best.get("title", "")))
     resolve_and_play(best["link"], best["title"], params=resolver_params)
@@ -324,6 +328,9 @@ def _script_play_resolve_selected(params, selected, filtered, completed_jobs):
         resolver_params["_completed_job"] = completed_job
     elif _router._completed_lookup_was_done(completed_jobs):
         resolver_params["_completed_job_lookup_done"] = True
+    _router._attach_nzbget_dupe(
+        resolver_params, selected, filtered, _router._identity_from_params(params)
+    )
     _router._attach_selected_result_metadata(resolver_params, selected)
     _router._script_play_stage("resolve start '{}'".format(selected.get("title", "")))
     resolve_and_play(selected["link"], selected["title"], params=resolver_params)

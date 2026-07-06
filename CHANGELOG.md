@@ -66,6 +66,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **NZBGet mode: Smart Duplicates for broken downloads.** When the NZBGet
+  backend is enabled, picking a release now also submits every other result on
+  the picker that shares the same release name (reposts / mirrors from other
+  indexers) to NZBGet using its documented duplicate handling — one shared
+  duplicate key (derived from the IMDb/TVDB id, or a title fallback), a per-item
+  duplicate score with your pick scored highest, and duplicate mode `SCORE`. So
+  NZBGet downloads your pick and parks the rest in its history as duplicate
+  backups without downloading them; if the pick turns out unrepairable (par2
+  repair fails, unpack fails, or health drops below critical) NZBGet
+  automatically fails over and downloads one of the backups instead of leaving
+  you with a broken file. Because NZBGet decides by score, the pick reliably
+  stays the one that plays and the submission order no longer matters. The
+  backups are submitted in the background so they never delay playback, are
+  bounded by **Maximum standby fallback streams**, and are gated by **Enable
+  fallback streams** (on by default). If NZBGet's `HealthCheck` is set to `Pause`
+  (which blocks automatic failover), a one-time notice suggests setting it to
+  `Delete`, `None`, or `Park`. Best-effort throughout: a failed backup submit never
+  affects the pick's playback. (Issue #372, per
+  [nzbget.com duplicates](https://nzbget.com/documentation/rss/#duplicates).)
+- **NZBGet mode: follow the failover to a working backup within one play.** When
+  your pick turns out unrepairable, the resolver now follows NZBGet's automatic
+  duplicate failover live — it tracks the promoted backup (a new download NZBGet
+  starts under the same duplicate set) and plays it when it completes, or plays a
+  backup that already finished, instead of reporting a failed playback. Canceling
+  the play now removes the whole duplicate set so NZBGet can't keep a backup
+  running, and the backup pool is widened to include same-content mirrors and
+  NZBHydra's deferred duplicate uploads (as lowest-priority backups) beyond the
+  exact same-name reposts. (Issue #372 round 2.)
 - **NZBGet mode: pre-cached "DL" indicator in the NZB picker.** With the
   NZBGet backend enabled, the results picker now tags releases that are
   already completed in NZBGet's history with the same green `DL` chip the
@@ -78,6 +106,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **NZBGet mode: replays re-download when the files are gone, single-row Hydra
+  picks get backups, and stale successes can't fail the failover.** Duplicate
+  scores now ride on a wall-clock base, so re-submitting a release whose
+  completed files were cleaned outranks the old history entry and re-downloads
+  it (previously NZBGet dupe-deleted the re-submission and the play failed).
+  When NZBHydra collapses every mirror of a release into a single picker row,
+  the pick now still gets a duplicate-backup fleet built from Hydra's deferred
+  duplicate uploads. And the failover-follow ignores same-release successes
+  that predate the play, so a leftover history entry whose files are gone can
+  no longer end the recovery with "No video file found". (Issue #372 round 4.)
+- **NZBGet mode: failover-following no longer stalls, and cancel is airtight.**
+  Round-2 hardening: the resolver now excludes the just-failed download from its
+  promotion scan, so NZBGet's brief queue→history overlap can't make the poll
+  mistake the failed pick for its own replacement and hang. Canceling mid-submit
+  re-sweeps the duplicate set once the background worker drains, closing a race
+  where a backup whose submission was already in flight could survive the cancel
+  and be downloaded anyway. The same-content/NZBHydra backup widening now reads
+  its settings through the thread-safe settings reader on every playback path,
+  never the live Kodi settings API off the worker thread, and its extra backups
+  count against **Maximum standby fallback streams** instead of stacking on top.
+  A pick that fails almost immediately no longer gives up before its backups have
+  even been submitted (the failover grace waits for the background submitter). And
+  canceling a play can no longer delete a *previously* completed download's files
+  that happen to share the release's duplicate key. Round 3: canceling after a
+  failover also deletes the promoted backup directly (not only via the duplicate
+  set scan), the background worker's post-cancel cleanup deletes exactly its own
+  submissions so an immediate retry of the same release survives it, and a
+  promoted backup sitting paused (e.g. NZBGet paused) holds the failover wait
+  instead of reporting a failed playback. Round 5: cancel is scoped to exactly
+  the downloads this play created or followed (including a backup promoted
+  while NZBGet was paused), so an overlapping play of the same release from
+  another device survives it. (Issue #372 rounds 2-5.)
 - **NZBGet mode: replaying an already-downloaded pick no longer fails.**
   Selecting a `DL`-tagged result now plays the completed files straight from
   the SMB share instead of re-submitting the NZB — NZBGet's duplicate check
