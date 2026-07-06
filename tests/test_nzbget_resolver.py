@@ -1754,8 +1754,10 @@ def test_spawn_dupe_backups_cleans_own_submissions_on_cancel_after_submit():
     ctx.cancel_event = ev
     cleaned = []
 
-    def _submit(backups, key, getter, cancel_event=None):
+    def _submit(backups, key, getter, cancel_event=None, submitted_sink=None):
         ev.set()  # cancel observed only after this submit's append is already away
+        if submitted_sink is not None:
+            submitted_sink.append(7)  # published as the append landed
         return [7]
 
     with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
@@ -1824,7 +1826,8 @@ def test_spawn_dupe_backups_threads_score_base_into_extras():
         "resources.lib.nzbget_resolver._extra_backups_from_loader", side_effect=_extra
     ):
         _spawn_dupe_backups(_dupe_ctx(dupe))
-    assert seen["score_base"] == 100000
+    # Extras start just below the lowest same-name backup: base - count - 1.
+    assert seen["score_base"] == 100000 - 1 - 1
     assert seen["limit"] == 2  # 3 cap - 1 same-name
 
 
@@ -1842,7 +1845,7 @@ def test_spawn_dupe_backups_runs_loader_only_fleet():
     }
     submitted = []
 
-    def _submit(backups, key, getter, cancel_event=None):
+    def _submit(backups, key, getter, cancel_event=None, submitted_sink=None):
         submitted.append(list(backups))
         return [11] if backups else []
 
@@ -1853,8 +1856,9 @@ def test_spawn_dupe_backups_runs_loader_only_fleet():
     ):
         thread = _spawn_dupe_backups(_dupe_ctx(dupe))
     assert thread is not None  # worker ran (not the no-backups noop)
-    # Second submit call carries the loader extras with based scores.
-    assert submitted[-1] == [{"link": "x", "title": "X", "score": 100000}]
+    # Second submit call carries the loader extras, starting just below the
+    # (empty) same-name band: base - 0 - 1.
+    assert submitted[-1] == [{"link": "x", "title": "X", "score": 100000 - 1}]
 
 
 def test_poll_group_follow_ignores_stale_preexisting_success():
@@ -2105,3 +2109,30 @@ def test_group_follow_tracks_owned_promoted_backup():
             fleet={"owned_nzbids": lambda: (1, 9)},
         )
     assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+
+
+def test_backup_nzbids_publish_into_shared_list_as_appends_land():
+    # A cancel mid-batch snapshots ctx.submitted_nzbids BEFORE
+    # _submit_dupe_backups returns; each NZBID must be published into the
+    # shared list AS ITS APPEND SUCCEEDS so the immediate id-scoped cancel
+    # already sees it (round-6 review finding).
+    shared = []
+    seen_during = []
+
+    def fake_append(url, name, settings_getter=None, **kw):
+        seen_during.append(list(shared))  # snapshot BEFORE this append lands
+        return (100 + len(seen_during), None)
+
+    with patch(_APPEND, side_effect=fake_append):
+        _submit_dupe_backups(
+            [
+                {"link": "http://i/a.nzb", "title": "A", "score": 2},
+                {"link": "http://i/b.nzb", "title": "B", "score": 1},
+            ],
+            "k",
+            _settings({}),
+            submitted_sink=shared,
+        )
+    # By the time the SECOND append starts, the first id is already published.
+    assert seen_during[1] == [101]
+    assert shared == [101, 102]

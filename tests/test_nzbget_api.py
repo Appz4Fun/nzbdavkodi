@@ -719,3 +719,26 @@ def test_active_group_by_dupekey_collects_paused_nzbids():
     assert got["present"] is False
     assert got["paused_present"] is True
     assert got["paused_nzbids"] == [9, 12]
+
+
+def test_cancel_jobs_coerces_and_dedups_string_nzbids():
+    # listgroups can serialize NZBIDs as strings (the module tolerates that
+    # via _same_nzbid elsewhere); editqueue expects an integer ID array, so
+    # the batch deleter must coerce -- and dedup across types -- or one string
+    # member fails the whole HistoryFinalDelete/GroupFinalDelete batch
+    # (round-6 review finding).
+    from resources.lib.nzbget_api import cancel_jobs
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    calls = []
+
+    def fake_rpc(method, params, settings_getter=None):
+        calls.append((method, list(params)))
+        return (None, None)
+
+    with patch("resources.lib.nzbget_api._rpc_call", side_effect=fake_rpc):
+        cancel_jobs(["9", 9, 7, None, "junk"], settings_getter=getter)
+    assert calls == [
+        ("editqueue", ["HistoryFinalDelete", "", [9, 7]]),
+        ("editqueue", ["GroupFinalDelete", "", [9, 7]]),
+    ]

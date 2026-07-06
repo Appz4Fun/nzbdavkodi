@@ -515,16 +515,19 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=N
     backups = _same_name_backups(selected, filtered, max_backups)
     if not backups:
         return None
-    count = len(backups)
     base = _dupe_score_base()
-    scored = [dict(b, score=base + count - i) for i, b in enumerate(backups)]
+    # Offsets ride BELOW the base (pick == base, backups descending under it):
+    # any later fleet's pick then strictly outranks every member of an earlier
+    # fleet regardless of their relative sizes -- base+count offsets would let
+    # an old 5-backup pick beat a seconds-later loader-only retry.
+    scored = [dict(b, score=base - 1 - i) for i, b in enumerate(backups)]
     # Carry the standby cap so the backup worker can bound its loader-widened
     # extras by the cap's REMAINING slots (same-name backups + extras must not
     # exceed "Maximum standby fallback streams"), and the score base so the
-    # extras ride on it too.
+    # extras ride below it too.
     return {
         "key": key,
-        "pick_score": base + count + 1,
+        "pick_score": base,
         "backups": scored,
         "max_backups": max_backups,
         "score_base": base,
@@ -574,7 +577,7 @@ def _loader_only_dupe_submission(selected, identity, getter=None):
     base = _dupe_score_base()
     return {
         "key": key,
-        "pick_score": base + 1,
+        "pick_score": base,
         "backups": [],
         "max_backups": max_backups,
         "score_base": base,

@@ -4267,8 +4267,8 @@ def test_nzbget_dupe_scores_ride_on_the_wall_clock_base():
     ), patch("resources.lib.router_play._dupe_score_base", return_value=100000):
         dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
     assert dupe["score_base"] == 100000
-    assert dupe["pick_score"] == 100000 + 2  # base + count+1
-    assert [b["score"] for b in dupe["backups"]] == [100000 + 1]
+    assert dupe["pick_score"] == 100000  # the pick IS the base
+    assert [b["score"] for b in dupe["backups"]] == [100000 - 1]  # below it
     # The real base is wall-clock derived: strictly positive, inside NZBGet's
     # 32-bit int score range, and different across nearby submissions -- a
     # replay 30s after a SUCCESS must OUTRANK it, not tie it (equal is not
@@ -4311,7 +4311,7 @@ def test_attach_nzbget_dupe_allows_loader_only_submission():
     assert dupe["backups"] == []
     assert dupe["loader"] == "LOADER"
     assert dupe["key"] == "imdb=0133093|the-matrix-1999-1080p"
-    assert dupe["pick_score"] == 100000 + 1
+    assert dupe["pick_score"] == 100000  # the pick IS the base
     assert dupe["score_base"] == 100000
 
 
@@ -4395,3 +4395,39 @@ def test_play_auto_select_attaches_nzbget_completed_hint():
         "dest_dir": "/dl/done",
         "bytes": 1,
     }
+
+
+def test_retry_pick_outranks_bigger_earlier_fleet_within_seconds():
+    # A retry can fall through automatically seconds after a prior SUCCESS
+    # (reuse probe miss). Intra-fleet offsets must ride BELOW the base
+    # (pick == base exactly) so a later, smaller fleet still outranks every
+    # member of an earlier, bigger one -- base+count offsets let an old
+    # 5-backup pick (base+6) beat a 3-seconds-later loader-only retry
+    # (round-6 review finding).
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    five_backups = [selected] + [
+        {"link": "http://i/b{}.nzb".format(i), "title": "The Matrix 1999 1080p"}
+        for i in range(5)
+    ]
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "5"}),
+    ):
+        with patch("resources.lib.router_play._dupe_score_base", return_value=100000):
+            old = _nzbget_dupe_submission_for_selection(
+                selected, five_backups, identity
+            )
+        with patch(
+            "resources.lib.router_play._dupe_score_base", return_value=100003
+        ):  # retry 3 "seconds" later, only one backup this time
+            retry = _nzbget_dupe_submission_for_selection(
+                selected, [selected, five_backups[1]], identity
+            )
+    old_max = max([old["pick_score"]] + [b["score"] for b in old["backups"]])
+    assert retry["pick_score"] > old_max  # strictly higher -> NZBGet re-downloads
+    # Intra-fleet ordering is preserved below the base.
+    assert retry["pick_score"] == 100003
+    assert all(b["score"] < retry["pick_score"] for b in retry["backups"])

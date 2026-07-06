@@ -19,7 +19,9 @@ import threading
 import resources.lib.nzbget_resolver as _core  # noqa: F401  pylint: disable=unused-import
 
 
-def _submit_dupe_backups(backups, dupe_key, settings_getter, cancel_event=None):
+def _submit_dupe_backups(
+    backups, dupe_key, settings_getter, cancel_event=None, submitted_sink=None
+):
     """Submit the release's duplicate backups to NZBGet (#372, Smart Duplicates).
 
     ``backups`` is the picker-computed list of ``{"link","title","score"}`` for
@@ -32,7 +34,11 @@ def _submit_dupe_backups(backups, dupe_key, settings_getter, cancel_event=None):
     into history as a backup (not deleted). Best-effort: a bad/duplicate URL or a
     failed fetch/append for one backup never aborts the rest or the pick. Stops
     early if ``cancel_event`` fires (the user canceled the resolve). Returns the
-    list of submitted NZBIDs (for logging/tests).
+    list of submitted NZBIDs (for logging/tests). ``submitted_sink`` (the
+    resolve-shared ``ctx.submitted_nzbids``) receives each NZBID AS ITS APPEND
+    SUCCEEDS -- a cancel mid-batch snapshots that list immediately, so an
+    already-appended backup must be visible before the next fetch starts,
+    not after the whole batch returns.
     """
     submitted = []
     seen = set()
@@ -46,6 +52,8 @@ def _submit_dupe_backups(backups, dupe_key, settings_getter, cancel_event=None):
         nzbid = _core._append_one_backup(nzb_url, backup, dupe_key, settings_getter)
         if nzbid:
             submitted.append(nzbid)
+            if submitted_sink is not None:
+                submitted_sink.append(nzbid)
     return submitted
 
 
@@ -273,19 +281,23 @@ def _submit_backup_fleet(getter, cancel_event, dupe_key, dupe, submitted_ids):
     post-cancel cleanup can delete exactly this resolve's submissions.
     """
     backups = list(dupe.get("backups") or [])
-    submitted_ids.extend(
-        _core._submit_dupe_backups(backups, dupe_key, getter, cancel_event=cancel_event)
-        or []
+    _core._submit_dupe_backups(
+        backups,
+        dupe_key,
+        getter,
+        cancel_event=cancel_event,
+        submitted_sink=submitted_ids,
     )
     if cancel_event.is_set():
         return
     extras = _core._loader_extras_for_fleet(dupe, backups)
     if extras:
-        submitted_ids.extend(
-            _core._submit_dupe_backups(
-                extras, dupe_key, getter, cancel_event=cancel_event
-            )
-            or []
+        _core._submit_dupe_backups(
+            extras,
+            dupe_key,
+            getter,
+            cancel_event=cancel_event,
+            submitted_sink=submitted_ids,
         )
 
 
@@ -302,11 +314,14 @@ def _loader_extras_for_fleet(dupe, backups):
         if extras_limit is None
         else max(0, extras_limit - len(backups))
     )
+    # Extras start just below the lowest same-name backup (base - count - 1);
+    # the whole fleet rides BELOW the base so any later fleet's pick (== its
+    # own, larger base) strictly outranks every member of this one.
     return _core._extra_backups_from_loader(
         dupe.get("loader"),
         [b.get("link") for b in backups],
         limit=remaining,
-        score_base=int(dupe.get("score_base") or 0),
+        score_base=int(dupe.get("score_base") or 0) - len(backups) - 1,
     )
 
 

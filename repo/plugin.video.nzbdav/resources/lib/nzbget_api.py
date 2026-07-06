@@ -463,9 +463,19 @@ def cancel_jobs(nzbids, settings_getter=None):
     NZBIDs THIS resolve submitted (never a whole-DupeKey sweep, which could
     wipe a fresh retry of the same release). History first -- the parked hidden
     ``Kind=DUP`` backups -- so nothing is left to promote when the queued ones
-    go. Empty input is a no-op; best-effort like ``cancel_job``.
+    go. IDs are coerced to int (listgroups can serialize NZBID as a string --
+    the same tolerance ``_same_nzbid`` applies) and deduped across types:
+    ``editqueue`` expects an integer array, and one bad member would fail the
+    whole batch. Empty input is a no-op; best-effort like ``cancel_job``.
     """
-    ids = [nzbid for nzbid in nzbids or [] if nzbid is not None]
+    ids = []
+    for nzbid in nzbids or []:
+        try:
+            value = int(str(nzbid).strip())
+        except (TypeError, ValueError):
+            continue
+        if value not in ids:
+            ids.append(value)
     if not ids:
         return
     _final_delete("HistoryFinalDelete", ids, settings_getter)
