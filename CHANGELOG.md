@@ -134,7 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set scan), the background worker's post-cancel cleanup deletes exactly its own
   submissions so an immediate retry of the same release survives it, and a
   promoted backup sitting paused (e.g. NZBGet paused) holds the failover wait
-  instead of reporting a failed playback. (Issue #372 rounds 2-3.)
+  instead of reporting a failed playback. Round 5: cancel is scoped to exactly
+  the downloads this play created or followed (including a backup promoted
+  while NZBGet was paused), so an overlapping play of the same release from
+  another device survives it. (Issue #372 rounds 2-5.)
 - **NZBGet mode: replaying an already-downloaded pick no longer fails.**
   Selecting a `DL`-tagged result now plays the completed files straight from
   the SMB share instead of re-submitting the NZB — NZBGet's duplicate check
