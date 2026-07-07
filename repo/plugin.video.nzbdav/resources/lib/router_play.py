@@ -330,6 +330,7 @@ def _normalize_release_name(title):
 
 _IMDB_DIGITS_RE = re.compile(r"(\d+)")
 
+
 def _imdb_digits(value):
     """Bare IMDb digits from a possibly ``tt``-prefixed id (docs: ``imdb=123456``)."""
     match = _IMDB_DIGITS_RE.search(str(value or ""))
@@ -337,6 +338,7 @@ def _imdb_digits(value):
 
 
 _TITLE_SLUG_RE = re.compile(r"[^\w]+")
+
 
 def _key_title_slug(title):
     """Lowercased hyphen slug of a title for the fallback (title-based) DupeKey."""
