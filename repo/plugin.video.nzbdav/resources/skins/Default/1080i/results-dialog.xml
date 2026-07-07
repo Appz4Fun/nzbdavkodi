@@ -78,7 +78,7 @@
         <control type="image">
           <left>0</left><top>0</top><width>1910</width><height>66</height>
           <texture>white.png</texture>
-          <colordiffuse>FF0C0C10</colordiffuse>
+          <colordiffuse>$INFO[ListItem.Property(row_bg)]</colordiffuse>
         </control>
 
         <!-- LINE 1: Available indicator + Filename + Size + Age + Indexer + Group -->
