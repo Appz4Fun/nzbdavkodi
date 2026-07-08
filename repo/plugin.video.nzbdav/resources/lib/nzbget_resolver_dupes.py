@@ -609,17 +609,33 @@ def _pick_rescue_callable(ctx, nzb_url, title):
 
     Returns a zero-arg callable the poll invokes ON THE RESOLVE THREAD (never the
     worker thread) so ``ctx.settings_getter`` off-thread reads are fine -- same as
-    ``_submit_pick``. It re-appends the pick's NZB once with ``DupeMode=FORCE``
-    (which overrides NZBGet's content-fingerprint veto) under the same DupeKey and
-    the pick's own DupeScore. On success the new NZBID is recorded into
+    ``_submit_pick``. Before overriding NZBGet's veto, confirms no FOREIGN active
+    download shares this exact release name (``active_group_by_name`` -- the
+    plain submit path has no DupeKey to check via the fleet's own
+    ``foreign_active``/``_promotion_still_pending`` guard, and a cross-DupeKey
+    scheme could shadow the fleet path's check too); if one is present, the
+    veto is shadowing a live download rather than a stale history-only one, so
+    the rescue is skipped rather than racing a wasteful parallel download. It
+    otherwise re-appends the pick's NZB once with ``DupeMode=FORCE`` (which
+    overrides the content-fingerprint veto) under the same DupeKey and the
+    pick's own DupeScore. On success the new NZBID is recorded into
     ``ctx.submitted_nzbids`` BEFORE returning -- so it counts as owned (failover
     tracking) and is covered by the cancel set -- and the id is returned. Any
-    append error/exception logs a redacted warning and returns None (the caller
-    then reports the honest COPY failure).
+    append error/exception, or the foreign-active skip, logs and returns None
+    (the caller then reports the honest COPY failure).
     """
 
     def _rescue():
         dupe = ctx.dupe or {}
+        if _core.nzbget_api.active_group_by_name(
+            title, settings_getter=ctx.settings_getter
+        ):
+            _core.xbmc.log(
+                "NZB-DAV: NZBGet FORCE rescue skipped -- a foreign active "
+                "download of this release is already queued (#372 r6).",
+                _core.xbmc.LOGINFO,
+            )
+            return None
         try:
             nzbid, error = _core.nzbget_api.append_nzb(
                 nzb_url,

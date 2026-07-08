@@ -288,8 +288,14 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet):
     ):
         if _promotion_still_pending(promoted, fleet, foreign_active):
             # A promotion can still materialize: extend the grace so it keeps
-            # its window (bounded by the outer poll timeout either way).
-            state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
+            # its window (bounded by the outer poll timeout either way). A
+            # COPY-vetoed pick re-arms on its OWN short grace, not the full
+            # 20s -- nothing server-side is pending for it either way, so
+            # re-checking promptly after the worker drains still matters
+            # (Codex review on PR #406: re-arming on _PROMOTION_GRACE here
+            # defeated the whole point of the short grace).
+            grace = _COPY_VETO_GRACE if state.get("copy_vetoed") else _PROMOTION_GRACE
+            state["promotion_deadline"] = time.monotonic() + grace
         else:
             # No backup was promoted within the grace window. If the pick died
             # DELETED/COPY, attempt the one-shot FORCE rescue before declaring

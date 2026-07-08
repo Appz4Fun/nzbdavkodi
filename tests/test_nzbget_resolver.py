@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import sys
+import time as _time_module
 from unittest.mock import MagicMock, patch
 
 from resources.lib.nzbget_resolver import (
@@ -11,6 +12,7 @@ from resources.lib.nzbget_resolver import (
     _snapshot_conn_getter,
     _spawn_dupe_backups,
     _submit_dupe_backups,
+    _tick_group_follow,
     _warn_if_healthcheck_pauses,
     play_nzbget,
     poll_nzbget_job,
@@ -1371,6 +1373,7 @@ _GS = "resources.lib.nzbget_resolver.nzbget_api.group_status"
 _HS = "resources.lib.nzbget_resolver.nzbget_api.history_status"
 _ACT = "resources.lib.nzbget_resolver.nzbget_api.active_group_by_dupekey"
 _SUC = "resources.lib.nzbget_resolver.nzbget_api.history_success_by_dupekey"
+_ACT_NAME = "resources.lib.nzbget_resolver.nzbget_api.active_group_by_name"
 
 
 def _seq_group_status(sequences):
@@ -2368,7 +2371,9 @@ def test_pick_rescue_callable_force_resubmits_under_same_key_and_records_id():
         submitted_nzbids=[],
     )
     rescue = _pick_rescue_callable(ctx, "http://i/x.nzb", "The.Movie")
-    with patch(_APPEND, return_value=(55, None)) as append:
+    with patch(_ACT_NAME, return_value=False), patch(
+        _APPEND, return_value=(55, None)
+    ) as append:
         new_id = rescue()
     assert new_id == 55
     assert append.call_args.args[0] == "http://i/x.nzb"
@@ -2379,11 +2384,39 @@ def test_pick_rescue_callable_force_resubmits_under_same_key_and_records_id():
 
     # A failed append returns None and records nothing, never raises.
     ctx.submitted_nzbids = []
-    with patch(_APPEND, return_value=(None, "append returned 0")):
+    with patch(_ACT_NAME, return_value=False), patch(
+        _APPEND, return_value=(None, "append returned 0")
+    ):
         assert rescue() is None
     assert ctx.submitted_nzbids == []
-    with patch(_APPEND, side_effect=RuntimeError("boom")):
+    with patch(_ACT_NAME, return_value=False), patch(
+        _APPEND, side_effect=RuntimeError("boom")
+    ):
         assert rescue() is None
+    assert ctx.submitted_nzbids == []
+
+
+def test_pick_rescue_callable_skips_force_when_foreign_active_present():
+    # A COPY veto can shadow a download that's still actively queued (another
+    # client, or an overlapping resolve of the same release) rather than a
+    # purely historical duplicate. FORCE would otherwise race a wasteful
+    # parallel download of identical content, so the rescue checks by name
+    # (the plain path has no DupeKey to check via active_group_by_dupekey)
+    # and skips without ever calling append.
+    from types import SimpleNamespace
+
+    from resources.lib.nzbget_resolver import _pick_rescue_callable
+
+    ctx = SimpleNamespace(settings_getter=_settings({}), dupe=None, submitted_nzbids=[])
+    rescue = _pick_rescue_callable(ctx, "http://i/x.nzb", "The.Movie")
+    with patch(_ACT_NAME, return_value=True) as active_by_name, patch(
+        _APPEND
+    ) as append:
+        assert rescue() is None
+    active_by_name.assert_called_once_with(
+        "The.Movie", settings_getter=ctx.settings_getter
+    )
+    append.assert_not_called()
     assert ctx.submitted_nzbids == []
 
 
@@ -2508,6 +2541,39 @@ def test_poll_waits_for_worker_before_copy_rescue():
     assert result["status"] == "FAILURE/COPY"
     assert calls["submit"] >= 3  # held while the worker was alive
     assert calls["rescue"] == 1  # rescued only after the worker drained
+
+
+def test_copy_veto_rearms_short_grace_not_full_promotion_grace_while_pending():
+    # Regression (Codex review on PR #406): the "promotion still pending"
+    # re-arm branch unconditionally extended by the full _PROMOTION_GRACE,
+    # even when the pick died COPY -- defeating the whole point of the short
+    # _COPY_VETO_GRACE (a worker that drains moments later would still wait
+    # out the full ~20s stall this change exists to avoid).
+    state = {
+        "current": None,
+        "exclude": 1,
+        "pick": 1,
+        "copy_vetoed": True,
+        "promotion_deadline": _time_module.monotonic() - 1,  # already expired
+        "paused_nzbids": (),
+    }
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 9999), patch(
+        "resources.lib.nzbget_resolver._COPY_VETO_GRACE", 3
+    ), patch(_SUC, return_value={"present": False}), patch(
+        _ACT, return_value={"present": False, "paused_present": False}
+    ):
+        before = _time_module.monotonic()
+        outcome = _tick_group_follow(
+            state,
+            _Dialog(),
+            None,
+            "k",
+            {"is_submitting": lambda: True},  # still pending -> re-arm, not rescue
+        )
+    assert outcome is None
+    # Re-armed on the short grace (~3s out), nowhere near the full 9999s.
+    assert state["promotion_deadline"] < before + 3 + 2
+    assert state["promotion_deadline"] > before + 3 - 2
 
 
 def test_poll_prefers_live_owned_backup_over_rescue():
