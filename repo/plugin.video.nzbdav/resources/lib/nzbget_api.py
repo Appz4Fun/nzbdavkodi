@@ -558,6 +558,19 @@ def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
     }
 
 
+def _group_name_match(group, target, exclude_nzbid):
+    """One ``listgroups`` row's verdict for the ``active_group_by_name`` scan.
+
+    Split out to keep the caller's cyclomatic complexity down (Codacy
+    feedback pattern from PR #406's other extractions).
+    """
+    if not isinstance(group, dict):
+        return False
+    if exclude_nzbid is not None and _same_nzbid(group.get("NZBID"), exclude_nzbid):
+        return False
+    return str(group.get("NZBName") or "").strip().lower() == target
+
+
 def active_group_by_name(nzb_name, exclude_nzbid=None, settings_getter=None):
     """Whether an active (any status) queued group's name matches ``nzb_name``.
 
@@ -578,14 +591,7 @@ def active_group_by_name(nzb_name, exclude_nzbid=None, settings_getter=None):
     if error is not None or not isinstance(groups, list):
         return False
     target = str(nzb_name).strip().lower()
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        if exclude_nzbid is not None and _same_nzbid(group.get("NZBID"), exclude_nzbid):
-            continue
-        if str(group.get("NZBName") or "").strip().lower() == target:
-            return True
-    return False
+    return any(_group_name_match(group, target, exclude_nzbid) for group in groups)
 
 
 def history_success_by_dupekey(dupe_key, exclude_nzbids=None, settings_getter=None):
