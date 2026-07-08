@@ -25,21 +25,33 @@ from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
 from resources.lib.nzbget_resolver_dupes import (  # noqa: E402,F401
+    _COPY_VETO_GRACE,
     _HEALTHCHECK_LOCK,
     _HEALTHCHECK_WARNED,
     _MAX_EXTRA_BACKUPS,
+    _MAX_VETO_REPLACEMENTS,
     _append_one_backup,
+    _canceled_resolve_nzbids,
     _cleanup_canceled_submissions,
+    _copy_vetoed_after_append,
     _dupe_check_disabled,
     _dupe_worker_should_skip,
     _extra_backups_from_loader,
+    _is_copy_failure,
+    _is_copy_veto_status,
     _load_extra_candidates,
     _loader_extras_for_fleet,
     _nothing_to_submit,
+    _pick_rescue_callable,
+    _preexisting_success_ids,
+    _read_poll_interval,
+    _rescue_or_exhausted,
+    _rescue_plain_pick,
     _snapshot_conn_getter,
     _spawn_dupe_backups,
     _submit_backup_fleet,
     _submit_dupe_backups,
+    _submit_extras_until_filled,
     _usable_backup_link,
     _warn_if_healthcheck_pauses,
 )
@@ -117,6 +129,12 @@ def poll_nzbget_job(
         "promotion_deadline": None,
         "exclude": None,
         "paused_nzbids": (),
+        # #372 r6 COPY-veto rescue: the original pick id, a sticky flag set when
+        # THAT pick died DELETED/COPY (never entered the queue), and a one-shot
+        # guard so the FORCE re-submit is attempted at most once per resolve.
+        "pick": nzbid,
+        "copy_vetoed": False,
+        "rescued": False,
     }
     if dupe_key:
         state["stale_successes"] = _preexisting_success_ids(dupe_key, settings_getter)
@@ -137,23 +155,6 @@ def poll_nzbget_job(
         if monitor.waitForAbort(interval):
             return {"outcome": "aborted"}
     return {"outcome": "timeout"}
-
-
-def _preexisting_success_ids(dupe_key, settings_getter):
-    """Same-key SUCCESS rows already in history when the poll starts (#372 r4).
-
-    Group-follow must IGNORE them: they predate this resolve (their files may
-    be long gone -- the picker's reuse probe already declined them), and
-    playing one would fail "No video file found" instead of waiting for this
-    fleet's own member to complete. Best-effort: an RPC error yields ``()``
-    (fail-open to the pre-round-4 behavior).
-    """
-    try:
-        return tuple(
-            nzbget_api.success_ids_by_dupekey(dupe_key, settings_getter=settings_getter)
-        )
-    except Exception:  # pylint: disable=broad-except
-        return ()
 
 
 def _update_active_dialog(dialog, group):
@@ -181,7 +182,7 @@ def _poll_tick(state, dialog, settings_getter, dupe_key, fleet=None):
     the group failed.
     """
     if state["current"] is not None:
-        outcome = _tick_tracked_member(state, dialog, settings_getter, dupe_key)
+        outcome = _tick_tracked_member(state, dialog, settings_getter, dupe_key, fleet)
         if outcome is not _FOLLOW_GROUP:
             return outcome
     return _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet)
@@ -193,7 +194,7 @@ def _poll_tick(state, dialog, settings_getter, dupe_key, fleet=None):
 _FOLLOW_GROUP = object()
 
 
-def _tick_tracked_member(state, dialog, settings_getter, dupe_key):
+def _tick_tracked_member(state, dialog, settings_getter, dupe_key, fleet=None):
     """Poll the currently tracked NZBID (the ``state["current"]`` branch).
 
     Returns a terminal outcome dict, None to keep waiting, or ``_FOLLOW_GROUP``
@@ -214,6 +215,11 @@ def _tick_tracked_member(state, dialog, settings_getter, dupe_key):
     if hist["success"]:
         return {"outcome": "success", "dest_dir": hist["dest_dir"]}
     if not dupe_key:
+        # Plain submit: a DELETED/COPY veto (content already in history, never
+        # queued) is recoverable by a one-shot FORCE re-submit (#372 r6);
+        # anything else ends the poll as before.
+        if _is_copy_veto_status(hist["status"]) and _rescue_plain_pick(state, fleet):
+            return None
         return {"outcome": "failed", "status": hist["status"]}
     # The tracked member failed but a DupeKey group may fail over. Remember
     # its id: NZBGet's queue->history transition is not atomic, so it can
@@ -221,7 +227,15 @@ def _tick_tracked_member(state, dialog, settings_getter, dupe_key):
     # promotion scan can't re-select the failed member as its own promotion.
     state["exclude"] = current
     state["current"] = None
-    state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
+    # Only the ORIGINAL pick's COPY death arms the FORCE rescue: it never got a
+    # real attempt, so no server-side promotion is coming from it -- a short
+    # grace instead of the full 20s (a later-adopted backup's genuine failure
+    # neither sets nor clears the sticky flag; the pick still earns its rescue).
+    grace = _PROMOTION_GRACE
+    if current == state.get("pick") and _is_copy_veto_status(hist["status"]):
+        state["copy_vetoed"] = True
+        grace = _COPY_VETO_GRACE
+    state["promotion_deadline"] = time.monotonic() + grace
     return _FOLLOW_GROUP
 
 
@@ -253,12 +267,20 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet):
         state["promotion_deadline"] is not None
         and time.monotonic() >= state["promotion_deadline"]
     ):
-        if not _promotion_still_pending(promoted, fleet, foreign_active):
-            # No backup was promoted within the grace window -> group exhausted.
-            return {"outcome": "failed", "status": "FAILURE/DUPE"}
-        # A promotion can still materialize: extend the grace so it keeps its
-        # window (bounded by the outer poll timeout either way).
-        state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
+        if _promotion_still_pending(promoted, fleet, foreign_active):
+            # A promotion can still materialize: extend the grace so it keeps
+            # its window (bounded by the outer poll timeout either way).
+            state["promotion_deadline"] = time.monotonic() + _PROMOTION_GRACE
+        else:
+            # No backup was promoted within the grace window. If the pick died
+            # DELETED/COPY, attempt the one-shot FORCE rescue before declaring
+            # the group exhausted (#372 r6); otherwise this is the unchanged
+            # FAILURE/DUPE outcome.
+            terminal = _rescue_or_exhausted(state, fleet)
+            if terminal is not None:
+                return terminal
+            # Rescued: state["current"] now tracks the FORCE re-submit; fall
+            # through to the dialog update and keep polling.
     dialog.update(100, _string(30219))
     return None
 
@@ -373,22 +395,6 @@ def _read_settings(settings_getter):
     return url, smb_root, timeout
 
 
-def _read_poll_interval(settings_getter):
-    """Read+clamp the shared ``poll_interval`` setting (seconds).
-
-    The NZBGet path honors the same backend-agnostic Polling setting as the
-    nzbdav path (range [1..60]) instead of a hardcoded cadence.
-    """
-    getter = _bind_getter(settings_getter)
-    try:
-        interval = int(getter("poll_interval", "") or _DEFAULT_POLL_INTERVAL)
-    except (TypeError, ValueError):
-        interval = _DEFAULT_POLL_INTERVAL
-    interval = max(interval, _POLL_INTERVAL_MIN)
-    interval = min(interval, _POLL_INTERVAL_MAX)
-    return interval
-
-
 def _resolve_failure(handle, message=None):
     if message:
         _notify(_addon_name(), message, 5000)
@@ -456,36 +462,12 @@ def _handle_poll_failure(
         on_failure(None)
         return True, False
     if outcome == "failed":
-        on_failure(_string(30220))
+        # A COPY-shaped terminal (the FORCE rescue could not be performed or was
+        # itself refused) gets the honest "already in history, re-queue failed"
+        # message; every other failure keeps the generic one (#372 r6).
+        on_failure(_string(30231) if _is_copy_failure(poll_result) else _string(30220))
         return True, False
     return False, False
-
-
-def _canceled_resolve_nzbids(nzbid, poll_result, submitted_nzbids):
-    """Every NZBID this resolve may have running at cancel (#372 round 5).
-
-    ID-SCOPED, never a whole-DupeKey sweep: an overlapping play of the same
-    release (another client, or an already-queued retry) shares the stable
-    DupeKey and must survive this cancel. Covers the tracked member (the
-    promoted backup once failover switched), any paused-promoted members (a
-    promotion that landed while NZBGet was paused never becomes tracked), the
-    worker's submitted backups (the parked hidden DUP rows -- ``cancel_jobs``
-    deletes history before queue, so nothing of OURS is left to promote; a
-    manual final-delete does not trigger NZBGet's failover), and the original
-    pick. An append still in flight at cancel is covered by the worker's own
-    drain cleanup.
-    """
-    result = poll_result or {}
-    ids = []
-    for candidate in [
-        result.get("nzbid"),
-        *(result.get("paused_nzbids") or ()),
-        *(submitted_nzbids or []),
-        nzbid,
-    ]:
-        if candidate is not None and candidate not in ids:
-            ids.append(candidate)
-    return ids
 
 
 def _resolve_completed_smb(
@@ -656,6 +638,11 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
         fleet={
             "is_submitting": _backups_still_submitting,
             "owned_nzbids": _owned_fleet_nzbids,
+            # #372 r6: a confirmed COPY veto (pick died DELETED/COPY, group
+            # otherwise exhausted) is recovered by a one-shot FORCE re-submit of
+            # the pick. Built on both the fleet and plain paths (the dict is
+            # always passed to the poll).
+            "rescue": _pick_rescue_callable(ctx, nzb_url, title),
         },
     )
     handled, leave_job = _handle_poll_failure(

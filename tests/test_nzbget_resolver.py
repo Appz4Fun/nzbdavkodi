@@ -1093,7 +1093,9 @@ def test_submit_dupe_backups_appends_with_shared_key_and_scores():
         {"link": "http://i/a.nzb", "title": "The Movie GROUP2", "score": 999},
         {"link": "http://i/b.nzb", "title": "The Movie GROUP3", "score": 998},
     ]
-    with patch(_APPEND, return_value=(5, None)) as append:
+    with patch(_APPEND, return_value=(5, None)) as append, patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append", return_value=False
+    ):
         submitted = _submit_dupe_backups(backups, "imdb=1234567", _settings({}))
     assert [c.args[0] for c in append.call_args_list] == [
         "http://i/a.nzb",
@@ -1115,7 +1117,9 @@ def test_submit_dupe_backups_skips_bad_and_duplicate_urls():
         {"link": "http://i/a.nzb", "title": "dup", "score": 7},
         {"link": "http://i/b.nzb", "title": "B", "score": 6},
     ]
-    with patch(_APPEND, return_value=(5, None)) as append:
+    with patch(_APPEND, return_value=(5, None)) as append, patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append", return_value=False
+    ):
         _submit_dupe_backups(backups, "k", _settings({}))
     assert [c.args[0] for c in append.call_args_list] == [
         "http://i/a.nzb",
@@ -1135,7 +1139,9 @@ def test_submit_dupe_backups_is_fail_soft_per_backup():
             raise RuntimeError("boom")
         return (7, None)
 
-    with patch(_APPEND, side_effect=flaky) as append:
+    with patch(_APPEND, side_effect=flaky) as append, patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append", return_value=False
+    ):
         submitted = _submit_dupe_backups(backups, "k", _settings({}))
     assert append.call_count == 3
     assert len(submitted) == 2  # a and c despite b raising
@@ -1167,7 +1173,7 @@ def test_spawn_dupe_backups_submits_and_warns_healthcheck():
     dupe = {"key": "imdb=1", "pick_score": 1000, "backups": [{"link": "u", "score": 9}]}
     ctx = _dupe_ctx(dupe)
     with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
-        "resources.lib.nzbget_resolver._submit_dupe_backups"
+        "resources.lib.nzbget_resolver._submit_dupe_backups", return_value=[5]
     ) as core, patch(
         "resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"
     ) as warn, patch(
@@ -1690,7 +1696,7 @@ def test_spawn_dupe_backups_bounds_extras_by_remaining_standby_slots():
     }
     seen = {}
 
-    def _extra(loader, seen_links, limit=5, score_base=0):
+    def _extra(loader, seen_links, limit=5, score_base=0, reserve=0):
         seen["limit"] = limit
         return []
 
@@ -1702,7 +1708,7 @@ def test_spawn_dupe_backups_bounds_extras_by_remaining_standby_slots():
         "resources.lib.nzbget_resolver._extra_backups_from_loader", side_effect=_extra
     ):
         _spawn_dupe_backups(_dupe_ctx(dupe))
-    assert seen["limit"] == 0  # 2 cap - 2 same-name backups used = 0 slots left
+    assert seen["limit"] == 0  # 2 cap - 2 live same-name backups = 0 slots left
 
 
 def test_poll_excludes_just_failed_member_from_promotion_scan():
@@ -1813,7 +1819,7 @@ def test_spawn_dupe_backups_threads_score_base_into_extras():
     }
     seen = {}
 
-    def _extra(loader, seen_links, limit=5, score_base=0):
+    def _extra(loader, seen_links, limit=5, score_base=0, reserve=0):
         seen["limit"] = limit
         seen["score_base"] = score_base
         return []
@@ -1828,13 +1834,14 @@ def test_spawn_dupe_backups_threads_score_base_into_extras():
         _spawn_dupe_backups(_dupe_ctx(dupe))
     # Extras start just below the lowest same-name backup: base - count - 1.
     assert seen["score_base"] == 100000 - 1 - 1
-    assert seen["limit"] == 2  # 3 cap - 1 same-name
+    assert seen["limit"] == 2  # 3 cap - 1 live same-name
 
 
 def test_spawn_dupe_backups_runs_loader_only_fleet():
     # A loader-only submission (no same-name backups) must still spawn the
     # worker and submit the loader extras under the fleet's DupeKey
-    # (review thread: loader-only duplicate backups).
+    # (review thread: loader-only duplicate backups). Round 6: the extras now
+    # flow through the veto-aware fill loop, so they are appended directly.
     dupe = {
         "key": "k",
         "pick_score": 100001,
@@ -1843,22 +1850,22 @@ def test_spawn_dupe_backups_runs_loader_only_fleet():
         "max_backups": 3,
         "loader": lambda: [{"link": "x", "title": "X"}],
     }
-    submitted = []
-
-    def _submit(backups, key, getter, cancel_event=None, submitted_sink=None):
-        submitted.append(list(backups))
-        return [11] if backups else []
-
     with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
-        "resources.lib.nzbget_resolver._submit_dupe_backups", side_effect=_submit
-    ), patch("resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"), patch(
+        _APPEND, return_value=(11, None)
+    ) as append, patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append", return_value=False
+    ), patch(
+        "resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"
+    ), patch(
         "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
     ):
         thread = _spawn_dupe_backups(_dupe_ctx(dupe))
     assert thread is not None  # worker ran (not the no-backups noop)
-    # Second submit call carries the loader extras, starting just below the
-    # (empty) same-name band: base - 0 - 1.
-    assert submitted[-1] == [{"link": "x", "title": "X", "score": 100000 - 1}]
+    # The loader extra is appended under the fleet DupeKey, scored just below
+    # the (empty) same-name band: base - 0 - 1.
+    assert append.call_args.args[0] == "x"
+    assert append.call_args.kwargs["dupe_key"] == "k"
+    assert append.call_args.kwargs["dupe_score"] == 100000 - 1
 
 
 def test_poll_group_follow_ignores_stale_preexisting_success():
@@ -1906,7 +1913,9 @@ def test_backups_submit_under_their_own_release_title():
     # then re-download despite the files existing (review thread:
     # completed-history reuse).
     ev = None
-    with patch(_APPEND, return_value=(5, None)) as append:
+    with patch(_APPEND, return_value=(5, None)) as append, patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append", return_value=False
+    ):
         row = {"link": "http://i/a.nzb", "title": "The.Movie.2024.1080p-GRP"}
         _submit_dupe_backups(
             [dict(row, score=1)],
@@ -2123,7 +2132,9 @@ def test_backup_nzbids_publish_into_shared_list_as_appends_land():
         seen_during.append(list(shared))  # snapshot BEFORE this append lands
         return (100 + len(seen_during), None)
 
-    with patch(_APPEND, side_effect=fake_append):
+    with patch(_APPEND, side_effect=fake_append), patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append", return_value=False
+    ):
         _submit_dupe_backups(
             [
                 {"link": "http://i/a.nzb", "title": "A", "score": 2},
@@ -2136,3 +2147,486 @@ def test_backup_nzbids_publish_into_shared_list_as_appends_land():
     # By the time the SECOND append starts, the first id is already published.
     assert seen_during[1] == [101]
     assert shared == [101, 102]
+
+
+# ---------------------------------------------------------------------------
+# #372 round 6: recover from NZBGet's content-fingerprint DELETED/COPY veto
+#   - reactive one-shot FORCE rescue of a pick that never entered the queue
+#   - veto-aware backfill of a COPY-vetoed backup slot from the loader pool
+#   - honest failure message + short grace when the pick died DELETED/COPY
+# ---------------------------------------------------------------------------
+
+_COPY = {"present": True, "success": False, "status": "DELETED/COPY", "dest_dir": ""}
+
+
+def _hist_ok(dest_dir):
+    return {
+        "present": True,
+        "success": True,
+        "status": "SUCCESS/ALL",
+        "dest_dir": dest_dir,
+    }
+
+
+def _hist_fail(status):
+    return {"present": True, "success": False, "status": status, "dest_dir": ""}
+
+
+def test_copy_vetoed_after_append_is_affirmative_only():
+    # Only an AFFIRMATIVE visible DELETED/COPY history row counts as vetoed:
+    # an RPC error, an absent row, or any other status falls back to LIVE so a
+    # misclassification can only degrade to today's behavior, never drop a good
+    # backup.
+    from resources.lib.nzbget_resolver import _copy_vetoed_after_append
+
+    with patch(_HS, side_effect=RuntimeError("boom")):
+        assert _copy_vetoed_after_append(7, _settings({})) is False
+    with patch(_HS, return_value={"present": False, "status": "", "dest_dir": ""}):
+        assert _copy_vetoed_after_append(7, _settings({})) is False
+    with patch(_HS, return_value={"present": True, "status": "FAILURE/HEALTH"}):
+        assert _copy_vetoed_after_append(7, _settings({})) is False
+    with patch(_HS, return_value={"present": True, "status": "DELETED/DUPE"}):
+        assert _copy_vetoed_after_append(7, _settings({})) is False
+    for status in ("DELETED/COPY", "deleted/copy", "  Deleted/Copy  "):
+        with patch(_HS, return_value={"present": True, "status": status}):
+            assert _copy_vetoed_after_append(7, _settings({})) is True
+
+
+def test_submit_dupe_backups_sinks_but_does_not_count_vetoed_ids():
+    # A COPY-vetoed backup id must be EXCLUDED from the LIVE return (that slot
+    # was never really filled) yet still land in the shared sink so a cancel
+    # deletes its DELETED/COPY history row too.
+    backups = [
+        {"link": "http://i/a.nzb", "title": "A", "score": 2},
+        {"link": "http://i/b.nzb", "title": "B", "score": 1},
+    ]
+    ids = {"http://i/a.nzb": 10, "http://i/b.nzb": 11}
+    sink = []
+
+    def fake_append(url, name, settings_getter=None, **kw):
+        return (ids[url], None)
+
+    with patch(_APPEND, side_effect=fake_append), patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append",
+        side_effect=lambda nzbid, getter: nzbid == 10,  # 'a' vetoed
+    ):
+        live = _submit_dupe_backups(backups, "k", _settings({}), submitted_sink=sink)
+    assert live == [11]  # vetoed 10 not counted as a live backup
+    assert sink == [10, 11]  # both sink -> cancel deletes the vetoed row too
+
+
+def test_extra_backups_from_loader_reserve_widens_list_only():
+    from resources.lib.nzbget_resolver import _extra_backups_from_loader
+
+    cands = [{"link": "a"}, {"link": "b"}, {"link": "c"}, {"link": "d"}]
+    # Default reserve=0 keeps the pre-round-6 behavior byte-identical.
+    base = _extra_backups_from_loader(lambda: cands, [], limit=2)
+    assert [e["link"] for e in base] == ["a", "b"]
+    # reserve widens the candidate LIST (backfill headroom) beyond the cap.
+    widened = _extra_backups_from_loader(lambda: cands, [], limit=2, reserve=2)
+    assert [e["link"] for e in widened] == ["a", "b", "c", "d"]
+    # Scores stay strictly descending from the anchor across the whole list.
+    assert [e["score"] for e in widened] == [0, -1, -2, -3]
+    scored = _extra_backups_from_loader(
+        lambda: cands, [], limit=2, reserve=2, score_base=500
+    )
+    assert [e["score"] for e in scored] == [500, 499, 498, 497]
+    # cap<=0 short-circuits regardless of reserve.
+    assert not _extra_backups_from_loader(lambda: cands, [], limit=0, reserve=5)
+
+
+def test_backup_fleet_backfills_vetoed_same_name_slot_from_loader():
+    # cap 2, one same-name backup COPY-vetoed -> the freed slot is backfilled
+    # with a loader candidate the pre-round-6 budget (2 cap - 2 same-name = 0)
+    # would never have submitted.
+    import threading
+
+    from resources.lib.nzbget_resolver import _submit_backup_fleet
+
+    dupe = {
+        "key": "k",
+        "score_base": 1000,
+        "max_backups": 2,
+        "backups": [
+            {"link": "a", "title": "A", "score": 5},
+            {"link": "b", "title": "B", "score": 4},
+        ],
+        "loader": lambda: [{"link": "x", "title": "X"}],
+    }
+    ids = {"a": 1, "b": 2, "x": 3}
+    sink = []
+
+    def fake_append(url, name, settings_getter=None, **kw):
+        return (ids[url], None)
+
+    with patch(_APPEND, side_effect=fake_append) as append, patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append",
+        side_effect=lambda nzbid, getter: nzbid == 1,  # same-name 'a' vetoed
+    ):
+        _submit_backup_fleet(_settings({}), threading.Event(), "k", dupe, sink)
+    appended = [c.args[0] for c in append.call_args_list]
+    assert appended == ["a", "b", "x"]  # x backfilled the vetoed 'a' slot
+    assert sink == [1, 2, 3]  # every appended id sinks, vetoed one included
+
+
+def test_backup_fleet_replaces_vetoed_extras_until_pool_or_attempt_bound():
+    import threading
+
+    from resources.lib.nzbget_resolver import (
+        _MAX_VETO_REPLACEMENTS,
+        _submit_extras_until_filled,
+    )
+
+    candidates = [
+        {"link": "u%d" % i, "title": "T%d" % i, "score": 100 - i} for i in range(20)
+    ]
+
+    # Everything vetoed -> attempts stop at remaining + _MAX_VETO_REPLACEMENTS.
+    calls = {"n": 0}
+
+    def append_all(url, name, settings_getter=None, **kw):
+        calls["n"] += 1
+        return (calls["n"], None)
+
+    with patch(_APPEND, side_effect=append_all), patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append", return_value=True
+    ):
+        live = _submit_extras_until_filled(
+            candidates, 2, "k", _settings({}), threading.Event(), []
+        )
+    assert not live  # never reached the live target
+    assert calls["n"] == 2 + _MAX_VETO_REPLACEMENTS  # bounded attempt budget
+
+    # Keeps drawing past vetoed candidates to reach the live target.
+    calls2 = {"n": 0}
+
+    def append_seq(url, name, settings_getter=None, **kw):
+        calls2["n"] += 1
+        return (calls2["n"], None)
+
+    with patch(_APPEND, side_effect=append_seq), patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append",
+        side_effect=lambda nzbid, getter: nzbid in (1, 2),  # first two vetoed
+    ):
+        live2 = _submit_extras_until_filled(
+            candidates, 2, "k", _settings({}), threading.Event(), []
+        )
+    assert live2 == [3, 4]  # skipped two vetoed, filled two live
+    assert calls2["n"] == 4  # within the 2 + 5 attempt bound
+
+
+def _rescue_stub(new_id, counter):
+    def _rescue():
+        counter["n"] += 1
+        return new_id
+
+    return _rescue
+
+
+def test_poll_rescues_copy_vetoed_pick_and_plays_force_resubmit():
+    # The pick dies DELETED/COPY (never entered the queue) and the group is
+    # otherwise exhausted -> the poll invokes the one-shot FORCE rescue, tracks
+    # the new NZBID, and plays it when it succeeds.
+    dialog = _Dialog()
+    counter = {"n": 0}
+    hs = {
+        1: dict(_COPY),
+        7: _hist_ok("/dl/R"),
+    }
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        "resources.lib.nzbget_resolver._COPY_VETO_GRACE", 0
+    ), patch(_GS, side_effect=_seq_group_status({1: [False], 7: [True, False]})), patch(
+        _HS, side_effect=lambda n, settings_getter=None: hs.get(n, {"present": False})
+    ), patch(
+        _ACT, return_value={"present": False}
+    ), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            fleet={"rescue": _rescue_stub(7, counter)},
+        )
+    assert result == {"outcome": "success", "dest_dir": "/dl/R"}
+    assert counter["n"] == 1  # rescue fired exactly once
+
+
+def test_pick_rescue_callable_force_resubmits_under_same_key_and_records_id():
+    from types import SimpleNamespace
+
+    from resources.lib.nzbget_resolver import _pick_rescue_callable
+
+    ctx = SimpleNamespace(
+        settings_getter=_settings({}),
+        dupe={"key": "imdb=9", "pick_score": 1000},
+        submitted_nzbids=[],
+    )
+    rescue = _pick_rescue_callable(ctx, "http://i/x.nzb", "The.Movie")
+    with patch(_APPEND, return_value=(55, None)) as append:
+        new_id = rescue()
+    assert new_id == 55
+    assert append.call_args.args[0] == "http://i/x.nzb"
+    assert append.call_args.kwargs["dupe_key"] == "imdb=9"  # same key reused
+    assert append.call_args.kwargs["dupe_score"] == 1000  # pick score reused
+    assert append.call_args.kwargs["dupe_mode"] == "FORCE"  # overrides the veto
+    assert ctx.submitted_nzbids == [55]  # recorded BEFORE return (owned/cancel)
+
+    # A failed append returns None and records nothing, never raises.
+    ctx.submitted_nzbids = []
+    with patch(_APPEND, return_value=(None, "append returned 0")):
+        assert rescue() is None
+    assert ctx.submitted_nzbids == []
+    with patch(_APPEND, side_effect=RuntimeError("boom")):
+        assert rescue() is None
+    assert ctx.submitted_nzbids == []
+
+
+def test_poll_rescue_is_one_shot():
+    # The FORCE re-submit is tried once. If the rescued download later fails a
+    # real health check with no promotion, the group reports FAILURE/DUPE and
+    # the rescue is NOT attempted again.
+    dialog = _Dialog()
+    counter = {"n": 0}
+    hs = {
+        1: dict(_COPY),
+        7: _hist_fail("FAILURE/HEALTH"),
+    }
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        "resources.lib.nzbget_resolver._COPY_VETO_GRACE", 0
+    ), patch(_GS, side_effect=_seq_group_status({1: [False], 7: [False]})), patch(
+        _HS, side_effect=lambda n, settings_getter=None: hs.get(n, {"present": False})
+    ), patch(
+        _ACT, return_value={"present": False}
+    ), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            fleet={"rescue": _rescue_stub(7, counter)},
+        )
+    assert result == {"outcome": "failed", "status": "FAILURE/DUPE"}
+    assert counter["n"] == 1
+
+
+def test_poll_reports_failure_copy_when_rescue_unavailable_or_fails():
+    def _run(fleet):
+        dialog = _Dialog()
+        with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+            "resources.lib.nzbget_resolver._COPY_VETO_GRACE", 0
+        ), patch(_GS, side_effect=_seq_group_status({1: [False]})), patch(
+            _HS, return_value=dict(_COPY)
+        ), patch(
+            _ACT, return_value={"present": False}
+        ), patch(
+            _SUC, return_value={"present": False}
+        ), patch(
+            "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+        ):
+            return poll_nzbget_job(
+                1, dialog, _Monitor(), 60, interval=0, dupe_key="k", fleet=fleet
+            )
+
+    assert _run({})["status"] == "FAILURE/COPY"  # no rescue callable
+    assert _run({"rescue": lambda: None})["status"] == "FAILURE/COPY"  # append failed
+
+
+def test_poll_copy_veto_uses_short_grace():
+    # With _PROMOTION_GRACE huge but _COPY_VETO_GRACE 0, the COPY branch's short
+    # grace still lets exhaustion/rescue be reached promptly (no ~20s stall).
+    dialog = _Dialog()
+    counter = {"n": 0}
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 9999), patch(
+        "resources.lib.nzbget_resolver._COPY_VETO_GRACE", 0
+    ), patch(_GS, side_effect=_seq_group_status({1: [False]})), patch(
+        _HS, return_value=dict(_COPY)
+    ), patch(
+        _ACT, return_value={"present": False}
+    ), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            fleet={"rescue": _rescue_stub(None, counter)},
+        )
+    assert result["status"] == "FAILURE/COPY"
+    assert counter["n"] == 1
+
+
+def test_poll_waits_for_worker_before_copy_rescue():
+    # The rescue must not fire while the backup worker is still appending -- a
+    # sibling that escapes the veto should be adopted first.
+    dialog = _Dialog()
+    calls = {"submit": 0, "rescue": 0}
+
+    def _is_submitting():
+        calls["submit"] += 1
+        return calls["submit"] < 3  # still appending for the first two checks
+
+    def _rescue():
+        calls["rescue"] += 1  # returns None -> rescue append could not help
+
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        "resources.lib.nzbget_resolver._COPY_VETO_GRACE", 0
+    ), patch(_GS, side_effect=_seq_group_status({1: [False]})), patch(
+        _HS, return_value=dict(_COPY)
+    ), patch(
+        _ACT, return_value={"present": False}
+    ), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            fleet={"rescue": _rescue, "is_submitting": _is_submitting},
+        )
+    assert result["status"] == "FAILURE/COPY"
+    assert calls["submit"] >= 3  # held while the worker was alive
+    assert calls["rescue"] == 1  # rescued only after the worker drained
+
+
+def test_poll_prefers_live_owned_backup_over_rescue():
+    # The pick dies COPY, but an owned promoted backup surfaces -> it is adopted
+    # and the rescue never fires.
+    dialog = _Dialog()
+    counter = {"n": 0}
+    hs = {
+        1: dict(_COPY),
+        9: _hist_ok("/dl/B"),
+    }
+    with patch(
+        _GS, side_effect=_seq_group_status({1: [False], 9: [True, False]})
+    ), patch(
+        _HS, side_effect=lambda n, settings_getter=None: hs.get(n, {"present": False})
+    ), patch(
+        _ACT,
+        return_value={
+            "present": True,
+            "nzbid": 9,
+            "status": "DOWNLOADING",
+            "percent": 5,
+        },
+    ), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            fleet={
+                "rescue": _rescue_stub(999, counter),
+                "owned_nzbids": lambda: (1, 9),
+            },
+        )
+    assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+    assert counter["n"] == 0  # adopted the owned backup; rescue never called
+
+
+def test_poll_no_dupe_key_rescues_copy_vetoed_plain_submit():
+    # The same COPY veto also strikes the plain (no-fleet) submit path; the poll
+    # carries a rescue callable there too and recovers via the FORCE re-submit.
+    dialog = _Dialog()
+    counter = {"n": 0}
+    hs = {
+        1: dict(_COPY),
+        7: _hist_ok("/dl/R"),
+    }
+    with patch(
+        _GS, side_effect=_seq_group_status({1: [False], 7: [True, False]})
+    ), patch(
+        _HS, side_effect=lambda n, settings_getter=None: hs.get(n, {"present": False})
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="",
+            fleet={"rescue": _rescue_stub(7, counter)},
+        )
+    assert result == {"outcome": "success", "dest_dir": "/dl/R"}
+    assert counter["n"] == 1
+
+
+def test_poll_canceled_after_rescue_carries_rescued_nzbid():
+    # Canceling right after the rescue adoption must carry the rescued NZBID so
+    # the cancel path final-deletes exactly it.
+    dialog = _Dialog()
+
+    def _group(nzbid, settings_getter=None):
+        if nzbid == 7:
+            dialog.canceled = True  # cancel as the rescued id is first polled
+            return {"present": True, "status": "DOWNLOADING", "percent": 5}
+        return {"present": False, "status": "", "percent": 0}
+
+    hs = {1: dict(_COPY)}
+    with patch("resources.lib.nzbget_resolver._PROMOTION_GRACE", 0), patch(
+        "resources.lib.nzbget_resolver._COPY_VETO_GRACE", 0
+    ), patch(_GS, side_effect=_group), patch(
+        _HS, side_effect=lambda n, settings_getter=None: hs.get(n, {"present": False})
+    ), patch(
+        _ACT, return_value={"present": False}
+    ), patch(
+        _SUC, return_value={"present": False}
+    ), patch(
+        "resources.lib.nzbget_resolver._preexisting_success_ids", return_value=()
+    ):
+        result = poll_nzbget_job(
+            1,
+            dialog,
+            _Monitor(),
+            60,
+            interval=0,
+            dupe_key="k",
+            fleet={"rescue": lambda: 7},
+        )
+    assert result["outcome"] == "canceled"
+    assert result["nzbid"] == 7
+
+
+def test_handle_poll_failure_copy_status_uses_honest_message():
+    # A COPY-shaped terminal status (synthetic FAILURE/COPY or raw DELETED/COPY)
+    # surfaces the honest "already in history, re-queue failed" message (30231);
+    # any other failure keeps the generic 30220.
+    seen = []
+    with patch("resources.lib.nzbget_resolver._string", side_effect=str):
+        for status in ("FAILURE/COPY", "DELETED/COPY", "FAILURE/HEALTH"):
+            _handle_poll_failure(
+                "failed",
+                5,
+                _settings({}),
+                seen.append,
+                poll_result={"outcome": "failed", "status": status},
+            )
+    assert seen == ["30231", "30231", "30220"]

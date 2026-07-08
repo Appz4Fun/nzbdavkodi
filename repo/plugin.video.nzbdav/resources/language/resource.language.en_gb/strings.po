@@ -885,3 +885,7 @@ msgstr "TMDB API key (optional, improves TV results via TVDB id)"
 msgctxt "#30230"
 msgid "NZBGet HealthCheck=Pause: set it to Delete, None, or Park so a broken download can fail over to a duplicate"
 msgstr "NZBGet HealthCheck=Pause: set it to Delete, None, or Park so a broken download can fail over to a duplicate"
+
+msgctxt "#30231"
+msgid "NZBGet skipped this release (already in its history) and re-queueing failed"
+msgstr "NZBGet skipped this release (already in its history) and re-queueing failed"
