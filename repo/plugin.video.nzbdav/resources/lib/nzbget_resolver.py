@@ -25,7 +25,6 @@ from resources.lib.i18n import addon_name as _addon_name
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
 from resources.lib.nzbget_resolver_dupes import (  # noqa: E402,F401
-    _COPY_VETO_GRACE,
     _HEALTHCHECK_LOCK,
     _HEALTHCHECK_WARNED,
     _MAX_EXTRA_BACKUPS,
@@ -87,6 +86,14 @@ _DOWNLOAD_STATUSES = frozenset({"DOWNLOADING", "FETCHING"})
 # duplicate backup into the queue before declaring the whole group failed (#372
 # round 2). Promotion is immediate server-side; this only absorbs the poll gap.
 _PROMOTION_GRACE = 20
+
+# Follow-mode grace (seconds) when the pick died DELETED/COPY (#372 r6): the
+# pick never entered the queue, so no server-side failover is pending for it --
+# only the worker's own appends can surface a sibling (and ``is_submitting``
+# already extends the wait for that). A short grace turns a wasted ~20s stall
+# into a prompt rescue/exhaustion decision. Defined here (not in
+# nzbget_resolver_dupes.py) because this is its only consumer.
+_COPY_VETO_GRACE = 5
 
 
 def poll_nzbget_job(
@@ -212,6 +219,18 @@ def _tick_tracked_member(state, dialog, settings_getter, dupe_key, fleet=None):
         # Not in queue, not yet in history — brief hand-off gap; keep waiting.
         dialog.update(100, _string(30219))
         return None
+    return _tick_tracked_member_terminal(state, hist, current, dupe_key, fleet)
+
+
+def _tick_tracked_member_terminal(state, hist, current, dupe_key, fleet):
+    """Handle the tracked member's terminal history row (#372 r6 split).
+
+    Extracted from ``_tick_tracked_member`` (Codacy complexity feedback on
+    PR #406): the group-absent/history-absent "keep waiting" checks stay in
+    the caller, this handles every terminal outcome once ``hist`` is present
+    -- success, a plain-submit COPY-veto rescue, or arming DupeKey
+    group-follow. Same return contract as ``_tick_tracked_member``.
+    """
     if hist["success"]:
         return {"outcome": "success", "dest_dir": hist["dest_dir"]}
     if not dupe_key:

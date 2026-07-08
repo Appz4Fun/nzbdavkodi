@@ -48,22 +48,40 @@ def _submit_dupe_backups(
     for backup in backups or []:
         if cancel_event is not None and cancel_event.is_set():
             break
-        nzb_url = _core._usable_backup_link(backup, seen)
-        if not nzb_url:
-            continue
-        seen.add(nzb_url)
-        nzbid = _core._append_one_backup(nzb_url, backup, dupe_key, settings_getter)
-        if not nzbid:
-            continue
-        # Sink FIRST (round-5 invariant): a cancel mid-batch must be able to
-        # delete this id immediately, and a COPY-vetoed row still needs deleting.
-        if submitted_sink is not None:
-            submitted_sink.append(nzbid)
-        # A DELETED/COPY veto means the slot was never really filled -> exclude
-        # it from the LIVE return so the fleet can backfill it (#372 r6).
-        if not _core._copy_vetoed_after_append(nzbid, settings_getter):
+        nzbid = _submit_one_dupe_backup(
+            backup, dupe_key, settings_getter, seen, submitted_sink
+        )
+        if nzbid:
             submitted.append(nzbid)
     return submitted
+
+
+def _submit_one_dupe_backup(backup, dupe_key, settings_getter, seen, submitted_sink):
+    """Submit a single same-name backup; the ``_submit_dupe_backups`` loop body.
+
+    Extracted for Codacy complexity feedback on PR #406 (dense per-candidate
+    branching), so the sink-first and veto invariants are each verifiable in
+    one small function. Returns the NZBID when it's LIVE (appended and NOT
+    ``DELETED/COPY``-vetoed), else ``None`` -- for a bad/duplicate URL, a
+    failed append, or a veto (which still sinks the id for cancel cleanup
+    before returning ``None``).
+    """
+    nzb_url = _core._usable_backup_link(backup, seen)
+    if not nzb_url:
+        return None
+    seen.add(nzb_url)
+    nzbid = _core._append_one_backup(nzb_url, backup, dupe_key, settings_getter)
+    if not nzbid:
+        return None
+    # Sink FIRST (round-5 invariant): a cancel mid-batch must be able to
+    # delete this id immediately, and a COPY-vetoed row still needs deleting.
+    if submitted_sink is not None:
+        submitted_sink.append(nzbid)
+    # A DELETED/COPY veto means the slot was never really filled -> exclude it
+    # from the LIVE return so the fleet can backfill it (#372 r6).
+    if _core._copy_vetoed_after_append(nzbid, settings_getter):
+        return None
+    return nzbid
 
 
 def _usable_backup_link(candidate, seen):
@@ -204,13 +222,6 @@ def _dupe_check_disabled(settings_getter):
 
 
 _MAX_EXTRA_BACKUPS = 5
-
-# Follow-mode grace (seconds) when the pick died DELETED/COPY (#372 r6): the
-# pick never entered the queue, so no server-side failover is pending for it --
-# only the worker's own appends can surface a sibling (and ``is_submitting``
-# already extends the wait for that). A short grace turns a wasted ~20s stall
-# into a prompt rescue/exhaustion decision.
-_COPY_VETO_GRACE = 5
 
 # Hard bound on the extra append ATTEMPTS spent replacing COPY-vetoed candidates
 # (#372 r6), so a pathological all-vetoed loader pool can't grind the worker (and
@@ -627,6 +638,12 @@ def _pick_rescue_callable(ctx, nzb_url, title):
             )
             return None
         if nzbid:
+            # _SubmitCtx.__init__ always sets submitted_nzbids=[]; getattr here
+            # only mirrors this module's existing defensive read pattern (see
+            # _submit_poll_resolve's _owned_fleet_nzbids/_handle_poll_failure
+            # call) for a ctx built some other way.
+            if getattr(ctx, "submitted_nzbids", None) is None:
+                ctx.submitted_nzbids = []
             ctx.submitted_nzbids.append(nzbid)
             _core.xbmc.log(
                 "NZB-DAV: FORCE re-queued content-vetoed pick as NZBID {} "
