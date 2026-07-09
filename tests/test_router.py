@@ -4191,8 +4191,28 @@ def test_nzbget_dupe_submission_reports_standby_max_for_extras_bound():
         _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "2"}),
     ):
         dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
-    assert dupe["max_backups"] == 2  # min(fallback_streams_max, hard cap)
+    assert dupe["max_backups"] == 2  # exactly fallback_streams_max
     assert len(dupe["backups"]) == 2  # same-name backups already capped at 2
+
+
+def test_nzbget_dupe_submission_honors_fallback_streams_max_above_five():
+    # No code-level ceiling: fallback_streams_max is honored as configured,
+    # even above the old hard-coded cap of 5.
+    from resources.lib.router_play import _nzbget_dupe_submission_for_selection
+
+    selected = {"link": "http://i/pick.nzb", "title": "The Matrix 1999 1080p"}
+    filtered = [selected] + [
+        {"link": "http://i/{}.nzb".format(i), "title": "The Matrix 1999 1080p"}
+        for i in range(8)
+    ]
+    identity = {"type": "movie", "imdb": "tt0133093"}
+    with patch(
+        "resources.lib.router._get_addon_setting",
+        _dupe_setting_getter({"nzbget_enabled": "true", "fallback_streams_max": "8"}),
+    ):
+        dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity)
+    assert dupe["max_backups"] == 8
+    assert len(dupe["backups"]) == 8
 
 
 def test_hydra_duplicate_lookup_enabled_with_default_url_left_unset():

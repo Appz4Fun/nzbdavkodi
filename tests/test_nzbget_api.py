@@ -600,6 +600,33 @@ def test_active_group_by_dupekey_absent_when_only_paused_or_error():
     assert active_group_by_dupekey("", settings_getter=getter)["present"] is False
 
 
+def test_active_group_by_name_matches_case_insensitively_and_excludes_id():
+    from resources.lib.nzbget_api import active_group_by_name
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    groups = [
+        {"NZBID": 2, "NZBName": "the.movie"},  # case-insensitive match
+        {"NZBID": 3, "NZBName": "Other.Movie"},
+    ]
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(groups, None)):
+        assert active_group_by_name("The.Movie", settings_getter=getter) is True
+        # Excluding the only matching id leaves nothing.
+        assert (
+            active_group_by_name("The.Movie", exclude_nzbid=2, settings_getter=getter)
+            is False
+        )
+        assert active_group_by_name("Unrelated", settings_getter=getter) is False
+
+
+def test_active_group_by_name_absent_on_blank_name_or_rpc_error():
+    from resources.lib.nzbget_api import active_group_by_name
+
+    getter = _getter({"nzbget_url": "http://box:6789"})
+    assert active_group_by_name("", settings_getter=getter) is False
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=(None, "boom")):
+        assert active_group_by_name("The.Movie", settings_getter=getter) is False
+
+
 def test_history_success_by_dupekey_returns_completed_member():
     from resources.lib.nzbget_api import history_success_by_dupekey
 

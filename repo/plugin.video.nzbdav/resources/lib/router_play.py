@@ -414,11 +414,6 @@ def _release_dupe_key(identity, release_title):
     return "{}|{}".format(prefix, slug) if prefix else "nzbdav:{}".format(slug)
 
 
-# Hard ceiling on the number of duplicate backups, mirroring the nzbdav fallback
-# cap so an out-of-range ``fallback_streams_max`` can't submit a runaway fleet.
-_MAX_DUPE_BACKUPS = 5
-
-
 def _is_same_name_backup(result, target, selected_link, seen):
     """Whether a picker row is a usable same-name backup for the pick (#372).
 
@@ -460,15 +455,15 @@ def _same_name_backups(selected, filtered, max_backups):
 
 
 def _dupe_max_backups(getter):
-    """Settings gate for the duplicate fleet: the capped backup count, or ``None``.
+    """Settings gate for the duplicate fleet: the configured backup count, or ``None``.
 
     ``None`` (plain single submit) when the NZBGet backend is off, fallback
     streams are disabled, or the parsed ``fallback_streams_max`` cap is
-    zero/negative; else the cap bounded by ``_MAX_DUPE_BACKUPS``. ``getter``
-    reads settings on the RunScript/script-play path; ``None`` reads the live
-    Kodi addon settings. Split out of
-    ``_nzbget_dupe_submission_for_selection`` so the submission builder stays
-    simple.
+    zero/negative; else exactly what the user configured for "Maximum standby
+    fallback streams" -- no additional code-level ceiling. ``getter`` reads
+    settings on the RunScript/script-play path; ``None`` reads the live Kodi
+    addon settings. Split out of ``_nzbget_dupe_submission_for_selection`` so
+    the submission builder stays simple.
     """
     import resources.lib.router as _router
 
@@ -487,7 +482,6 @@ def _dupe_max_backups(getter):
         max_backups = int(_read("fallback_streams_max", "5") or 5)
     except (TypeError, ValueError):
         max_backups = 5
-    max_backups = min(max_backups, _MAX_DUPE_BACKUPS)
     return max_backups if max_backups > 0 else None
 
 
@@ -502,7 +496,8 @@ def _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter=N
     (count-based, so always positive and pick-highest for any fleet size), so
     NZBGet downloads the pick and parks the rest in history as duplicate backups,
     failing over on an unrepairable download. Bounded by ``fallback_streams_max``
-    (hard-capped at ``_MAX_DUPE_BACKUPS``). ``getter`` reads settings on the
+    -- the user's own "Maximum standby fallback streams" setting, with no
+    additional code-level ceiling. ``getter`` reads settings on the
     RunScript/script-play path (``_get_script_setting``); ``None`` reads the live
     Kodi addon settings. Empty on the nzbdav backend (its own live fallback).
     """
@@ -549,9 +544,12 @@ def _dupe_score_base():
     files are gone or unverifiable (a reuse-probe HIT plays them directly), and
     with an equal-or-lower score NZBGet would dupe-delete the re-submission
     into a failed playback instead of re-downloading. SECOND granularity so
-    even a same-minute retry strictly outranks the prior success (the fleet's
-    intra-submission offsets span at most ``_MAX_DUPE_BACKUPS + 1``, far less
-    than any humanly-possible replay gap). Floored at 0: a box whose clock
+    even a same-minute retry's PICK (score == base) strictly outranks the
+    prior success -- the only guarantee this base needs to hold, independent
+    of fleet size (``fallback_streams_max`` has no code-level ceiling; a very
+    large fleet only risks a low-stakes BACKUP-tier score tie against another
+    fleet submitted in the same wall-clock second, never a pick collision).
+    Floored at 0: a box whose clock
     predates 2026 (RTC before NTP sync) degrades to the plain count-only
     ordering instead of emitting hugely negative scores.
     """

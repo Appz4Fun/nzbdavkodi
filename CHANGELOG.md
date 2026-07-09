@@ -94,6 +94,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running, and the backup pool is widened to include same-content mirrors and
   NZBHydra's deferred duplicate uploads (as lowest-priority backups) beyond the
   exact same-name reposts. (Issue #372 round 2.)
+- **NZBGet mode: recover from NZBGet's "already downloaded this" veto.** NZBGet
+  keeps a content fingerprint of everything it has ever downloaded (up to a
+  year of history) and silently refuses to re-download content it recognises —
+  the item goes straight to history marked as a duplicate copy without ever
+  downloading, which previously left the play stuck until it timed out. The
+  resolver now detects this exact case and, once it confirms nothing else in the
+  release can play, re-submits your pick a single time with NZBGet's `FORCE`
+  duplicate mode (which downloads regardless of the content check) and follows
+  it to playback. The same recovery covers a plain single submit with no
+  duplicate backups. It is strictly reactive — tried only after NZBGet's own
+  duplicate protection has provably left nothing to play — so legitimate
+  duplicate handling (concurrent downloads, already-completed copies) is never
+  bypassed. A backup that hits the same veto is treated as an unfilled slot and
+  replaced from the wider candidate pool, preserving the fallback depth. If the
+  re-submit itself can't be performed, the failure now says so plainly instead
+  of a generic error. (Issue #372 round 6.)
 - **NZBGet mode: pre-cached "DL" indicator in the NZB picker.** With the
   NZBGet backend enabled, the results picker now tags releases that are
   already completed in NZBGet's history with the same green `DL` chip the

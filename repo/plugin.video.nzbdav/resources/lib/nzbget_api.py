@@ -558,6 +558,42 @@ def active_group_by_dupekey(dupe_key, exclude_nzbid=None, settings_getter=None):
     }
 
 
+def _group_name_match(group, target, exclude_nzbid):
+    """One ``listgroups`` row's verdict for the ``active_group_by_name`` scan.
+
+    Split out to keep the caller's cyclomatic complexity down (Codacy
+    feedback pattern from PR #406's other extractions).
+    """
+    if not isinstance(group, dict):
+        return False
+    if exclude_nzbid is not None and _same_nzbid(group.get("NZBID"), exclude_nzbid):
+        return False
+    return str(group.get("NZBName") or "").strip().lower() == target
+
+
+def active_group_by_name(nzb_name, exclude_nzbid=None, settings_getter=None):
+    """Whether an active (any status) queued group's name matches ``nzb_name``.
+
+    Guards the #372 r6 FORCE rescue, which has no DupeKey to check on the
+    keyless plain submit path (``active_group_by_dupekey("")`` always reports
+    absent): before overriding NZBGet's content-fingerprint veto, confirm the
+    veto isn't shadowing a FOREIGN download of the same release that's still
+    actively queued -- FORCE would otherwise start a wasteful parallel
+    download of identical content instead of waiting for/reusing the one
+    already in flight. Case-insensitive exact match against ``NZBName``
+    (NZBGet's queue display name -- the ``NZBFilename`` sent to ``append``
+    minus its ``.nzb`` suffix). Best-effort: an RPC error reports no match
+    (fail-open, same as the DupeKey-based promotion scan).
+    """
+    if not nzb_name:
+        return False
+    groups, error = _rpc_call("listgroups", [0], settings_getter=settings_getter)
+    if error is not None or not isinstance(groups, list):
+        return False
+    target = str(nzb_name).strip().lower()
+    return any(_group_name_match(group, target, exclude_nzbid) for group in groups)
+
+
 def history_success_by_dupekey(dupe_key, exclude_nzbids=None, settings_getter=None):
     """A SUCCESS history item sharing ``dupe_key`` (a completed group member).
 
