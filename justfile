@@ -339,7 +339,7 @@ deploy-addon restart="restart":
     bdir="/storage/deploy-backups"
 
     echo "Deploying $addon to $host..."
-    tar -C repo -cf - --exclude='*__pycache__*' --exclude='*.pyc' --exclude='.DS_Store' "$addon" \
+    COPYFILE_DISABLE=1 tar -C repo -cf - --exclude='*__pycache__*' --exclude='*.pyc' --exclude='.DS_Store' --exclude='._*' "$addon" \
         | ssh -o ConnectTimeout=10 "$host" "
             set -eu
             rm -rf '$stage' && mkdir -p '$stage' '$bdir'

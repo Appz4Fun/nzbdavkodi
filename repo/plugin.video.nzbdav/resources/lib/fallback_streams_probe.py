@@ -288,10 +288,13 @@ def _setting_default_from_root(root, setting_id):
     """Return a setting's default value from a parsed settings.xml root, or None.
 
     settings.xml uses the versioned schema, where a setting's default lives in
-    a <default> child element rather than a default="" attribute.
+    a <default> child element. Keep attribute support so helper tests and older
+    installed schemas continue to read the same way.
     """
     for setting in root.findall(".//setting"):
         if setting.get("id") == setting_id:
+            if "default" in setting.attrib:
+                return setting.get("default", "") or ""
             return setting.findtext("default", "") or ""
     return None
 

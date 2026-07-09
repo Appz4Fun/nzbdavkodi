@@ -70,6 +70,43 @@ def _index_of_setting(category, predicate):
     return -1
 
 
+def _categories(root):
+    section = root.find("section")
+    assert section is not None, "new-format settings.xml missing section"
+    assert section.get("id") == "plugin.video.nzbdav"
+    return section.findall("category")
+
+
+def _category_by_label(root, label):
+    for category in _categories(root):
+        if category.get("label") == label:
+            return category
+    raise AssertionError("category label={} not found".format(label))
+
+
+def _dependency_for(setting, dep_type, dep_setting):
+    for dependency in setting.findall("./dependencies/dependency"):
+        if (
+            dependency.get("type") == dep_type
+            and dependency.get("setting") == dep_setting
+        ):
+            return dependency
+    return None
+
+
+def test_settings_xml_uses_new_format_with_category_help(settings_root):
+    """Kodi's old add-on settings format ignores category help; keep the
+    Matrix/Omega settings format so each tab can show a help blurb."""
+    assert settings_root.get("version") == "1"
+    categories = _categories(settings_root)
+    assert categories, "settings.xml has no categories"
+    for category in categories:
+        assert category.get("id"), "category missing stable id"
+        assert category.get("help"), "category {} missing help id".format(
+            category.get("label")
+        )
+
+
 # --- Fix #1: webdav_url default is no longer empty -------------------------
 
 
@@ -159,6 +196,27 @@ def test_prowlarr_indexer_ids_precedes_test_action(settings_root):
     assert indexer_ids_idx >= 0
     assert test_action_idx >= 0
     assert indexer_ids_idx < test_action_idx
+
+
+def test_direct_indexer_options_depend_on_master_toggle(settings_root):
+    """All direct-indexer options must be tied to the in-dialog master toggle.
+
+    Using Addon.SettingBool() here reads the saved profile value and does not
+    reveal the rows as soon as the checkbox is toggled.
+    """
+    cat = _category_by_label(settings_root, "30163")
+    settings_list = list(cat.iter("setting"))
+    master_idx = _index_of_setting(
+        cat, lambda s: s.get("id") == "direct_indexers_enabled"
+    )
+    assert master_idx >= 0
+
+    for setting in settings_list[master_idx + 1 :]:
+        assert (
+            _dependency_for(setting, "visible", "direct_indexers_enabled") is not None
+        ), "setting {} is not dynamically tied to direct_indexers_enabled".format(
+            setting.get("id") or setting.get("label")
+        )
 
 
 # --- Sanity: every setting has a unique id (when id is present) -----------

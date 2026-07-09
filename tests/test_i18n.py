@@ -218,3 +218,22 @@ def test_settings_xml_uses_30129_for_prowlarr_api_key():
         "prowlarr_api_key still references generic 30003 ('API Key') "
         "instead of orphan 30129 ('Prowlarr API Key')"
     )
+
+
+def test_settings_category_help_strings_are_defined():
+    import os
+
+    po_path = os.path.join(
+        "repo",
+        "plugin.video.nzbdav",
+        "resources",
+        "language",
+        "resource.language.en_gb",
+        "strings.po",
+    )
+    with open(po_path, encoding="utf-8") as fh:
+        content = fh.read()
+
+    for msg_id in range(30300, 30308):
+        needle = '"#{}"'.format(msg_id)
+        assert needle in content, "missing msgctxt {} in strings.po".format(needle)
