@@ -7,16 +7,6 @@ from datetime import datetime, timezone
 from urllib.error import URLError
 from urllib.parse import urlencode, urlparse
 
-try:
-    from defusedxml import ElementTree as element_tree
-    from defusedxml.common import DefusedXmlException as _UnsafeXmlError
-except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
-    from xml.etree import ElementTree as element_tree
-
-    class _UnsafeXmlError(ValueError):
-        """Raised when stdlib fallback rejects DTD/entity declarations."""
-
-
 import xbmc
 import xbmcaddon
 
@@ -559,51 +549,13 @@ def _build_result(item):
     }
 
 
-def _build_xxe_safe_parser():
-    """Return an ElementTree XMLParser with external entities disabled.
-
-    ``xml.etree.ElementTree`` doesn't expose a ``resolve_entities=False``
-    knob directly, but the underlying expat parser can be told to
-    ignore DefaultHandler output and reject ExternalEntityRef callbacks.
-    A hostile NZBHydra2 instance (compromised, MITM'd, or simply
-    misbehaving) could otherwise coerce us into reading arbitrary
-    local files via an XXE payload. Mirrors webdav.py's WebDAV
-    PROPFIND parser for defense in depth.
-    """
-    parser = element_tree.XMLParser()  # nosec B314 — entities disabled below
-    try:
-        parser.parser.DefaultHandler = lambda _d: None
-        parser.parser.ExternalEntityRefHandler = lambda *_: False
-    except AttributeError:  # pragma: no cover — non-expat parser backend
-        pass
-    return parser
-
-
-def _contains_xml_declaration_markup(xml_text):
-    """Return true when XML text declares a DTD/entity block."""
-    if isinstance(xml_text, bytes):
-        probe = xml_text.lower()
-        return b"<!doctype" in probe or b"<!entity" in probe
-    probe = str(xml_text).lower()
-    return "<!doctype" in probe or "<!entity" in probe
-
-
-def _parse_hydra_xml(xml_text):
-    """Parse Hydra XML with DTD/entity expansion disabled."""
-    if getattr(element_tree, "__name__", "").startswith("defusedxml."):
-        return element_tree.fromstring(xml_text)
-    if _contains_xml_declaration_markup(xml_text):
-        raise _UnsafeXmlError("DTD and entity declarations are not allowed")
-    return element_tree.fromstring(
-        xml_text, parser=_build_xxe_safe_parser()
-    )  # nosec B314 — declarations rejected above and entities disabled when possible
-
-
 def _parse_results_checked(xml_text):
     """Parse Newznab XML and return (results, error_message)."""
+    from resources.lib.xml_safety import ParseError, UnsafeXmlError, safe_fromstring
+
     try:
-        root = _parse_hydra_xml(xml_text)
-    except (element_tree.ParseError, _UnsafeXmlError) as error:
+        root = safe_fromstring(xml_text)
+    except (ParseError, UnsafeXmlError) as error:
         xbmc.log(
             "NZB-DAV: Failed to parse Hydra XML response: {}".format(error),
             xbmc.LOGERROR,

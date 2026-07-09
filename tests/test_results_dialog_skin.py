@@ -6,6 +6,8 @@
 import os
 import xml.etree.ElementTree as ET
 
+from resources.lib.results_dialog import _BG_A, _BG_B
+
 _DIALOG_XML_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "repo",
@@ -39,6 +41,7 @@ def test_results_dialog_scrollbar_is_linked_to_results_list():
 
 
 _FOCUS_ACCENT_COLOR = "FF4A9EFF"
+_ROW_BG_INFO = "$INFO[ListItem.Property(row_bg)]"
 
 
 def _accent_bars(layout):
@@ -72,7 +75,9 @@ def test_results_dialog_focused_row_has_high_contrast_focus_indicator():
 
 
 def _perceived_luminance(argb):
-    """Rec.601 luma (0–255) of an 8-char ``AARRGGBB`` Kodi colour."""
+    """Rec.601 luma (0-255) of an 8-char ``AARRGGBB`` Kodi colour."""
+    if argb.startswith("$INFO["):
+        raise ValueError("dynamic skin info labels must be resolved first")
     r, g, b = int(argb[2:4], 16), int(argb[4:6], 16), int(argb[6:8], 16)
     return 0.299 * r + 0.587 * g + 0.114 * b
 
@@ -83,6 +88,27 @@ def _row_background_color(layout, layout_width="1910"):
         if image.findtext("width") == layout_width:
             return image.findtext("colordiffuse")
     return None
+
+
+def _row_background_colors(colordiffuse):
+    """Resolve a skin row background into the actual palette colors tested."""
+    if colordiffuse == _ROW_BG_INFO:
+        return (_BG_A, _BG_B)
+    if colordiffuse and colordiffuse.startswith("$INFO["):
+        raise ValueError("unhandled dynamic row background: {}".format(colordiffuse))
+    return (colordiffuse,)
+
+
+def test_results_dialog_unfocused_row_uses_controller_zebra_palette():
+    root = ET.parse(_DIALOG_XML_PATH).getroot()
+    results_list = _control(root, "list", "50")
+    assert results_list is not None, "results list control id=50 missing"
+    unfocused = results_list.find("./itemlayout")
+    assert unfocused is not None
+
+    unfocused_bg = _row_background_color(unfocused)
+    assert unfocused_bg == _ROW_BG_INFO
+    assert _row_background_colors(unfocused_bg) == (_BG_A, _BG_B)
 
 
 def test_focus_indicator_appearance_is_high_contrast_and_correctly_placed():
@@ -111,10 +137,12 @@ def test_focus_indicator_appearance_is_high_contrast_and_correctly_placed():
     # brighter than the focused fill it sits on (so focus is unmistakable).
     focused_bg = _row_background_color(focused)
     unfocused_bg = _row_background_color(unfocused)
-    assert _FOCUS_ACCENT_COLOR not in (focused_bg, unfocused_bg)
     accent_lum = _perceived_luminance(_FOCUS_ACCENT_COLOR)
+    assert _FOCUS_ACCENT_COLOR != focused_bg
     assert accent_lum - _perceived_luminance(focused_bg) > 80
-    assert accent_lum - _perceived_luminance(unfocused_bg) > 80
+    for row_bg in _row_background_colors(unfocused_bg):
+        assert _FOCUS_ACCENT_COLOR != row_bg
+        assert accent_lum - _perceived_luminance(row_bg) > 80
 
     # Render order: the bar must come AFTER the focused background image so it
     # paints on top of it (Kodi draws controls in document order).

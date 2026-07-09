@@ -328,15 +328,19 @@ def _normalize_release_name(title):
     return " ".join(str(title or "").split()).casefold()
 
 
+_IMDB_DIGITS_RE = re.compile(r"(\d+)")
+_TITLE_SLUG_NON_WORD_RE = re.compile(r"[^\w]+")
+
+
 def _imdb_digits(value):
     """Bare IMDb digits from a possibly ``tt``-prefixed id (docs: ``imdb=123456``)."""
-    match = re.search(r"(\d+)", str(value or ""))
+    match = _IMDB_DIGITS_RE.search(str(value or ""))
     return match.group(1) if match else ""
 
 
 def _key_title_slug(title):
     """Lowercased hyphen slug of a title for the fallback (title-based) DupeKey."""
-    return re.sub(r"[^\w]+", "-", str(title or "").strip().lower()).strip("-")
+    return _TITLE_SLUG_NON_WORD_RE.sub("-", str(title or "").strip().lower()).strip("-")
 
 
 def _int_or_none(value):
