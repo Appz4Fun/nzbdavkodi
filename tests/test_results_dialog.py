@@ -5,7 +5,10 @@ from unittest.mock import MagicMock, patch
 
 from resources.lib.results_dialog import (
     _AVAILABLE_LABEL,
+    _BG_A,
+    _BG_B,
     _available_text,
+    _build_result_item,
     _format_date,
     _format_size,
     _lang_short,
@@ -40,6 +43,24 @@ def test_available_label_is_ascii_for_skin_compatibility():
 
 def test_available_label_renders_green():
     assert _available_text() == "[COLOR FF22C55E]DL[/COLOR]"
+
+
+def test_build_result_item_sets_alternating_row_backgrounds():
+    first_item = MagicMock()
+    second_item = MagicMock()
+    third_item = MagicMock()
+
+    with patch(
+        "resources.lib.results_dialog.xbmcgui.ListItem",
+        side_effect=[first_item, second_item, third_item],
+    ):
+        _build_result_item(_make_result(), 0)
+        _build_result_item(_make_result(), 1)
+        _build_result_item(_make_result(), 2)
+
+    first_item.setProperty.assert_any_call("row_bg", _BG_A)
+    second_item.setProperty.assert_any_call("row_bg", _BG_B)
+    third_item.setProperty.assert_any_call("row_bg", _BG_A)
 
 
 # ---------------------------------------------------------------------------
