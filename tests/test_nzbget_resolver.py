@@ -1672,6 +1672,16 @@ def test_extra_backups_from_loader_honors_limit():
     assert not _extra_backups_from_loader(lambda: cands, [], limit=0)
 
 
+def test_extra_backups_from_loader_no_ceiling_above_five():
+    # No code-level ceiling: a limit above the old hard-coded cap of 5 is
+    # honored as-is, matching fallback_streams_max having no artificial max.
+    from resources.lib.nzbget_resolver import _extra_backups_from_loader
+
+    cands = [{"link": "x{}".format(i)} for i in range(8)]
+    got = _extra_backups_from_loader(lambda: cands, [], limit=8)
+    assert [e["link"] for e in got] == ["x{}".format(i) for i in range(8)]
+
+
 def test_spawn_dupe_backups_fail_soft_when_snapshot_raises():
     # Reading the connection snapshot can raise (a bad injected getter / Kodi
     # settings read). Backups are pure insurance submitted AFTER the primary is

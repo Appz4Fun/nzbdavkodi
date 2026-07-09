@@ -242,18 +242,18 @@ def _extra_backups_from_loader(
     wall-clock base) so they OUTRANK any prior same-key success while sitting
     BELOW every same-name backup, which start at ``score_base + 1`` (a
     last-resort failover, keyed under the pick's DupeKey). Bounded by
-    ``limit`` (the standby cap's remaining slots, hard-capped at
-    ``_MAX_EXTRA_BACKUPS``) so the total backup count honors the user's
-    "Maximum standby fallback streams". ``reserve`` widens only the CANDIDATE
-    LIST (to ``min(limit, _MAX_EXTRA_BACKUPS) + reserve`` when the cap is > 0),
-    not the live-submit cap: the caller's veto-aware fill loop draws extra
-    replacements from this headroom when a candidate is ``DELETED/COPY``-vetoed
-    (#372 r6). Scores keep descending across the whole widened list; the default
-    ``reserve=0`` leaves every existing caller byte-identical. Best-effort: a
+    ``limit`` (the standby cap's remaining slots) so the total backup count
+    honors the user's "Maximum standby fallback streams" as configured -- no
+    additional code-level ceiling. ``reserve`` widens only the CANDIDATE LIST
+    (to ``limit + reserve`` when ``limit > 0``), not the live-submit cap: the
+    caller's veto-aware fill loop draws extra replacements from this headroom
+    when a candidate is ``DELETED/COPY``-vetoed (#372 r6). Scores keep
+    descending across the whole widened list; the default ``reserve=0``
+    leaves every existing caller byte-identical. Best-effort: a
     missing/erroring loader, its "disabled" sentinel (a non-list), or
     ``limit <= 0`` yields ``[]``.
     """
-    cap = min(limit, _MAX_EXTRA_BACKUPS)
+    cap = limit
     if loader is None or cap <= 0:
         return []
     list_cap = cap + reserve
