@@ -57,16 +57,32 @@ jobs:
       - name: Build addon zip
         run: python3 scripts/build_zip.py
 
-      - name: Create GitHub Release
+      # Created as a draft first: GitHub's immutable-releases policy makes a
+      # release read-only for new asset uploads the instant it's published, but
+      # softprops/action-gh-release creates-then-uploads as two separate calls.
+      # Publishing directly races that window and can leave a permanently
+      # asset-less release behind (worse: the tag name is then permanently
+      # unusable for any future release, published or not). Drafts stay
+      # mutable regardless of that policy, so the asset upload always lands
+      # before the "Publish release" step below flips it to published.
+      - name: Create GitHub Release (draft)
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           files: plugin.video.nzbdav-${{ steps.version.outputs.version }}.zip
           generate_release_notes: true
+          draft: true
           # Semver prerelease tags (e.g. v1.2.6-beta.1) carry a hyphen after the
           # version. Flag those as pre-release so the Appz4Fun Kodi repository,
           # which splits Stable vs Beta by the GitHub pre-release checkbox, routes
           # beta builds to the Beta channel instead of publishing them to Stable.
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --repo "$RELEASE_REPO"
 
       # Ping the Appz4Fun Kodi repository so it rebuilds within seconds instead
       # of waiting for its daily schedule. Needs a fine-grained PAT with

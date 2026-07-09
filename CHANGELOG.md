@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
-| **[2.0.0-beta](#200-beta--2026-07-09)** | 2026-07-09 | NZBGet backend + Smart Duplicates, tiered fallback/dropout hardening, manual indexer manager, TVDB-aware TV search, versioned settings.xml with per-option help text, unified XXE protection, large complexity-reduction refactor, MkDocs documentation site |
+| **[2.0.0-beta.1](#200-beta1--2026-07-09)** | 2026-07-09 | NZBGet backend + Smart Duplicates, tiered fallback/dropout hardening, manual indexer manager, TVDB-aware TV search, versioned settings.xml with per-option help text, unified XXE protection, large complexity-reduction refactor, MkDocs documentation site |
 | **[1.2.3](#123--2026-05-08)** | 2026-05-08 | Proxy fallback hardening, repo install checksum fix, RunScript path reliability |
 | **[1.2.2](#122--2026-05-07)** | 2026-05-07 | Kodi add-on info freeze hotfix |
 | **[1.2.1](#121--2026-05-07)** | 2026-05-07 | Synthetic indexer-size fallback manifests, prefetch indexer-size gate, NZB fetch LRU, stale-progress failure fix |
@@ -61,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [2.0.0-beta] — 2026-07-09
+## [2.0.0-beta.1] — 2026-07-09
 
 > **The big one.** Two months of accumulated work since 1.2.3, released together
 > as a beta: a new NZBGet backend with automatic duplicate-fleet failover, a

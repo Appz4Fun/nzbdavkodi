@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.nzbdav"
        name="NZB-DAV"
-       version="2.0.0-beta"
+       version="2.0.0-beta.1"
        provider-name="nzbdav">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
@@ -22,7 +22,7 @@
         <license>GPL-3.0-or-later</license>
         <source>https://github.com/Appz4Fun/nzbdavkodi</source>
         <website>https://appz4fun.github.io/nzbdavkodi/</website>
-        <news>v2.0.0-beta: NZBGet backend, Smart Duplicates, fallback overhaul, indexers.</news>
+        <news>v2.0.0-beta.1: NZBGet backend, Smart Duplicates, fallback overhaul, indexers.</news>
         <assets>
             <icon>resources/icon.png</icon>
             <fanart>resources/fanart.jpg</fanart>
