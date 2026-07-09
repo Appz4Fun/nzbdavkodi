@@ -889,3 +889,531 @@ msgstr "NZBGet HealthCheck=Pause: set it to Delete, None, or Park so a broken do
 msgctxt "#30231"
 msgid "NZBGet skipped this release (already in its history) and re-queueing failed"
 msgstr "NZBGet skipped this release (already in its history) and re-queueing failed"
+
+msgctxt "#30232"
+msgid "Base URL of your nzbdav server (SABnzbd-compatible API). Used to submit and poll downloads."
+msgstr "Base URL of your nzbdav server (SABnzbd-compatible API). Used to submit and poll downloads."
+
+msgctxt "#30233"
+msgid "nzbdav API key, from Settings > Usenet > API Key in nzbdav."
+msgstr "nzbdav API key, from Settings > Usenet > API Key in nzbdav."
+
+msgctxt "#30234"
+msgid "Verify the nzbdav URL and API key are reachable and valid."
+msgstr "Verify the nzbdav URL and API key are reachable and valid."
+
+msgctxt "#30235"
+msgid "Base URL of the WebDAV server used to stream files. Leave empty to reuse the nzbdav URL above."
+msgstr "Base URL of the WebDAV server used to stream files. Leave empty to reuse the nzbdav URL above."
+
+msgctxt "#30236"
+msgid "WebDAV username, from Settings > WebDAV in nzbdav."
+msgstr "WebDAV username, from Settings > WebDAV in nzbdav."
+
+msgctxt "#30237"
+msgid "WebDAV password. Stored hidden."
+msgstr "WebDAV password. Stored hidden."
+
+msgctxt "#30238"
+msgid "Verify WebDAV is reachable with the current URL and credentials."
+msgstr "Verify WebDAV is reachable with the current URL and credentials."
+
+msgctxt "#30239"
+msgid "Use NZBHydra2 as a search provider alongside or instead of Prowlarr and direct indexers."
+msgstr "Use NZBHydra2 as a search provider alongside or instead of Prowlarr and direct indexers."
+
+msgctxt "#30240"
+msgid "Base URL of your NZBHydra2 instance."
+msgstr "Base URL of your NZBHydra2 instance."
+
+msgctxt "#30241"
+msgid "NZBHydra2 API key. Stored hidden."
+msgstr "NZBHydra2 API key. Stored hidden."
+
+msgctxt "#30242"
+msgid "Verify the NZBHydra2 URL and API key are reachable and valid."
+msgstr "Verify the NZBHydra2 URL and API key are reachable and valid."
+
+msgctxt "#30243"
+msgid "Use Prowlarr as a search provider. Only Usenet results are kept."
+msgstr "Use Prowlarr as a search provider. Only Usenet results are kept."
+
+msgctxt "#30244"
+msgid "Base URL of your Prowlarr instance."
+msgstr "Base URL of your Prowlarr instance."
+
+msgctxt "#30245"
+msgid "Prowlarr API key. Stored hidden."
+msgstr "Prowlarr API key. Stored hidden."
+
+msgctxt "#30246"
+msgid "Prowlarr indexer IDs to query, comma-separated. Required for Prowlarr search -- leaving this blank returns no results."
+msgstr "Prowlarr indexer IDs to query, comma-separated. Required for Prowlarr search -- leaving this blank returns no results."
+
+msgctxt "#30247"
+msgid "Verify the Prowlarr URL, API key, and indexer IDs are reachable."
+msgstr "Verify the Prowlarr URL, API key, and indexer IDs are reachable."
+
+msgctxt "#30248"
+msgid "Optional TMDB API key. When set, NZB-DAV resolves a show's TVDB id and searches indexers by id for more accurate TV episode results. Stored hidden."
+msgstr "Optional TMDB API key. When set, NZB-DAV resolves a show's TVDB id and searches indexers by id for more accurate TV episode results. Stored hidden."
+
+msgctxt "#30249"
+msgid "Switch the entire download/playback path to NZBGet instead of nzbdav."
+msgstr "Switch the entire download/playback path to NZBGet instead of nzbdav."
+
+msgctxt "#30250"
+msgid "NZBGet control address, e.g. http://host:6789."
+msgstr "NZBGet control address, e.g. http://host:6789."
+
+msgctxt "#30251"
+msgid "NZBGet control username."
+msgstr "NZBGet control username."
+
+msgctxt "#30252"
+msgid "NZBGet control password. Stored hidden."
+msgstr "NZBGet control password. Stored hidden."
+
+msgctxt "#30253"
+msgid "Category to submit downloads under. Also used to help locate the completed file."
+msgstr "Category to submit downloads under. Also used to help locate the completed file."
+
+msgctxt "#30254"
+msgid "Verify NZBGet is reachable with the current URL and credentials."
+msgstr "Verify NZBGet is reachable with the current URL and credentials."
+
+msgctxt "#30255"
+msgid "SMB URL of NZBGet's completed-downloads base, used to play the finished file."
+msgstr "SMB URL of NZBGet's completed-downloads base, used to play the finished file."
+
+msgctxt "#30256"
+msgid "Verify the SMB completed-downloads share is reachable."
+msgstr "Verify the SMB completed-downloads share is reachable."
+
+msgctxt "#30257"
+msgid "Search NZB.life / NZB.su directly."
+msgstr "Search NZB.life / NZB.su directly."
+
+msgctxt "#30258"
+msgid "NZB.life / NZB.su API URL."
+msgstr "NZB.life / NZB.su API URL."
+
+msgctxt "#30259"
+msgid "NZB.life / NZB.su API key. Stored hidden."
+msgstr "NZB.life / NZB.su API key. Stored hidden."
+
+msgctxt "#30260"
+msgid "Search NZBGeek directly."
+msgstr "Search NZBGeek directly."
+
+msgctxt "#30261"
+msgid "NZBGeek API URL."
+msgstr "NZBGeek API URL."
+
+msgctxt "#30262"
+msgid "NZBGeek API key. Stored hidden."
+msgstr "NZBGeek API key. Stored hidden."
+
+msgctxt "#30263"
+msgid "Search NZBFinder directly."
+msgstr "Search NZBFinder directly."
+
+msgctxt "#30264"
+msgid "NZBFinder API URL."
+msgstr "NZBFinder API URL."
+
+msgctxt "#30265"
+msgid "NZBFinder API key. Stored hidden."
+msgstr "NZBFinder API key. Stored hidden."
+
+msgctxt "#30266"
+msgid "Search DrunkenSlug directly."
+msgstr "Search DrunkenSlug directly."
+
+msgctxt "#30267"
+msgid "DrunkenSlug API URL."
+msgstr "DrunkenSlug API URL."
+
+msgctxt "#30268"
+msgid "DrunkenSlug API key. Stored hidden."
+msgstr "DrunkenSlug API key. Stored hidden."
+
+msgctxt "#30269"
+msgid "Search NZBPlanet directly."
+msgstr "Search NZBPlanet directly."
+
+msgctxt "#30270"
+msgid "NZBPlanet API URL."
+msgstr "NZBPlanet API URL."
+
+msgctxt "#30271"
+msgid "NZBPlanet API key. Stored hidden."
+msgstr "NZBPlanet API key. Stored hidden."
+
+msgctxt "#30272"
+msgid "Search DOGnzb directly."
+msgstr "Search DOGnzb directly."
+
+msgctxt "#30273"
+msgid "DOGnzb API URL."
+msgstr "DOGnzb API URL."
+
+msgctxt "#30274"
+msgid "DOGnzb API key. Stored hidden."
+msgstr "DOGnzb API key. Stored hidden."
+
+msgctxt "#30275"
+msgid "Search Custom Indexer 1 directly. Use this for any Newznab indexer not listed above."
+msgstr "Search Custom Indexer 1 directly. Use this for any Newznab indexer not listed above."
+
+msgctxt "#30276"
+msgid "Display name for Custom Indexer 1."
+msgstr "Display name for Custom Indexer 1."
+
+msgctxt "#30277"
+msgid "Custom Indexer 1 API URL."
+msgstr "Custom Indexer 1 API URL."
+
+msgctxt "#30278"
+msgid "Custom Indexer 1 API key. Stored hidden."
+msgstr "Custom Indexer 1 API key. Stored hidden."
+
+msgctxt "#30279"
+msgid "Search Custom Indexer 2 directly. Use this for any Newznab indexer not listed above."
+msgstr "Search Custom Indexer 2 directly. Use this for any Newznab indexer not listed above."
+
+msgctxt "#30280"
+msgid "Display name for Custom Indexer 2."
+msgstr "Display name for Custom Indexer 2."
+
+msgctxt "#30281"
+msgid "Custom Indexer 2 API URL."
+msgstr "Custom Indexer 2 API URL."
+
+msgctxt "#30282"
+msgid "Custom Indexer 2 API key. Stored hidden."
+msgstr "Custom Indexer 2 API key. Stored hidden."
+
+msgctxt "#30283"
+msgid "Search Custom Indexer 3 directly. Use this for any Newznab indexer not listed above."
+msgstr "Search Custom Indexer 3 directly. Use this for any Newznab indexer not listed above."
+
+msgctxt "#30284"
+msgid "Display name for Custom Indexer 3."
+msgstr "Display name for Custom Indexer 3."
+
+msgctxt "#30285"
+msgid "Custom Indexer 3 API URL."
+msgstr "Custom Indexer 3 API URL."
+
+msgctxt "#30286"
+msgid "Custom Indexer 3 API key. Stored hidden."
+msgstr "Custom Indexer 3 API key. Stored hidden."
+
+msgctxt "#30287"
+msgid "Add an indexer from a preset catalog or a custom URL; test, edit, enable, disable, or delete existing ones."
+msgstr "Add an indexer from a preset catalog or a custom URL; test, edit, enable, disable, or delete existing ones."
+
+msgctxt "#30288"
+msgid "Verify every enabled direct indexer is reachable."
+msgstr "Verify every enabled direct indexer is reachable."
+
+msgctxt "#30289"
+msgid "Master switch for direct Newznab indexers. Use this if you don't run Prowlarr or NZBHydra2."
+msgstr "Master switch for direct Newznab indexers. Use this if you don't run Prowlarr or NZBHydra2."
+
+msgctxt "#30290"
+msgid "Install the NZB-DAV player file into TMDBHelper."
+msgstr "Install the NZB-DAV player file into TMDBHelper."
+
+msgctxt "#30291"
+msgid "Install the NZB-DAV player file into another add-on that has a players folder."
+msgstr "Install the NZB-DAV player file into another add-on that has a players folder."
+
+msgctxt "#30292"
+msgid "Include releases with no detected HDR format (plain SDR). Unlike the other quality filters, this one is not fail-open -- disabling it removes releases whose HDR format could not be identified."
+msgstr "Include releases with no detected HDR format (plain SDR). Unlike the other quality filters, this one is not fail-open -- disabling it removes releases whose HDR format could not be identified."
+
+msgctxt "#30293"
+msgid "Include 2160p/4K results. A release with undetected resolution is kept regardless of this setting."
+msgstr "Include 2160p/4K results. A release with undetected resolution is kept regardless of this setting."
+
+msgctxt "#30294"
+msgid "Include 1080p results. A release with undetected resolution is kept regardless of this setting."
+msgstr "Include 1080p results. A release with undetected resolution is kept regardless of this setting."
+
+msgctxt "#30295"
+msgid "Include 720p results. A release with undetected resolution is kept regardless of this setting."
+msgstr "Include 720p results. A release with undetected resolution is kept regardless of this setting."
+
+msgctxt "#30296"
+msgid "Include 480p results. A release with undetected resolution is kept regardless of this setting."
+msgstr "Include 480p results. A release with undetected resolution is kept regardless of this setting."
+
+msgctxt "#30297"
+msgid "Include HDR10 results. A release with undetected HDR format is kept regardless of this setting."
+msgstr "Include HDR10 results. A release with undetected HDR format is kept regardless of this setting."
+
+msgctxt "#30298"
+msgid "Include HDR10+ results. A release with undetected HDR format is kept regardless of this setting."
+msgstr "Include HDR10+ results. A release with undetected HDR format is kept regardless of this setting."
+
+msgctxt "#30299"
+msgid "Include Dolby Vision results. A release with undetected HDR format is kept regardless of this setting."
+msgstr "Include Dolby Vision results. A release with undetected HDR format is kept regardless of this setting."
+
+msgctxt "#30300"
+msgid "Include HLG results. A release with undetected HDR format is kept regardless of this setting."
+msgstr "Include HLG results. A release with undetected HDR format is kept regardless of this setting."
+
+msgctxt "#30301"
+msgid "Include Dolby Atmos results. A release with undetected audio format is kept regardless of this setting."
+msgstr "Include Dolby Atmos results. A release with undetected audio format is kept regardless of this setting."
+
+msgctxt "#30302"
+msgid "Include TrueHD results. A release with undetected audio format is kept regardless of this setting."
+msgstr "Include TrueHD results. A release with undetected audio format is kept regardless of this setting."
+
+msgctxt "#30303"
+msgid "Include DTS-HD MA results. A release with undetected audio format is kept regardless of this setting."
+msgstr "Include DTS-HD MA results. A release with undetected audio format is kept regardless of this setting."
+
+msgctxt "#30304"
+msgid "Include DTS:X results. A release with undetected audio format is kept regardless of this setting."
+msgstr "Include DTS:X results. A release with undetected audio format is kept regardless of this setting."
+
+msgctxt "#30305"
+msgid "Include DD+ (EAC3) results. A release with undetected audio format is kept regardless of this setting."
+msgstr "Include DD+ (EAC3) results. A release with undetected audio format is kept regardless of this setting."
+
+msgctxt "#30306"
+msgid "Include DD (AC3) results. A release with undetected audio format is kept regardless of this setting."
+msgstr "Include DD (AC3) results. A release with undetected audio format is kept regardless of this setting."
+
+msgctxt "#30307"
+msgid "Include AAC results. A release with undetected audio format is kept regardless of this setting."
+msgstr "Include AAC results. A release with undetected audio format is kept regardless of this setting."
+
+msgctxt "#30308"
+msgid "Include x265/HEVC results. A release with undetected video codec is kept regardless of this setting."
+msgstr "Include x265/HEVC results. A release with undetected video codec is kept regardless of this setting."
+
+msgctxt "#30309"
+msgid "Include x264/AVC results. A release with undetected video codec is kept regardless of this setting."
+msgstr "Include x264/AVC results. A release with undetected video codec is kept regardless of this setting."
+
+msgctxt "#30310"
+msgid "Include AV1 results. A release with undetected video codec is kept regardless of this setting."
+msgstr "Include AV1 results. A release with undetected video codec is kept regardless of this setting."
+
+msgctxt "#30311"
+msgid "Include VP9 results. A release with undetected video codec is kept regardless of this setting."
+msgstr "Include VP9 results. A release with undetected video codec is kept regardless of this setting."
+
+msgctxt "#30312"
+msgid "Include MPEG-2 results. A release with undetected video codec is kept regardless of this setting."
+msgstr "Include MPEG-2 results. A release with undetected video codec is kept regardless of this setting."
+
+msgctxt "#30313"
+msgid "Include English results. A release with undetected language is kept regardless of this setting."
+msgstr "Include English results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30314"
+msgid "Include Spanish results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Spanish results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30315"
+msgid "Include French results. A release with undetected language is kept regardless of this setting."
+msgstr "Include French results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30316"
+msgid "Include German results. A release with undetected language is kept regardless of this setting."
+msgstr "Include German results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30317"
+msgid "Include Italian results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Italian results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30318"
+msgid "Include Portuguese results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Portuguese results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30319"
+msgid "Include Dutch results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Dutch results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30320"
+msgid "Include Russian results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Russian results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30321"
+msgid "Include Japanese results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Japanese results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30322"
+msgid "Include Korean results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Korean results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30323"
+msgid "Include Chinese results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Chinese results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30324"
+msgid "Include Arabic results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Arabic results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30325"
+msgid "Include Hindi results. A release with undetected language is kept regardless of this setting."
+msgstr "Include Hindi results. A release with undetected language is kept regardless of this setting."
+
+msgctxt "#30326"
+msgid "Choose release groups to boost in Relevance ranking. This does not filter out other groups."
+msgstr "Choose release groups to boost in Relevance ranking. This does not filter out other groups."
+
+msgctxt "#30327"
+msgid "Choose release groups to remove from results entirely."
+msgstr "Choose release groups to remove from results entirely."
+
+msgctxt "#30328"
+msgid "Remove releases smaller than this size in MB. 0 = no limit. A release whose size can't be read is treated as 0 MB."
+msgstr "Remove releases smaller than this size in MB. 0 = no limit. A release whose size can't be read is treated as 0 MB."
+
+msgctxt "#30329"
+msgid "Remove releases larger than this size in MB. 0 = no limit. If set below Min size, the size filter is disabled."
+msgstr "Remove releases larger than this size in MB. 0 = no limit. If set below Min size, the size filter is disabled."
+
+msgctxt "#30330"
+msgid "Remove releases whose title contains any of these comma-separated keywords."
+msgstr "Remove releases whose title contains any of these comma-separated keywords."
+
+msgctxt "#30331"
+msgid "Remove releases unless their title contains every one of these comma-separated keywords."
+msgstr "Remove releases unless their title contains every one of these comma-separated keywords."
+
+msgctxt "#30332"
+msgid "How to rank the filtered results."
+msgstr "How to rank the filtered results."
+
+msgctxt "#30333"
+msgid "Caps how many results are requested per provider and how many appear in the picker after filtering."
+msgstr "Caps how many results are requested per provider and how many appear in the picker after filtering."
+
+msgctxt "#30334"
+msgid "Skip the result picker and automatically play the top-ranked result."
+msgstr "Skip the result picker and automatically play the top-ranked result."
+
+msgctxt "#30335"
+msgid "Seconds between checks of the download's status. Clamped to 1-60."
+msgstr "Seconds between checks of the download's status. Clamped to 1-60."
+
+msgctxt "#30336"
+msgid "Give up waiting for the download to become ready after this many seconds. Clamped to 60-86400."
+msgstr "Give up waiting for the download to become ready after this many seconds. Clamped to 60-86400."
+
+msgctxt "#30337"
+msgid "Max seconds to wait for nzbdav to accept the submitted NZB (it fetches and parses the NZB before replying). Clamped to 5-600."
+msgstr "Max seconds to wait for nzbdav to accept the submitted NZB (it fetches and parses the NZB before replying). Clamped to 5-600."
+
+msgctxt "#30338"
+msgid "Whether to clear other in-progress downloads before starting a new one. Never clears this title's own in-flight job or a completed copy you're about to reuse."
+msgstr "Whether to clear other in-progress downloads before starting a new one. Never clears this title's own in-flight job or a completed copy you're about to reuse."
+
+msgctxt "#30339"
+msgid "How long search results are cached, in seconds. 0 disables caching. Clamped to 0-86400."
+msgstr "How long search results are cached, in seconds. 0 disables caching. Clamped to 0-86400."
+
+msgctxt "#30340"
+msgid "Automatically retry a stream that fails during playback."
+msgstr "Automatically retry a stream that fails during playback."
+
+msgctxt "#30341"
+msgid "How many times to retry a failed stream."
+msgstr "How many times to retry a failed stream."
+
+msgctxt "#30342"
+msgid "Seconds to wait between stream retries."
+msgstr "Seconds to wait between stream retries."
+
+msgctxt "#30343"
+msgid "Keep backup streams standing by so playback can switch source mid-episode without interruption."
+msgstr "Keep backup streams standing by so playback can switch source mid-episode without interruption."
+
+msgctxt "#30344"
+msgid "How many standby fallback streams to keep ready per title. Hard ceiling of 5."
+msgstr "How many standby fallback streams to keep ready per title. Hard ceiling of 5."
+
+msgctxt "#30345"
+msgid "Seconds into playback to wait before submitting fallback backups. 0 submits immediately."
+msgstr "Seconds into playback to wait before submitting fallback backups. 0 submits immediately."
+
+msgctxt "#30346"
+msgid "Convert MP4 mov_text subtitles to SRT during remux so embedded subtitles survive."
+msgstr "Convert MP4 mov_text subtitles to SRT during remux so embedded subtitles survive."
+
+msgctxt "#30347"
+msgid "File size (MB) above which the selected remux mode applies. 0 disables remuxing entirely -- everything streams pass-through."
+msgstr "File size (MB) above which the selected remux mode applies. 0 disables remuxing entirely -- everything streams pass-through."
+
+msgctxt "#30348"
+msgid "How to handle large non-MP4 streams: pass through directly, remux to fMP4/HLS, or remux to Matroska for compatibility."
+msgstr "How to handle large non-MP4 streams: pass through directly, remux to fMP4/HLS, or remux to Matroska for compatibility."
+
+msgctxt "#30349"
+msgid "How to react when the upstream server violates the expected Range/Content-Length contract. Off also disables the density breaker below."
+msgstr "How to react when the upstream server violates the expected Range/Content-Length contract. Off also disables the density breaker below."
+
+msgctxt "#30350"
+msgid "Abort a stream early if a rolling 16MB window becomes more than half zero-filled, which usually means a dead release. Only active when Strict upstream contract mode isn't Off."
+msgstr "Abort a stream early if a rolling 16MB window becomes more than half zero-filled, which usually means a dead release. Only active when Strict upstream contract mode isn't Off."
+
+msgctxt "#30351"
+msgid "Cap the total zero-filled data allowed per stream; the stream ends with a clean error once the budget is hit."
+msgstr "Cap the total zero-filled data allowed per stream; the stream ends with a clean error once the budget is hit."
+
+msgctxt "#30352"
+msgid "Re-issue the original range request with backoff on transient upstream errors before falling back to skip-filling."
+msgstr "Re-issue the original range request with backoff on transient upstream errors before falling back to skip-filling."
+
+msgctxt "#30353"
+msgid "Max seconds to hold an established stream open through a recoverable backend stall before giving up. 0 closes immediately. Clamped to 0-600."
+msgstr "Max seconds to hold an established stream open through a recoverable backend stall before giving up. 0 closes immediately. Clamped to 0-600."
+
+msgctxt "#30354"
+msgid "Size in MB of the per-session forward read-ahead buffer. Keeps filling while paused. 0 disables it. Clamped to 0-4096."
+msgstr "Size in MB of the per-session forward read-ahead buffer. Keeps filling while paused. 0 disables it. Clamped to 0-4096."
+
+msgctxt "#30355"
+msgid "Send 200 OK instead of 206 Partial Content when Kodi requests the whole file without a Range header. Leave off unless validated on your build."
+msgstr "Send 200 OK instead of 206 Partial Content when Kodi requests the whole file without a Range header. Leave off unless validated on your build."
+
+msgctxt "#30356"
+msgid "Your links to nzbdav, WebDAV, and your search providers."
+msgstr "Your links to nzbdav, WebDAV, and your search providers."
+
+msgctxt "#30357"
+msgid "An alternative backend to nzbdav. When enabled, downloads go through NZBGet and play from an SMB share."
+msgstr "An alternative backend to nzbdav. When enabled, downloads go through NZBGet and play from an SMB share."
+
+msgctxt "#30358"
+msgid "Direct Newznab indexers, for when you don't run NZBHydra2 or Prowlarr."
+msgstr "Direct Newznab indexers, for when you don't run NZBHydra2 or Prowlarr."
+
+msgctxt "#30359"
+msgid "Install the NZB-DAV player file into TMDBHelper or another add-on with a players folder."
+msgstr "Install the NZB-DAV player file into TMDBHelper or another add-on with a players folder."
+
+msgctxt "#30360"
+msgid "Filter search results by resolution, HDR, audio, video codec, and language. Every toggle defaults on."
+msgstr "Filter search results by resolution, HDR, audio, video codec, and language. Every toggle defaults on."
+
+msgctxt "#30361"
+msgid "Filter releases by title keywords, size, and preferred or excluded release groups."
+msgstr "Filter releases by title keywords, size, and preferred or excluded release groups."
+
+msgctxt "#30362"
+msgid "How to rank the filtered results and whether to auto-select the top match."
+msgstr "How to rank the filtered results and whether to auto-select the top match."
+
+msgctxt "#30363"
+msgid "Tuning for polling, caching, stream resilience, fallback streams, and the proxy. Change only for a specific reason."
+msgstr "Tuning for polling, caching, stream resilience, fallback streams, and the proxy. Change only for a specific reason."

@@ -41,25 +41,30 @@ def settings_root():
 
 
 def _setting_by_id(category, setting_id):
-    for child in category.findall("setting"):
+    for child in category.iter("setting"):
         if child.get("id") == setting_id:
             return child
     return None
 
 
 def _connections_category(root):
-    """The Connections category has label 30000 and is the FIRST category."""
-    for cat in root.findall("category"):
+    """The Connections category has label 30000 and is the FIRST category.
+
+    Settings live under <settings version="1"><section><category><group>
+    <setting>...</setting></group></category></section></settings>.
+    """
+    for cat in root.find("section").findall("category"):
         if cat.get("label") == "30000":
             return cat
     raise AssertionError("Connections category (label=30000) not found")
 
 
 def _index_of_setting(category, predicate):
-    """Return the position (within the category's children) of the first
-    setting matching ``predicate``. -1 if absent. Used to assert
-    relative ordering."""
-    for idx, child in enumerate(category.findall("setting")):
+    """Return the position (within the category, across all its groups) of
+    the first setting matching ``predicate``. -1 if absent. Used to assert
+    relative ordering. ``category.iter("setting")`` walks groups in document
+    order, so positions still reflect on-screen order."""
+    for idx, child in enumerate(category.iter("setting")):
         if predicate(child):
             return idx
     return -1
@@ -73,7 +78,7 @@ def test_webdav_url_default_is_localhost_8080(settings_root):
     cat = _connections_category(settings_root)
     webdav_url = _setting_by_id(cat, "webdav_url")
     assert webdav_url is not None, "webdav_url setting missing"
-    assert webdav_url.get("default") == "http://localhost:8080"
+    assert webdav_url.findtext("default") == "http://localhost:8080"
 
 
 # --- Fix #2: nzbhydra_enabled defaults false (paired creds default empty) --
@@ -85,10 +90,10 @@ def test_nzbhydra_enabled_defaults_false(settings_root):
     cat = _connections_category(settings_root)
     hydra = _setting_by_id(cat, "nzbhydra_enabled")
     assert hydra is not None
-    assert hydra.get("default") == "false"
+    assert hydra.findtext("default") == "false"
     # Paired credentials still default empty (the user has to enter them).
     api_key = _setting_by_id(cat, "hydra_api_key")
-    assert api_key.get("default") == ""
+    assert api_key.findtext("default") == ""
 
 
 def test_prowlarr_enabled_remains_false(settings_root):
@@ -96,7 +101,7 @@ def test_prowlarr_enabled_remains_false(settings_root):
     correct; this test pins it so a future edit doesn't regress it."""
     cat = _connections_category(settings_root)
     prowlarr = _setting_by_id(cat, "prowlarr_enabled")
-    assert prowlarr.get("default") == "false"
+    assert prowlarr.findtext("default") == "false"
 
 
 # --- Fix #3: Connections category order -----------------------------------
@@ -133,7 +138,7 @@ def test_prowlarr_indexer_ids_precedes_test_action(settings_root):
     it must appear BEFORE that action in the panel so users finish
     selecting indexers before validating the connection."""
     cat = _connections_category(settings_root)
-    settings_list = list(cat.findall("setting"))
+    settings_list = list(cat.iter("setting"))
 
     indexer_ids_idx = next(
         (
@@ -147,7 +152,7 @@ def test_prowlarr_indexer_ids_precedes_test_action(settings_root):
         (
             i
             for i, s in enumerate(settings_list)
-            if s.get("action", "").endswith("test_prowlarr)")
+            if s.findtext("data", "").endswith("test_prowlarr)")
         ),
         -1,
     )
@@ -168,11 +173,11 @@ def _setting_anywhere(root, setting_id):
 
 def test_readahead_buffer_mb_setting_present(settings_root):
     """The read-ahead prefetch cache is gated by readahead_buffer_mb; pin its
-    layout (type=number, default=256) like the sibling tuning settings."""
+    layout (type=integer, default=256) like the sibling tuning settings."""
     setting = _setting_anywhere(settings_root, "readahead_buffer_mb")
     assert setting is not None, "readahead_buffer_mb setting missing"
-    assert setting.get("type") == "number"
-    assert setting.get("default") == "256"
+    assert setting.get("type") == "integer"
+    assert setting.findtext("default") == "256"
     assert setting.get("label") == "30207"
 
 
@@ -180,8 +185,8 @@ def test_passthrough_stall_wait_setting_present(settings_root):
     """Pin the passthrough_stall_wait layout (was previously unasserted)."""
     setting = _setting_anywhere(settings_root, "passthrough_stall_wait")
     assert setting is not None
-    assert setting.get("type") == "number"
-    assert setting.get("default") == "120"
+    assert setting.get("type") == "integer"
+    assert setting.findtext("default") == "120"
 
 
 def test_no_duplicate_setting_ids(settings_root):
