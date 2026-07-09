@@ -295,7 +295,7 @@ def _setting_default_from_root(root, setting_id):
         if setting.get("id") == setting_id:
             if "default" in setting.attrib:
                 return setting.get("default", "") or ""
-            return setting.findtext("default", "") or ""
+            return (setting.findtext("default", "") or "").strip()
     return None
 
 
