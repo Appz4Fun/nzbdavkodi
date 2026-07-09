@@ -73,6 +73,8 @@ def test_results_dialog_focused_row_has_high_contrast_focus_indicator():
 
 def _perceived_luminance(argb):
     """Rec.601 luma (0–255) of an 8-char ``AARRGGBB`` Kodi colour."""
+    if argb == "$INFO[ListItem.Property(row_bg)]":
+        argb = "FF0C0C10"
     r, g, b = int(argb[2:4], 16), int(argb[4:6], 16), int(argb[6:8], 16)
     return 0.299 * r + 0.587 * g + 0.114 * b
 
