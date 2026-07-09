@@ -1,177 +1,1147 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<settings>
-	<category label="30000">
-		<setting label="30004" type="lsep" />
-		<setting id="nzbdav_url" label="30005" type="text" default="http://localhost:3000" />
-		<setting id="nzbdav_api_key" label="30003" type="text" default="" option="hidden" />
-		<setting label="30114" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_nzbdav)" option="close" />
-		<setting label="30006" type="lsep" />
-		<setting id="webdav_url" label="30007" type="text" default="http://localhost:8080" />
-		<setting id="webdav_username" label="30008" type="text" default="" />
-		<setting id="webdav_password" label="30009" type="text" default="" option="hidden" />
-		<setting label="30188" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_webdav)" option="close" />
-		<setting label="30001" type="lsep" />
-		<setting id="nzbhydra_enabled" label="30125" type="bool" default="false" />
-		<setting id="hydra_url" label="30002" type="text" default="http://localhost:5076" />
-		<setting id="hydra_api_key" label="30003" type="text" default="" option="hidden" />
-		<setting label="30113" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_hydra)" option="close" />
-		<setting label="30126" type="lsep" />
-		<setting id="prowlarr_enabled" label="30127" type="bool" default="false" />
-		<setting id="prowlarr_host" label="30128" type="text" default="http://localhost:9696" />
-		<setting id="prowlarr_api_key" label="30129" type="text" default="" option="hidden" />
-		<setting id="prowlarr_indexer_ids" label="30130" type="text" default="" />
-		<setting label="30131" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_prowlarr)" option="close" />
-		<setting label="30228" type="lsep" />
-		<setting id="tmdb_api_key" label="30229" type="text" default="" option="hidden" />
-	</category>
-	<category label="30208">
-		<setting label="30209" type="lsep" />
-		<setting id="nzbget_enabled" label="30210" type="bool" default="false" />
-		<setting id="nzbget_url" label="30211" type="text" default="http://localhost:6789" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
-		<setting id="nzbget_username" label="30212" type="text" default="nzbget" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
-		<setting id="nzbget_password" label="30213" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
-		<setting id="nzbget_category" label="30214" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
-		<setting label="30215" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_nzbget)" option="close" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
-		<setting id="nzbget_smb_root" label="30216" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
-		<setting label="30217" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_nzbget_smb)" option="close" visible="Addon.SettingBool(plugin.video.nzbdav,nzbget_enabled)" />
-	</category>
-	<category label="30163">
-		<setting label="30164" type="lsep" />
-		<setting id="direct_indexers_enabled" label="30165" type="bool" default="false" />
-		<setting label="30166" type="lsep" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzblife_enabled" label="30174" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzblife_url" label="30168" type="text" default="https://api.nzb.su/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzblife_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbgeek_enabled" label="30179" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbgeek_url" label="30168" type="text" default="https://api.nzbgeek.info/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbgeek_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbfinder_enabled" label="30180" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbfinder_url" label="30168" type="text" default="https://nzbfinder.ws/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbfinder_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_drunkenslug_enabled" label="30175" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_drunkenslug_url" label="30168" type="text" default="https://drunkenslug.com/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_drunkenslug_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbplanet_enabled" label="30181" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbplanet_url" label="30168" type="text" default="https://api.nzbplanet.net/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_nzbplanet_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_dognzb_enabled" label="30182" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_dognzb_url" label="30168" type="text" default="https://api.dognzb.cr/api" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_dognzb_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting label="30167" type="lsep" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom1_enabled" label="30169" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom1_name" label="30172" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom1_url" label="30168" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom1_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom2_enabled" label="30170" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom2_name" label="30172" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom2_url" label="30168" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom2_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom3_enabled" label="30171" type="bool" default="false" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom3_name" label="30172" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom3_url" label="30168" type="text" default="" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting id="direct_indexer_custom3_api_key" label="30003" type="text" default="" option="hidden" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting label="30195" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/manage_indexers)" option="close" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-		<setting label="30173" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/test_direct_indexers)" option="close" visible="Addon.SettingBool(plugin.video.nzbdav,direct_indexers_enabled)" />
-	</category>
-	<category label="30010">
-		<setting label="30011" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/install_player)" />
-		<setting label="30160" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/install_player_other)" />
-	</category>
-	<category label="30012">
-		<setting label="30013" type="lsep" />
-		<setting id="filter_2160p" label="30014" type="bool" default="true" />
-		<setting id="filter_1080p" label="30015" type="bool" default="true" />
-		<setting id="filter_720p" label="30016" type="bool" default="true" />
-		<setting id="filter_480p" label="30017" type="bool" default="true" />
-		<setting label="30018" type="lsep" />
-		<setting id="filter_hdr10" label="30019" type="bool" default="true" />
-		<setting id="filter_hdr10plus" label="30020" type="bool" default="true" />
-		<setting id="filter_dolby_vision" label="30021" type="bool" default="true" />
-		<setting id="filter_hlg" label="30022" type="bool" default="true" />
-		<setting id="filter_sdr" label="30023" type="bool" default="true" />
-		<setting label="30024" type="lsep" />
-		<setting id="filter_atmos" label="30025" type="bool" default="true" />
-		<setting id="filter_truehd" label="30026" type="bool" default="true" />
-		<setting id="filter_dtshd_ma" label="30027" type="bool" default="true" />
-		<setting id="filter_dtsx" label="30028" type="bool" default="true" />
-		<setting id="filter_ddplus" label="30029" type="bool" default="true" />
-		<setting id="filter_dd" label="30030" type="bool" default="true" />
-		<setting id="filter_aac" label="30031" type="bool" default="true" />
-		<setting label="30032" type="lsep" />
-		<setting id="filter_hevc" label="30033" type="bool" default="true" />
-		<setting id="filter_avc" label="30034" type="bool" default="true" />
-		<setting id="filter_av1" label="30035" type="bool" default="true" />
-		<setting id="filter_vp9" label="30036" type="bool" default="true" />
-		<setting id="filter_mpeg2" label="30037" type="bool" default="true" />
-		<setting label="30038" type="lsep" />
-		<setting id="filter_english" label="30039" type="bool" default="true" />
-		<setting id="filter_spanish" label="30040" type="bool" default="true" />
-		<setting id="filter_french" label="30041" type="bool" default="true" />
-		<setting id="filter_german" label="30042" type="bool" default="true" />
-		<setting id="filter_italian" label="30043" type="bool" default="true" />
-		<setting id="filter_portuguese" label="30044" type="bool" default="true" />
-		<setting id="filter_dutch" label="30045" type="bool" default="true" />
-		<setting id="filter_russian" label="30046" type="bool" default="true" />
-		<setting id="filter_japanese" label="30047" type="bool" default="true" />
-		<setting id="filter_korean" label="30048" type="bool" default="true" />
-		<setting id="filter_chinese" label="30049" type="bool" default="true" />
-		<setting id="filter_arabic" label="30050" type="bool" default="true" />
-		<setting id="filter_hindi" label="30051" type="bool" default="true" />
-	</category>
-	<category label="30052">
-		<setting label="30053" type="lsep" />
-		<setting id="filter_release_group" label="30054" type="text" default="" visible="false" />
-		<setting id="filter_exclude_release_group" label="30055" type="text" default="" visible="false" />
-		<setting label="30054" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/configure_preferred_groups)" option="close" />
-		<setting label="30055" type="action" action="RunPlugin(plugin://plugin.video.nzbdav/configure_excluded_groups)" option="close" />
-		<setting label="30056" type="lsep" />
-		<setting id="filter_min_size" label="30057" type="number" default="0" />
-		<setting id="filter_max_size" label="30058" type="number" default="0" />
-		<setting label="30059" type="lsep" />
-		<setting id="filter_exclude_keywords" label="30060" type="text" default="" />
-		<setting id="filter_require_keywords" label="30061" type="text" default="" />
-	</category>
-	<category label="30062">
-		<setting id="sort_order" label="30063" type="enum" default="0" lvalues="30077|30078|30079|30080|30081" />
-		<setting id="max_results" label="30064" type="number" default="25" />
-		<setting label="30065" type="lsep" />
-		<setting id="auto_select_best" label="30066" type="bool" default="false" />
-	</category>
-	<category label="30067">
-		<setting label="30068" type="lsep" />
-		<setting id="poll_interval" label="30069" type="number" default="1" />
-		<setting id="download_timeout" label="30070" type="number" default="3600" />
-		<setting id="submit_timeout" label="30122" type="number" default="300" />
-		<setting id="clear_queue_on_submit" label="30197" type="enum" default="0" lvalues="30198|30199|30200" />
-		<setting label="30071" type="lsep" />
-		<setting id="cache_ttl" label="30072" type="number" default="300" />
-		<setting label="30073" type="lsep" />
-		<setting id="stream_auto_retry" label="30074" type="bool" default="true" />
-		<setting id="stream_max_retries" label="30075" type="number" default="3" />
-		<setting id="stream_retry_delay" label="30076" type="number" default="5" />
-		<setting label="30183" type="lsep" />
-		<setting id="fallback_streams_enabled" label="30184" type="bool" default="true" />
-		<setting id="fallback_streams_max" label="30185" type="number" default="5" />
-		<setting id="fallback_submit_delay" label="30205" type="number" default="120" />
-		<setting label="30118" type="lsep" />
-		<setting id="proxy_convert_subs" label="30119" type="bool" default="true" />
-		<setting id="force_remux_threshold_mb" label="30123" type="number" default="15000" />
-		<setting id="force_remux_mode" label="30140" type="enum" default="0" lvalues="30152|30142|30141" />
-		<setting id="force_remux_mode_v2_migrated" type="bool" default="false" visible="false" />
-		<setting label="30143" type="lsep" />
-		<setting id="strict_contract_mode" label="30144" type="enum" default="1" lvalues="30145|30146|30147" />
-		<setting id="density_breaker_enabled" label="30148" type="bool" default="false" />
-		<setting id="zero_fill_budget_enabled" label="30149" type="bool" default="true" />
-		<setting id="retry_ladder_enabled" label="30150" type="bool" default="true" />
-		<setting id="passthrough_stall_wait" label="30206" type="number" default="120" />
-		<setting id="readahead_buffer_mb" label="30207" type="number" default="256" />
-		<setting id="send_200_no_range" label="30151" type="bool" default="false" />
-		<setting id="cache_warning_shown" type="bool" default="false" visible="false" />
-		<setting id="cache_dialog_dismissed" type="bool" default="false" visible="false" />
-		<!-- Power-user override: nzbdav content-root path segment (default "content").
-		     Hidden because the standard nzbdav layout uses "content" and this only
-		     matters for users with a non-standard reverse-proxy mount. Read by
-		     webdav.probe_webdav_reachable. -->
-		<setting id="webdav_content_root" type="text" default="" visible="false" />
-	</category>
+<settings version="1">
+	<section id="plugin.video.nzbdav">
+		<category id="connection" label="30000" help="30356">
+			<group id="1" label="30004">
+				<setting id="nzbdav_url" type="string" label="30005" help="30232">
+					<level>0</level>
+					<default>http://localhost:3000</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30005</heading>
+					</control>
+				</setting>
+				<setting id="nzbdav_api_key" type="string" label="30003" help="30233">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+				</setting>
+				<setting id="action_test_nzbdav" type="action" label="30114" help="30234">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/test_nzbdav)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+				</setting>
+			</group>
+			<group id="2" label="30006">
+				<setting id="webdav_url" type="string" label="30007" help="30235">
+					<level>0</level>
+					<default>http://localhost:8080</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30007</heading>
+					</control>
+				</setting>
+				<setting id="webdav_username" type="string" label="30008" help="30236">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30008</heading>
+					</control>
+				</setting>
+				<setting id="webdav_password" type="string" label="30009" help="30237">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30009</heading>
+						<hidden>true</hidden>
+					</control>
+				</setting>
+				<setting id="action_test_webdav" type="action" label="30188" help="30238">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/test_webdav)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+				</setting>
+			</group>
+			<group id="3" label="30001">
+				<setting id="nzbhydra_enabled" type="boolean" label="30125" help="30239">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="hydra_url" type="string" label="30002" help="30240">
+					<level>0</level>
+					<default>http://localhost:5076</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30002</heading>
+					</control>
+				</setting>
+				<setting id="hydra_api_key" type="string" label="30003" help="30241">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+				</setting>
+				<setting id="action_test_hydra" type="action" label="30113" help="30242">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/test_hydra)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+				</setting>
+			</group>
+			<group id="4" label="30126">
+				<setting id="prowlarr_enabled" type="boolean" label="30127" help="30243">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="prowlarr_host" type="string" label="30128" help="30244">
+					<level>0</level>
+					<default>http://localhost:9696</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30128</heading>
+					</control>
+				</setting>
+				<setting id="prowlarr_api_key" type="string" label="30129" help="30245">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30129</heading>
+						<hidden>true</hidden>
+					</control>
+				</setting>
+				<setting id="prowlarr_indexer_ids" type="string" label="30130" help="30246">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30130</heading>
+					</control>
+				</setting>
+				<setting id="action_test_prowlarr" type="action" label="30131" help="30247">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/test_prowlarr)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+				</setting>
+			</group>
+			<group id="5" label="30228">
+				<setting id="tmdb_api_key" type="string" label="30229" help="30248">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30229</heading>
+						<hidden>true</hidden>
+					</control>
+				</setting>
+			</group>
+		</category>
+		<category id="nzbget" label="30208" help="30357">
+			<group id="1" label="30209">
+				<setting id="nzbget_enabled" type="boolean" label="30210" help="30249">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="nzbget_url" type="string" label="30211" help="30250">
+					<level>0</level>
+					<default>http://localhost:6789</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30211</heading>
+					</control>
+					<dependencies>
+						<dependency type="visible" setting="nzbget_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="nzbget_username" type="string" label="30212" help="30251">
+					<level>0</level>
+					<default>nzbget</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30212</heading>
+					</control>
+					<dependencies>
+						<dependency type="visible" setting="nzbget_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="nzbget_password" type="string" label="30213" help="30252">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30213</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="visible" setting="nzbget_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="nzbget_category" type="string" label="30214" help="30253">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30214</heading>
+					</control>
+					<dependencies>
+						<dependency type="visible" setting="nzbget_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="action_test_nzbget" type="action" label="30215" help="30254">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/test_nzbget)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+					<dependencies>
+						<dependency type="visible" setting="nzbget_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="nzbget_smb_root" type="string" label="30216" help="30255">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30216</heading>
+					</control>
+					<dependencies>
+						<dependency type="visible" setting="nzbget_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="action_test_nzbget_smb" type="action" label="30217" help="30256">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/test_nzbget_smb)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+					<dependencies>
+						<dependency type="visible" setting="nzbget_enabled">true</dependency>
+					</dependencies>
+				</setting>
+			</group>
+		</category>
+		<category id="indexers" label="30163" help="30358">
+			<group id="1" label="30164">
+				<setting id="direct_indexers_enabled" type="boolean" label="30165" help="30289">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+			</group>
+			<group id="2" label="30166">
+				<setting id="direct_indexer_nzblife_enabled" type="boolean" label="30174" help="30257">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzblife_url" type="string" label="30168" help="30258">
+					<level>0</level>
+					<default>https://api.nzb.su/api</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzblife_api_key" type="string" label="30003" help="30259">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbgeek_enabled" type="boolean" label="30179" help="30260">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbgeek_url" type="string" label="30168" help="30261">
+					<level>0</level>
+					<default>https://api.nzbgeek.info/api</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbgeek_api_key" type="string" label="30003" help="30262">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbfinder_enabled" type="boolean" label="30180" help="30263">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbfinder_url" type="string" label="30168" help="30264">
+					<level>0</level>
+					<default>https://nzbfinder.ws/api</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbfinder_api_key" type="string" label="30003" help="30265">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_drunkenslug_enabled" type="boolean" label="30175" help="30266">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_drunkenslug_url" type="string" label="30168" help="30267">
+					<level>0</level>
+					<default>https://drunkenslug.com/api</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_drunkenslug_api_key" type="string" label="30003" help="30268">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbplanet_enabled" type="boolean" label="30181" help="30269">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbplanet_url" type="string" label="30168" help="30270">
+					<level>0</level>
+					<default>https://api.nzbplanet.net/api</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_nzbplanet_api_key" type="string" label="30003" help="30271">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_dognzb_enabled" type="boolean" label="30182" help="30272">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_dognzb_url" type="string" label="30168" help="30273">
+					<level>0</level>
+					<default>https://api.dognzb.cr/api</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_dognzb_api_key" type="string" label="30003" help="30274">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+			</group>
+			<group id="3" label="30167">
+				<setting id="direct_indexer_custom1_enabled" type="boolean" label="30169" help="30275">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom1_name" type="string" label="30172" help="30276">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30172</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom1_url" type="string" label="30168" help="30277">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom1_api_key" type="string" label="30003" help="30278">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom2_enabled" type="boolean" label="30170" help="30279">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom2_name" type="string" label="30172" help="30280">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30172</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom2_url" type="string" label="30168" help="30281">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom2_api_key" type="string" label="30003" help="30282">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom3_enabled" type="boolean" label="30171" help="30283">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom3_name" type="string" label="30172" help="30284">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30172</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom3_url" type="string" label="30168" help="30285">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30168</heading>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="direct_indexer_custom3_api_key" type="string" label="30003" help="30286">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30003</heading>
+						<hidden>true</hidden>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="action_manage_indexers" type="action" label="30195" help="30287">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/manage_indexers)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+				<setting id="action_test_direct_indexers" type="action" label="30173" help="30288">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/test_direct_indexers)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+					<dependencies>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
+					</dependencies>
+				</setting>
+			</group>
+		</category>
+		<category id="player_installation" label="30010" help="30359">
+			<group id="1">
+				<setting id="action_install_player" type="action" label="30011" help="30290">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/install_player)</data>
+					<control type="button" format="action">
+						<close>false</close>
+					</control>
+				</setting>
+				<setting id="action_install_player_other" type="action" label="30160" help="30291">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/install_player_other)</data>
+					<control type="button" format="action">
+						<close>false</close>
+					</control>
+				</setting>
+			</group>
+		</category>
+		<category id="quality_filters" label="30012" help="30360">
+			<group id="1" label="30013">
+				<setting id="filter_2160p" type="boolean" label="30014" help="30293">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_1080p" type="boolean" label="30015" help="30294">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_720p" type="boolean" label="30016" help="30295">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_480p" type="boolean" label="30017" help="30296">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+			</group>
+			<group id="2" label="30018">
+				<setting id="filter_hdr10" type="boolean" label="30019" help="30297">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_hdr10plus" type="boolean" label="30020" help="30298">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_dolby_vision" type="boolean" label="30021" help="30299">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_hlg" type="boolean" label="30022" help="30300">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_sdr" type="boolean" label="30023" help="30292">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+			</group>
+			<group id="3" label="30024">
+				<setting id="filter_atmos" type="boolean" label="30025" help="30301">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_truehd" type="boolean" label="30026" help="30302">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_dtshd_ma" type="boolean" label="30027" help="30303">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_dtsx" type="boolean" label="30028" help="30304">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_ddplus" type="boolean" label="30029" help="30305">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_dd" type="boolean" label="30030" help="30306">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_aac" type="boolean" label="30031" help="30307">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+			</group>
+			<group id="4" label="30032">
+				<setting id="filter_hevc" type="boolean" label="30033" help="30308">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_avc" type="boolean" label="30034" help="30309">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_av1" type="boolean" label="30035" help="30310">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_vp9" type="boolean" label="30036" help="30311">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_mpeg2" type="boolean" label="30037" help="30312">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+			</group>
+			<group id="5" label="30038">
+				<setting id="filter_english" type="boolean" label="30039" help="30313">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_spanish" type="boolean" label="30040" help="30314">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_french" type="boolean" label="30041" help="30315">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_german" type="boolean" label="30042" help="30316">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_italian" type="boolean" label="30043" help="30317">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_portuguese" type="boolean" label="30044" help="30318">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_dutch" type="boolean" label="30045" help="30319">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_russian" type="boolean" label="30046" help="30320">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_japanese" type="boolean" label="30047" help="30321">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_korean" type="boolean" label="30048" help="30322">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_chinese" type="boolean" label="30049" help="30323">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_arabic" type="boolean" label="30050" help="30324">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_hindi" type="boolean" label="30051" help="30325">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+			</group>
+		</category>
+		<category id="keyword_filters" label="30052" help="30361">
+			<group id="1" label="30053">
+				<setting id="filter_release_group" type="string">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<visible>false</visible>
+					<control type="edit" format="string"/>
+				</setting>
+				<setting id="filter_exclude_release_group" type="string">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<visible>false</visible>
+					<control type="edit" format="string"/>
+				</setting>
+				<setting id="action_configure_preferred_groups" type="action" label="30054" help="30326">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/configure_preferred_groups)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+				</setting>
+				<setting id="action_configure_excluded_groups" type="action" label="30055" help="30327">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.nzbdav/configure_excluded_groups)</data>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+				</setting>
+			</group>
+			<group id="2" label="30056">
+				<setting id="filter_min_size" type="integer" label="30057" help="30328">
+					<level>0</level>
+					<default>0</default>
+					<control type="edit" format="integer">
+						<heading>30057</heading>
+					</control>
+				</setting>
+				<setting id="filter_max_size" type="integer" label="30058" help="30329">
+					<level>0</level>
+					<default>0</default>
+					<control type="edit" format="integer">
+						<heading>30058</heading>
+					</control>
+				</setting>
+			</group>
+			<group id="3" label="30059">
+				<setting id="filter_exclude_keywords" type="string" label="30060" help="30330">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30060</heading>
+					</control>
+				</setting>
+				<setting id="filter_require_keywords" type="string" label="30061" help="30331">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30061</heading>
+					</control>
+				</setting>
+			</group>
+		</category>
+		<category id="sorting" label="30062" help="30362">
+			<group id="1">
+				<setting id="sort_order" type="integer" label="30063" help="30332">
+					<level>0</level>
+					<default>0</default>
+					<constraints>
+						<options>
+							<option label="30077">0</option>
+							<option label="30078">1</option>
+							<option label="30079">2</option>
+							<option label="30080">3</option>
+							<option label="30081">4</option>
+						</options>
+					</constraints>
+					<control type="spinner" format="string"/>
+				</setting>
+				<setting id="max_results" type="integer" label="30064" help="30333">
+					<level>0</level>
+					<default>25</default>
+					<control type="edit" format="integer">
+						<heading>30064</heading>
+					</control>
+				</setting>
+			</group>
+			<group id="2" label="30065">
+				<setting id="auto_select_best" type="boolean" label="30066" help="30334">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+			</group>
+		</category>
+		<category id="advanced" label="30067" help="30363">
+			<group id="1" label="30068">
+				<setting id="poll_interval" type="integer" label="30069" help="30335">
+					<level>0</level>
+					<default>1</default>
+					<control type="edit" format="integer">
+						<heading>30069</heading>
+					</control>
+				</setting>
+				<setting id="download_timeout" type="integer" label="30070" help="30336">
+					<level>0</level>
+					<default>3600</default>
+					<control type="edit" format="integer">
+						<heading>30070</heading>
+					</control>
+				</setting>
+				<setting id="submit_timeout" type="integer" label="30122" help="30337">
+					<level>0</level>
+					<default>300</default>
+					<control type="edit" format="integer">
+						<heading>30122</heading>
+					</control>
+				</setting>
+				<setting id="clear_queue_on_submit" type="integer" label="30197" help="30338">
+					<level>0</level>
+					<default>0</default>
+					<constraints>
+						<options>
+							<option label="30198">0</option>
+							<option label="30199">1</option>
+							<option label="30200">2</option>
+						</options>
+					</constraints>
+					<control type="spinner" format="string"/>
+				</setting>
+			</group>
+			<group id="2" label="30071">
+				<setting id="cache_ttl" type="integer" label="30072" help="30339">
+					<level>0</level>
+					<default>300</default>
+					<control type="edit" format="integer">
+						<heading>30072</heading>
+					</control>
+				</setting>
+			</group>
+			<group id="3" label="30073">
+				<setting id="stream_auto_retry" type="boolean" label="30074" help="30340">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="stream_max_retries" type="integer" label="30075" help="30341">
+					<level>0</level>
+					<default>3</default>
+					<control type="edit" format="integer">
+						<heading>30075</heading>
+					</control>
+				</setting>
+				<setting id="stream_retry_delay" type="integer" label="30076" help="30342">
+					<level>0</level>
+					<default>5</default>
+					<control type="edit" format="integer">
+						<heading>30076</heading>
+					</control>
+				</setting>
+			</group>
+			<group id="4" label="30183">
+				<setting id="fallback_streams_enabled" type="boolean" label="30184" help="30343">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="fallback_streams_max" type="integer" label="30185" help="30344">
+					<level>0</level>
+					<default>5</default>
+					<control type="edit" format="integer">
+						<heading>30185</heading>
+					</control>
+				</setting>
+				<setting id="fallback_submit_delay" type="integer" label="30205" help="30345">
+					<level>0</level>
+					<default>120</default>
+					<control type="edit" format="integer">
+						<heading>30205</heading>
+					</control>
+				</setting>
+			</group>
+			<group id="5" label="30118">
+				<setting id="proxy_convert_subs" type="boolean" label="30119" help="30346">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="force_remux_threshold_mb" type="integer" label="30123" help="30347">
+					<level>0</level>
+					<default>15000</default>
+					<control type="edit" format="integer">
+						<heading>30123</heading>
+					</control>
+				</setting>
+				<setting id="force_remux_mode" type="integer" label="30140" help="30348">
+					<level>0</level>
+					<default>0</default>
+					<constraints>
+						<options>
+							<option label="30152">0</option>
+							<option label="30142">1</option>
+							<option label="30141">2</option>
+						</options>
+					</constraints>
+					<control type="spinner" format="string"/>
+				</setting>
+				<setting id="force_remux_mode_v2_migrated" type="boolean">
+					<level>0</level>
+					<default>false</default>
+					<visible>false</visible>
+					<control type="toggle"/>
+				</setting>
+			</group>
+			<group id="6" label="30143">
+				<setting id="strict_contract_mode" type="integer" label="30144" help="30349">
+					<level>0</level>
+					<default>1</default>
+					<constraints>
+						<options>
+							<option label="30145">0</option>
+							<option label="30146">1</option>
+							<option label="30147">2</option>
+						</options>
+					</constraints>
+					<control type="spinner" format="string"/>
+				</setting>
+				<setting id="density_breaker_enabled" type="boolean" label="30148" help="30350">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="zero_fill_budget_enabled" type="boolean" label="30149" help="30351">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="retry_ladder_enabled" type="boolean" label="30150" help="30352">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="passthrough_stall_wait" type="integer" label="30206" help="30353">
+					<level>0</level>
+					<default>120</default>
+					<control type="edit" format="integer">
+						<heading>30206</heading>
+					</control>
+				</setting>
+				<setting id="readahead_buffer_mb" type="integer" label="30207" help="30354">
+					<level>0</level>
+					<default>256</default>
+					<control type="edit" format="integer">
+						<heading>30207</heading>
+					</control>
+				</setting>
+				<setting id="send_200_no_range" type="boolean" label="30151" help="30355">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="cache_warning_shown" type="boolean">
+					<level>0</level>
+					<default>false</default>
+					<visible>false</visible>
+					<control type="toggle"/>
+				</setting>
+				<setting id="cache_dialog_dismissed" type="boolean">
+					<level>0</level>
+					<default>false</default>
+					<visible>false</visible>
+					<control type="toggle"/>
+				</setting>
+				<setting id="webdav_content_root" type="string">
+					<level>0</level>
+					<default></default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<visible>false</visible>
+					<control type="edit" format="string"/>
+				</setting>
+			</group>
+		</category>
+	</section>
 </settings>

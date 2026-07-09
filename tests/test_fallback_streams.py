@@ -111,6 +111,41 @@ def test_configured_stream_bases_use_schema_defaults_without_kodi_fallback():
     assert ("http", "localhost:3000", "") in rendered
 
 
+def test_schema_default_reader_supports_old_and_new_settings_format():
+    from xml.etree import ElementTree as ET
+
+    from resources.lib import fallback_streams
+
+    root = ET.fromstring("""
+        <settings version="1">
+          <section id="plugin.video.nzbdav">
+            <category id="connection" label="30000" help="30300">
+              <group id="webdav" label="30006">
+                <setting id="webdav_url" type="string" label="30007">
+                  <default>http://localhost:8080</default>
+                </setting>
+                <setting
+                  id="legacy_url"
+                  type="text"
+                  label="30005"
+                  default="http://localhost:3000"
+                />
+              </group>
+            </category>
+          </section>
+        </settings>
+        """)
+
+    assert (
+        fallback_streams._setting_default_from_root(root, "webdav_url")
+        == "http://localhost:8080"
+    )
+    assert (
+        fallback_streams._setting_default_from_root(root, "legacy_url")
+        == "http://localhost:3000"
+    )
+
+
 def test_configured_stream_bases_tolerates_trailing_space_in_url():
     """A stray trailing space in nzbdav_url must not empty the probe-base
     allow-list. _split_http_url rejects whitespace in the netloc (an SSRF/

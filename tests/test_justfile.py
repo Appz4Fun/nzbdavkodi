@@ -170,6 +170,8 @@ def test_justfile_deploy_addon_backs_up_then_syncs_and_restarts():
     # service.py changes actually take effect (skippable via `norestart`).
     assert "/storage/.kodi/addons" in body
     assert "__pycache__" in body
+    assert "COPYFILE_DISABLE=1" in body
+    assert "._*" in body
     assert ".bak" in body
     assert "systemctl restart kodi" in body
     assert "norestart" in body

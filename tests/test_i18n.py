@@ -218,3 +218,42 @@ def test_settings_xml_uses_30129_for_prowlarr_api_key():
         "prowlarr_api_key still references generic 30003 ('API Key') "
         "instead of orphan 30129 ('Prowlarr API Key')"
     )
+
+
+def test_settings_category_help_strings_are_defined():
+    """Every <category> in settings.xml must have a non-empty help= id, and
+    that id must resolve to a real msgctxt in strings.po. Highlighting a
+    category tab in the Options sidebar should never show
+    "No information available"."""
+    import os
+    import re
+    import xml.etree.ElementTree as ET
+
+    settings_path = os.path.join(
+        "repo", "plugin.video.nzbdav", "resources", "settings.xml"
+    )
+    tree = ET.parse(settings_path)
+    categories = tree.getroot().find("section").findall("category")
+    assert categories, "no <category> elements found in settings.xml"
+
+    po_path = os.path.join(
+        "repo",
+        "plugin.video.nzbdav",
+        "resources",
+        "language",
+        "resource.language.en_gb",
+        "strings.po",
+    )
+    with open(po_path, encoding="utf-8") as fh:
+        po_content = fh.read()
+    defined_ids = set(re.findall(r'msgctxt "#(\d+)"', po_content))
+
+    for category in categories:
+        help_id = category.get("help", "")
+        assert help_id, "category id={} has no help= attribute".format(
+            category.get("id")
+        )
+        assert help_id in defined_ids, (
+            'category id={} references help="{}" with no matching '
+            "msgctxt in strings.po".format(category.get("id"), help_id)
+        )
