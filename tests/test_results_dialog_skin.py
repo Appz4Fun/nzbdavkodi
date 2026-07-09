@@ -112,17 +112,20 @@ def test_focus_indicator_appearance_is_high_contrast_and_correctly_placed():
     focused_bg = _row_background_color(focused)
     unfocused_bg = _row_background_color(unfocused)
 
+    unfocused_bgs = (unfocused_bg,)
+
     # If the skin delegates unfocused_bg to a Python property (e.g., zebra striping),
-    # verify contrast against the primary python background constant.
+    # verify contrast against both Python background constants.
     if unfocused_bg == "$INFO[ListItem.Property(row_bg)]":
-        from resources.lib.results_dialog import _BG_A
+        from resources.lib.results_dialog import _BG_A, _BG_B
 
-        unfocused_bg = _BG_A
+        unfocused_bgs = (_BG_A, _BG_B)
 
-    assert _FOCUS_ACCENT_COLOR not in (focused_bg, unfocused_bg)
+    assert _FOCUS_ACCENT_COLOR not in (focused_bg,) + unfocused_bgs
     accent_lum = _perceived_luminance(_FOCUS_ACCENT_COLOR)
     assert accent_lum - _perceived_luminance(focused_bg) > 80
-    assert accent_lum - _perceived_luminance(unfocused_bg) > 80
+    for bg in unfocused_bgs:
+        assert accent_lum - _perceived_luminance(bg) > 80
 
     # Render order: the bar must come AFTER the focused background image so it
     # paints on top of it (Kodi draws controls in document order).
