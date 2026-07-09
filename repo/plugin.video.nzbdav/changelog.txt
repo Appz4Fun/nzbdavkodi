@@ -1,1 +1,1 @@
-v1.2.5: Same-group fallback backups, deferred submission, startup-stall fix.
+v2.0.0-beta: NZBGet backend, Smart Duplicates, fallback overhaul, indexers.

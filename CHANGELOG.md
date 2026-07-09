@@ -13,8 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
-| **[Unreleased](#unreleased)** | Pending | Next changes |
-| **[1.2.4](#124--2026-05-31)** | 2026-05-31 | Startup black-screen fix, live fallback cutover hardening, nzbdav queue-clear prompt, sibling-video WebDAV selection, caps-aware direct indexers |
+| **[2.0.0-beta](#200-beta--2026-07-09)** | 2026-07-09 | NZBGet backend + Smart Duplicates, tiered fallback/dropout hardening, manual indexer manager, TVDB-aware TV search, versioned settings.xml with per-option help text, unified XXE protection, large complexity-reduction refactor, MkDocs documentation site |
 | **[1.2.3](#123--2026-05-08)** | 2026-05-08 | Proxy fallback hardening, repo install checksum fix, RunScript path reliability |
 | **[1.2.2](#122--2026-05-07)** | 2026-05-07 | Kodi add-on info freeze hotfix |
 | **[1.2.1](#121--2026-05-07)** | 2026-05-07 | Synthetic indexer-size fallback manifests, prefetch indexer-size gate, NZB fetch LRU, stale-progress failure fix |
@@ -62,210 +61,206 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [2.0.0-beta] — 2026-07-09
+
+> **The big one.** Two months of accumulated work since 1.2.3, released together
+> as a beta: a new NZBGet backend with automatic duplicate-fleet failover, a
+> ground-up overhaul of stream-proxy/fallback resilience (tiered same-release
+> matching, read-ahead prefetch, graceful-starvation recovery), a manual
+> Newznab indexer manager, TVDB-aware TV search, `settings.xml` rewritten on
+> Kodi's versioned schema so every option and category shows real help text,
+> unified XXE protection across every XML parser, a large complexity-reduction
+> refactor that split every god-file into cohesive modules, and a full MkDocs
+> documentation site. Marked **beta** — this is a lot of surface area at once;
+> please report anything that looks off before it promotes to stable.
+>
+> The addon version was bumped internally to 1.2.4 and 1.2.5 while this work
+> was in flight, but neither was tagged or released — this changelog folds
+> that unreleased 1.2.4 content in below rather than losing it.
 
 ### Added
 
-- **NZBGet mode: Smart Duplicates for broken downloads.** When the NZBGet
-  backend is enabled, picking a release now also submits every other result on
-  the picker that shares the same release name (reposts / mirrors from other
-  indexers) to NZBGet using its documented duplicate handling — one shared
-  duplicate key (derived from the IMDb/TVDB id, or a title fallback), a per-item
-  duplicate score with your pick scored highest, and duplicate mode `SCORE`. So
-  NZBGet downloads your pick and parks the rest in its history as duplicate
-  backups without downloading them; if the pick turns out unrepairable (par2
-  repair fails, unpack fails, or health drops below critical) NZBGet
-  automatically fails over and downloads one of the backups instead of leaving
-  you with a broken file. Because NZBGet decides by score, the pick reliably
-  stays the one that plays and the submission order no longer matters. The
-  backups are submitted in the background so they never delay playback, are
-  bounded by **Maximum standby fallback streams**, and are gated by **Enable
-  fallback streams** (on by default). If NZBGet's `HealthCheck` is set to `Pause`
-  (which blocks automatic failover), a one-time notice suggests setting it to
-  `Delete`, `None`, or `Park`. Best-effort throughout: a failed backup submit never
-  affects the pick's playback. (Issue #372, per
-  [nzbget.com duplicates](https://nzbget.com/documentation/rss/#duplicates).)
-- **NZBGet mode: follow the failover to a working backup within one play.** When
-  your pick turns out unrepairable, the resolver now follows NZBGet's automatic
-  duplicate failover live — it tracks the promoted backup (a new download NZBGet
-  starts under the same duplicate set) and plays it when it completes, or plays a
-  backup that already finished, instead of reporting a failed playback. Canceling
-  the play now removes the whole duplicate set so NZBGet can't keep a backup
-  running, and the backup pool is widened to include same-content mirrors and
-  NZBHydra's deferred duplicate uploads (as lowest-priority backups) beyond the
-  exact same-name reposts. (Issue #372 round 2.)
-- **NZBGet mode: recover from NZBGet's "already downloaded this" veto.** NZBGet
-  keeps a content fingerprint of everything it has ever downloaded (up to a
-  year of history) and silently refuses to re-download content it recognises —
-  the item goes straight to history marked as a duplicate copy without ever
-  downloading, which previously left the play stuck until it timed out. The
-  resolver now detects this exact case and, once it confirms nothing else in the
-  release can play, re-submits your pick a single time with NZBGet's `FORCE`
-  duplicate mode (which downloads regardless of the content check) and follows
-  it to playback. The same recovery covers a plain single submit with no
-  duplicate backups. It is strictly reactive — tried only after NZBGet's own
-  duplicate protection has provably left nothing to play — so legitimate
-  duplicate handling (concurrent downloads, already-completed copies) is never
-  bypassed. A backup that hits the same veto is treated as an unfilled slot and
-  replaced from the wider candidate pool, preserving the fallback depth. If the
-  re-submit itself can't be performed, the failure now says so plainly instead
-  of a generic error. (Issue #372 round 6.)
-- **NZBGet mode: pre-cached "DL" indicator in the NZB picker.** With the
-  NZBGet backend enabled, the results picker now tags releases that are
-  already completed in NZBGet's history with the same green `DL` chip the
-  nzbdav cached-stream tag uses. Matching reuses the established identity
-  gates (exact name, ±15% size tolerance, recorded Usenet post-date), and the
-  NZBGet path now records each completed download's post-date in the shared
-  download ledger so a same-name repost from a different day is not mistaken
-  for the cached file. The history lookup is bounded at 10s and fails soft —
-  an unreachable NZBGet just renders an untagged picker.
-
-### Fixed
-
-- **NZBGet mode: replays re-download when the files are gone, single-row Hydra
-  picks get backups, and stale successes can't fail the failover.** Duplicate
-  scores now ride on a wall-clock base, so re-submitting a release whose
-  completed files were cleaned outranks the old history entry and re-downloads
-  it (previously NZBGet dupe-deleted the re-submission and the play failed).
-  When NZBHydra collapses every mirror of a release into a single picker row,
-  the pick now still gets a duplicate-backup fleet built from Hydra's deferred
-  duplicate uploads. And the failover-follow ignores same-release successes
-  that predate the play, so a leftover history entry whose files are gone can
-  no longer end the recovery with "No video file found". (Issue #372 round 4.)
-- **NZBGet mode: failover-following no longer stalls, and cancel is airtight.**
-  Round-2 hardening: the resolver now excludes the just-failed download from its
-  promotion scan, so NZBGet's brief queue→history overlap can't make the poll
-  mistake the failed pick for its own replacement and hang. Canceling mid-submit
-  re-sweeps the duplicate set once the background worker drains, closing a race
-  where a backup whose submission was already in flight could survive the cancel
-  and be downloaded anyway. The same-content/NZBHydra backup widening now reads
-  its settings through the thread-safe settings reader on every playback path,
-  never the live Kodi settings API off the worker thread, and its extra backups
-  count against **Maximum standby fallback streams** instead of stacking on top.
-  A pick that fails almost immediately no longer gives up before its backups have
-  even been submitted (the failover grace waits for the background submitter). And
-  canceling a play can no longer delete a *previously* completed download's files
-  that happen to share the release's duplicate key. Round 3: canceling after a
-  failover also deletes the promoted backup directly (not only via the duplicate
-  set scan), the background worker's post-cancel cleanup deletes exactly its own
-  submissions so an immediate retry of the same release survives it, and a
-  promoted backup sitting paused (e.g. NZBGet paused) holds the failover wait
-  instead of reporting a failed playback. Round 5: cancel is scoped to exactly
-  the downloads this play created or followed (including a backup promoted
-  while NZBGet was paused), so an overlapping play of the same release from
-  another device survives it. (Issue #372 rounds 2-5.)
-- **NZBGet mode: replaying an already-downloaded pick no longer fails.**
-  Selecting a `DL`-tagged result now plays the completed files straight from
-  the SMB share instead of re-submitting the NZB — NZBGet's duplicate check
-  (`DupeCheck=yes` default) dupe-deletes a re-submission of a successful
-  download, which previously surfaced as a spurious "Download failed". If the
-  files are gone from the share, the normal submit flow runs as before.
-- **NZBGet mode: script auto-select no longer queries nzbdav.** The RunScript
-  auto-select path skipped the new suppression and could stall on a stale
-  nzbdav config before handing off to NZBGet.
-
-## [1.2.4] — 2026-05-31
-
-> **Startup playback and live-fallback hardening.** This release closes the
-> startup black-screen on large MKVs, makes the live fallback cutover resolve
-> every candidate exactly once without spurious failure toasts, adds an
-> optional nzbdav queue-clear prompt when starting a new download, and selects
-> the right video across sibling/hidden WebDAV folders. It also folds in the
-> caps-aware direct-indexer work and the same-release fallback expansion that
-> had accumulated on `main` while the add-on version stayed pinned at 1.2.3.
-
-### Fixed
-
-- **Startup black-screen on large MKVs.** The proxy now prewarms the nzbdav
-  file tail (where Matroska cues live) before handing Kodi the stream, and the
-  fallback prewarm burst is deferred so it can no longer starve the initial
-  playback read. Together these stop the black screen at the start of big-MKV
-  playback.
-- **Live fallback cutover correctness.** Every fallback candidate's outcome is
-  now resolved exactly once; the proxy re-enters the retry ladder instead of
-  hard-closing on `fallback_exhausted`; a pending candidate is no longer toasted
-  as failed when the client disconnects; and the failure toast is deferred so it
-  can never stall the cutover.
-- **WebDAV sibling selection.** Folder discovery now skips hidden subfolders and
-  picks the largest video across sibling folders, so playback targets the real
-  feature file instead of a sample or extra.
-- `just make-dev` now works on macOS Bash 3.2 when no pip compatibility flags
-  are needed, instead of failing under `set -u` on an empty `pip_flags` array.
-- Test harness now isolates stream-proxy prevalidation and remux idle-timeout
-  checks on Windows, locates Git Bash for install-script checks, falls back when
-  `SIGKILL` is unavailable, and avoids POSIX-only HLS workdir assumptions.
-- **SIGSEGV when `addon.getSetting()` runs in script-mode interpreter.** Reading
-  Kodi addon settings from the C++ binding inside a `RunScript` /
-  `Player.Open(plugin://...)` invocation crashed Kodi without a Python
-  traceback. The TMDBHelper `tmdb_play` flow exercised the crash path inside
-  the resolver poll loop after a long-running prepare. `webdav.py`,
-  `resolver.py`, `stream_proxy.py`, and `fallback_streams.py` now read the
-  affected settings (`webdav_url`, `nzbdav_url`, `webdav_content_root`,
-  `submit_timeout`, `fallback_streams_enabled`, plus the
-  `_configured_stream_bases` pair and `stream_proxy._get_addon_setting`)
-  through `router._get_script_setting`, which parses the addon's
-  `settings.xml` from disk and never touches the C++ binding.
-- **Resolver hung indefinitely after nzbdav-rs failed an NZB.** nzbdav-rs
-  remaps the `nzo_id` when moving a job from queue to history, so the
-  addon's `get_job_history(nzo_id)` lookup never matched and
-  `_poll_until_ready` ran out the full `download_timeout` (1 h) waiting for a
-  status that would never come. The poll loop now also looks the title up by
-  name via the new `nzbdav_api.find_terminal_by_name`, which returns
-  `Completed` *or* `Failed` history rows so the resolve closes promptly when
-  nzbdav-rs is done with a job — pass or fail.
-- **Failure dialog blocked the resolve thread.** The "Failed" history path
-  used `xbmcgui.Dialog().ok()`, which is modal — under TMDBHelper's
-  script-mode call (no operator at the keyboard) the resolve hung waiting
-  for an OK click that never arrives. Switched to
-  `xbmcgui.Dialog().notification()` so the resolve unwinds cleanly when
-  nzbdav-rs returns `no importable video file found`.
-- **Fingerprint pre-validation skipped 127.0.0.1-class fallback URLs.**
-  `_validated_probe_url` enforces a strict origin allow-list keyed off the
-  user-configured `nzbdav_url` / `webdav_url`. A test or operator-supplied
-  fallback URL on a different host (e.g. a local Range-capable file server)
-  would never run the 100×4 KiB SHA256 sweep because the probe URL came back
-  `None`. `stream_proxy._fallback_probe_bases` now also accepts the active
-  session's primary and fallback origins — those URLs were already trusted
-  at session-prepare time.
-
-### Added
-
-- **Optional nzbdav queue-clear prompt.** When starting a new download the
-  resolver can offer to clear the nzbdav queue first, probing the queue without
-  ever cancelling the title's own in-flight job.
-- **Manual indexer manager.** New Indexers settings route with add/edit/custom
-  flows and JSON-backed persistence, an NZBHydra2 Newznab preset catalog, and a
+- **NZBGet backend (submit → wait → play from SMB).** A new global toggle:
+  when enabled, the addon submits the selected NZB to an NZBGet instance,
+  shows a progress dialog while NZBGet downloads and post-processes, then
+  plays the finished file from a configured SMB share. The existing
+  nzbdav streaming/fallback/WebDAV path is untouched and used unchanged when
+  the toggle is off. Includes a JSON-RPC client (submit/poll/cancel/test), a
+  resume-or-restart prompt when replaying a previously downloaded NZB, and a
+  pre-cached green `DL` picker tag (reusing the same identity gates — exact
+  name, ±15% size, recorded Usenet post-date — as the nzbdav cached-stream
+  tag) so already-completed releases are visible before you pick.
+- **NZBGet mode: Smart Duplicates for broken downloads.** Picking a release
+  now also submits every other same-name result on the picker to NZBGet as a
+  duplicate-backup fleet (one shared duplicate key derived from the
+  IMDb/TVDB id or a title fallback, your pick scored highest, duplicate mode
+  `SCORE`). If the pick turns out unrepairable, NZBGet automatically fails
+  over to a backup and the resolver follows that failover live instead of
+  reporting a failed playback — including recovering from NZBGet's own
+  "already downloaded this" content-fingerprint veto by re-submitting with
+  `FORCE` once nothing else in the release can play. Canceling removes the
+  whole duplicate set. Backups are submitted in the background (never delay
+  playback), bounded by **Maximum standby fallback streams**, and gated by
+  **Enable fallback streams**. A one-time notice suggests fixing NZBGet's
+  `HealthCheck=Pause` setting if it would block automatic failover. Six
+  rounds of hardening closed real races: stale successes ending a failover
+  early, single-Hydra-row picks not getting a backup fleet, a just-failed
+  download being mistaken for its own replacement, cancel racing an in-flight
+  backup submission, and duplicate scores not accounting for wall-clock time
+  (so a re-submit of a cleaned-up release now correctly re-downloads instead
+  of being dupe-deleted against stale history). (Issue #372, all rounds.)
+- **Manual/direct Newznab indexer manager.** A new Indexers settings tab for
+  when you don't run Prowlarr or NZBHydra2: add/edit/remove flows, JSON-backed
+  persistence, an NZBHydra2-style preset catalog of ~23 known indexers, and a
   caps-aware Newznab search planner that respects each provider's advertised
-  capabilities (with a Hydra fallback when cached caps are unavailable).
-- **Same-release / different-upload fallback expansion through Hydra's
-  internal API.** `hydra.fetch_release_duplicate_uploads` calls
-  `/internalapi/search` with `showSingleResultPerSearchResultGroup=false` to
-  return every Usenet upload that shares the picked release's title.
-  `router._fallback_candidate_loader_for_selection` augments the picker's
-  deduped pool with those alternates *before*
-  `attach_fallback_candidates_for_selection` runs, so the existing
-  release-group / profile-signature / ±20 % size / article-digest matching
-  pipeline finds real same-content peers instead of giving up on the lone
-  deduped row.
-- **`/direct_play` plugin route for explicit-URL playback** — accepts a
-  `primary_url` plus a JSON array of `fallback_urls`, HEAD-validates each
-  upstream (rejects URLs that don't return Content-Length so unstreamable
-  peers never reach the proxy's swap pool), peels embedded `user:pass@`
-  auth into Authorization headers (Python urllib's name resolver mis-parses
-  inline auth), and hands Kodi the `stream_proxy` URL via `setResolvedUrl`.
-  Diagnostic-only; unblocks repeatable byte-precise cutover tests without
-  needing a live nzbdav backing store.
+  capabilities (falling back gracefully when caps aren't cached yet).
+- **TVDB-aware TV search.** An optional TMDB API key lets the addon resolve a
+  show's TVDB id and search indexers by id instead of title text, for more
+  accurate episode results.
+- **Read-ahead prefetch.** nzbdav only fetches Usenet articles for byte ranges
+  Kodi actively reads, so pausing never used to build a real buffer — a
+  momentary bitrate spike after resume could starve the decoder. A background
+  per-session read-ahead daemon now pulls ahead of the play head independent
+  of Kodi, so pausing actually builds a lead (configurable buffer size,
+  default 256 MB, 0 disables it).
+- **Graceful-starvation guard and patient forward-stall wait.** A stalled
+  backend now explains itself with a toast instead of black-screening
+  silently, and an established stream that hits a recoverable backend
+  condition holds the connection open (configurable budget, default 120s,
+  0 closes immediately) instead of dropping.
+- **Optional nzbdav queue-clear prompt** when starting a new download —
+  probes the queue without ever cancelling the title's own in-flight job.
+- **Per-option and per-category help text in the Configure dialog.**
+  `settings.xml` migrated from Kodi's legacy flat add-on-settings schema to
+  the versioned schema, adding 124 individual per-setting help strings and 8
+  per-category help strings — Kodi's legacy schema silently ignores the
+  `help=` attribute entirely, so this required rewriting all ~130 settings
+  across all 8 categories, not just adding an attribute.
+- **Full MkDocs documentation site**, published to GitHub Pages: 22 pages
+  covering getting started, features, a complete settings reference (every
+  setting, default, and behavior), a technical "how it works" section with
+  15 diagrams, and operations/troubleshooting.
+- **Extreme functional test harness** — a 3-container Docker Compose rig
+  (fault-injecting proxy, seeded NNTP, real Kodi + TMDBHelper) that drives
+  actual playback through the add-on end-to-end and correlates injected
+  faults against observed player behavior, for validating fallback/recovery
+  changes beyond what unit tests can cover.
+- `/direct_play` diagnostic plugin route for explicit-URL playback testing —
+  HEAD-validates each upstream, peels embedded `user:pass@` auth into
+  headers, and hands Kodi the proxy URL directly. Unblocks repeatable
+  byte-precise cutover tests without a live nzbdav backing store.
 
 ### Changed
 
-- **Fingerprint sample count raised 20 → 100.**
-  `fallback_streams._FINGERPRINT_SAMPLE_COUNT` now pulls 100 deterministic
-  4 KiB ranges per fallback (still 4 096 bytes apiece) — primary and
-  fallback SHA256-compared in parallel by 10 worker threads. Cutover stays
-  byte-precise: when the sweep marks a peer `validated=True`, an upstream
-  failure swaps to that peer at the exact failed byte (recovery counters
-  remain `recoveries=0 zero_fill=0` — no skip-probe path), with detect →
-  swap latency observed at single-digit ms.
+- **Tiered same-release fallback matching and bounded recovery** — a 27-commit
+  hardening pass across dropout, black-screen, and cutover handling. Includes
+  same-release/different-upload fallback expansion through Hydra's internal
+  API (finds real same-content peers instead of giving up on a deduped single
+  row), a graceful-starvation guard, and the read-ahead prefetch above.
+  Fingerprint sample count raised 20 → 100 (still byte-precise, single-digit
+  ms detect-to-swap latency).
+- **Job-start stub guard redesigned to be pack-agnostic.** Replaces the old
+  title-keyword pack classifier with a recursive folder-total byte comparison
+  across the whole completed folder tree, so both single movies and packs get
+  real protection against nzbdav serving a placeholder stub before the real
+  file lands.
+- **Fallback candidates deduped by Usenet post-date** (1-hour window,
+  anchor-based) so same-hour reposts collapse to the single highest-ranked
+  tier instead of competing as separate candidates.
+- **Large god-files decomposed into cohesive sibling modules** —
+  `resolver`, `router`, `fallback_streams`, `filter`, `nzbdav_api`, `service`,
+  `webdav`, and `stream_proxy` split apart with the same public surface and
+  test `@patch` targets still resolving, cutting shipped-library Lizard
+  complexity findings from 268 to 0.
+- **Ampersand handling unified.** `"&"`, `"and"`, and an omitted conjunction
+  are now treated as one content identity across search and fallback
+  matching, and `&` is stripped from indexer keyword queries at the query
+  builders so it can no longer break the query string.
+- **Prowlarr search now parses the native `/api/v1/search` JSON response**
+  directly instead of assuming a Newznab-XML shape.
+- **Regex hot paths pre-compiled** throughout `stream_proxy`, fallback
+  parsing, `router_play`, and `http_util`, and several caches added
+  (parsed metadata, WebDAV content-length hints, fallback manifests) with
+  provider search now fanning out concurrently — cut `just test`'s wall time
+  from 7:42 to well under a minute.
+- **Results dialog: explicit keyboard/remote navigation (focus traps),
+  zebra-striped rows, and improved text contrast** so D-pad/keyboard focus
+  can't wander off the list or scrollbar at a boundary.
+- **Add-on distribution moved fully to the external
+  [Appz4Fun/Appz4Fun-Kodi-Repo](https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo).**
+  This repo no longer self-hosts a Kodi add-on repository; its GitHub Pages
+  now serves the MkDocs documentation site instead, and the Release workflow
+  pings the external repo so it rebuilds within seconds of a new tag instead
+  of waiting for its daily schedule.
+- Dev/test tooling pinned and run via `uv` for reproducible, hermetic
+  installs across contributors and CI.
+
+### Fixed
+
+- **Direct-indexer settings now update live instead of requiring Apply.**
+  Toggling "Enable direct Newznab indexers" (or NZBGet's backend toggle)
+  previously left its dependent settings stuck hidden until you left the
+  category tab and came back, or hit Apply and reopened the dialog. Root
+  cause: Kodi's settings dialog only builds GUI controls for a group that has
+  at least one visible setting when the category is first opened — if every
+  setting in a group is hidden, the whole group gets zero controls built, and
+  there's nothing left for the live update to reveal later. Switching those
+  dependents from a `visible` to an `enable` dependency fixes it: the row
+  always renders (greyed out until enabled) and its enabled state does
+  update live regardless of group layout.
+- **Startup black-screen on large MKVs.** The proxy now prewarms the nzbdav
+  file tail (where Matroska cues live) before handing Kodi the stream, and
+  the fallback prewarm burst is deferred so it can no longer starve the
+  initial playback read.
+- **Live fallback cutover correctness.** Every fallback candidate's outcome is
+  now resolved exactly once; the proxy re-enters the retry ladder instead of
+  hard-closing on `fallback_exhausted`; a pending candidate is no longer
+  toasted as failed when the client disconnects; and the failure toast is
+  deferred so it can never stall the cutover.
+- **WebDAV sibling selection** now skips hidden subfolders and picks the
+  largest video across sibling folders, so playback targets the real feature
+  file instead of a sample or extra.
+- **SIGSEGV when `addon.getSetting()` runs in a script-mode interpreter.**
+  Reading Kodi addon settings from the C++ binding inside a `RunScript` /
+  `Player.Open(plugin://...)` invocation (as TMDBHelper's `tmdb_play` flow
+  does) could crash Kodi without a Python traceback. The affected settings
+  reads across `webdav.py`, `resolver.py`, `stream_proxy.py`, and
+  `fallback_streams.py` now parse `settings.xml` from disk instead of
+  touching the C++ binding from a background thread.
+- **Resolver could hang indefinitely after nzbdav-rs failed an NZB** — it
+  remaps the `nzo_id` when moving a job from queue to history, so the old
+  history lookup never matched. The poll loop now also looks a job up by
+  name, so the resolve closes promptly whether nzbdav-rs finishes the job or
+  fails it.
+- **A modal failure dialog could block the resolve thread** under
+  TMDBHelper's script-mode call (no operator at the keyboard); switched to a
+  non-blocking notification.
+- Query-timeout overshoot in direct-indexer fan-out; provider search settings
+  snapshot failures now handled instead of raised.
+- `just make-dev` now works on macOS Bash 3.2; the test harness isolates
+  Windows-specific stream-proxy/HLS assumptions.
+- **NZBGet mode: script auto-select no longer queries nzbdav.** The RunScript
+  auto-select path skipped the new suppression and could stall on a stale
+  nzbdav config before handing off to NZBGet.
+- **Fingerprint pre-validation skipped 127.0.0.1-class fallback URLs.** The
+  origin allow-list is keyed off the configured `nzbdav_url`/`webdav_url`, so
+  a test or operator-supplied fallback URL on a different host never ran the
+  SHA256 fingerprint sweep; the active session's own primary/fallback origins
+  are now accepted too.
+
+### Security
+
+- **Unified XXE (billion-laughs / external-entity) protection.** Every XML
+  parser that touches network-supplied data (Hydra, Prowlarr, WebDAV
+  PROPFIND, NZB manifests) now routes through one shared
+  `xml_safety.safe_fromstring()` helper, replacing several inconsistent —
+  and in one case silently ineffective — inline guards that had accumulated
+  across the codebase.
+- **Secured `subprocess.Popen` execution** around ffmpeg invocations.
+- **Cleared 44 outstanding code-scanning alerts**, and scoped CodeQL/Bandit/
+  Codacy scanners to shipped library code only (excluding tests and the
+  vendored PTT parser), so defended-but-flagged patterns and test-only code
+  stop generating false-positive CI noise.
 
 ## [1.2.3] — 2026-05-08
 

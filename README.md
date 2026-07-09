@@ -112,7 +112,8 @@ Full walkthrough:
 ## Key features
 
 - **Multi-provider search** across NZBHydra2, Prowlarr, and direct Newznab
-  indexers, merged and de-duplicated.
+  indexers, merged and de-duplicated. Optional TVDB-aware TV search resolves a
+  show's id for more accurate episode results.
 - **Quality filtering and ranking** by resolution, HDR, audio, codec, language,
   release group, size, and keywords.
 - **A local stream proxy** that preserves seeking, rewrites tail-`moov` MP4s in
