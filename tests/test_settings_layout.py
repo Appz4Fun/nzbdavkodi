@@ -199,10 +199,22 @@ def test_prowlarr_indexer_ids_precedes_test_action(settings_root):
 
 
 def test_direct_indexer_options_depend_on_master_toggle(settings_root):
-    """All direct-indexer options must be tied to the in-dialog master toggle.
+    """All direct-indexer options must be tied to the in-dialog master toggle
+    via an `enable` dependency, not `visible`.
 
-    Using Addon.SettingBool() here reads the saved profile value and does not
-    reveal the rows as soon as the checkbox is toggled.
+    Kodi's CGUIDialogSettingsBase only creates GUI controls for a group at
+    dialog-build time if the group contains at least one currently-visible
+    setting (CSettingCategory::GetGroups -> ContainsVisibleSettings). The
+    "Popular Indexers" / "Custom Newznab Indexers" groups have no setting
+    other than these dependents, so when direct_indexers_enabled is off,
+    those groups are entirely hidden and get NO controls built at all —
+    meaning there is nothing for the live dependency-update mechanism to
+    later reveal when the toggle flips (confirmed live on a Kodi 21.3-Omega
+    device: toggling stayed stuck until switching category tabs away and
+    back forced a rebuild). `enable` sidesteps this because it never hides
+    the setting from ContainsVisibleSettings — the row always renders, just
+    greyed out — and enabled/disabled state DOES update live through the
+    same UpdateSettingControl path regardless of group composition.
     """
     cat = _category_by_label(settings_root, "30163")
     settings_list = list(cat.iter("setting"))
@@ -213,8 +225,8 @@ def test_direct_indexer_options_depend_on_master_toggle(settings_root):
 
     for setting in settings_list[master_idx + 1 :]:
         assert (
-            _dependency_for(setting, "visible", "direct_indexers_enabled") is not None
-        ), "setting {} is not dynamically tied to direct_indexers_enabled".format(
+            _dependency_for(setting, "enable", "direct_indexers_enabled") is not None
+        ), "setting {} is not tied to direct_indexers_enabled via enable=".format(
             setting.get("id") or setting.get("label")
         )
 

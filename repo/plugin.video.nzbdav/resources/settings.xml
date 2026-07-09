@@ -275,7 +275,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzblife_url" type="string" label="30168" help="30258">
@@ -288,7 +288,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzblife_api_key" type="string" label="30003" help="30259">
@@ -302,7 +302,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbgeek_enabled" type="boolean" label="30179" help="30260">
@@ -310,7 +310,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbgeek_url" type="string" label="30168" help="30261">
@@ -323,7 +323,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbgeek_api_key" type="string" label="30003" help="30262">
@@ -337,7 +337,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbfinder_enabled" type="boolean" label="30180" help="30263">
@@ -345,7 +345,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbfinder_url" type="string" label="30168" help="30264">
@@ -358,7 +358,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbfinder_api_key" type="string" label="30003" help="30265">
@@ -372,7 +372,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_drunkenslug_enabled" type="boolean" label="30175" help="30266">
@@ -380,7 +380,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_drunkenslug_url" type="string" label="30168" help="30267">
@@ -393,7 +393,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_drunkenslug_api_key" type="string" label="30003" help="30268">
@@ -407,7 +407,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbplanet_enabled" type="boolean" label="30181" help="30269">
@@ -415,7 +415,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbplanet_url" type="string" label="30168" help="30270">
@@ -428,7 +428,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_nzbplanet_api_key" type="string" label="30003" help="30271">
@@ -442,7 +442,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_dognzb_enabled" type="boolean" label="30182" help="30272">
@@ -450,7 +450,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_dognzb_url" type="string" label="30168" help="30273">
@@ -463,7 +463,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_dognzb_api_key" type="string" label="30003" help="30274">
@@ -477,7 +477,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 			</group>
@@ -487,7 +487,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom1_name" type="string" label="30172" help="30276">
@@ -500,7 +500,7 @@
 						<heading>30172</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom1_url" type="string" label="30168" help="30277">
@@ -513,7 +513,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom1_api_key" type="string" label="30003" help="30278">
@@ -527,7 +527,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom2_enabled" type="boolean" label="30170" help="30279">
@@ -535,7 +535,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom2_name" type="string" label="30172" help="30280">
@@ -548,7 +548,7 @@
 						<heading>30172</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom2_url" type="string" label="30168" help="30281">
@@ -561,7 +561,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom2_api_key" type="string" label="30003" help="30282">
@@ -575,7 +575,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom3_enabled" type="boolean" label="30171" help="30283">
@@ -583,7 +583,7 @@
 					<default>false</default>
 					<control type="toggle"/>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom3_name" type="string" label="30172" help="30284">
@@ -596,7 +596,7 @@
 						<heading>30172</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom3_url" type="string" label="30168" help="30285">
@@ -609,7 +609,7 @@
 						<heading>30168</heading>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="direct_indexer_custom3_api_key" type="string" label="30003" help="30286">
@@ -623,7 +623,7 @@
 						<hidden>true</hidden>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="action_manage_indexers" type="action" label="30195" help="30287">
@@ -633,7 +633,7 @@
 						<close>true</close>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 				<setting id="action_test_direct_indexers" type="action" label="30173" help="30288">
@@ -643,7 +643,7 @@
 						<close>true</close>
 					</control>
 					<dependencies>
-						<dependency type="visible" setting="direct_indexers_enabled">true</dependency>
+						<dependency type="enable" setting="direct_indexers_enabled">true</dependency>
 					</dependencies>
 				</setting>
 			</group>
