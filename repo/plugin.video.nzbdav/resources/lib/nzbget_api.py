@@ -290,11 +290,24 @@ def lookup_completed_job_exact(nzbid, settings_getter=None):
         return ExactJobLookup.transient()
     if error is not None or not isinstance(history, list):
         return ExactJobLookup.transient()
+    malformed = False
     for item in history:
-        if not isinstance(item, dict) or not _same_nzbid(item.get("NZBID"), nzbid):
+        if not isinstance(item, dict) or item.get("NZBID") in (None, ""):
+            malformed = True
             continue
-        status = str(item.get("Status") or "")
-        if not status.startswith("SUCCESS"):
+        if not _same_nzbid(item.get("NZBID"), nzbid):
+            continue
+        status_value = item.get("Status")
+        dest_dir = _dest_dir(item)
+        if (
+            not isinstance(status_value, str)
+            or not status_value
+            or not isinstance(dest_dir, str)
+            or not dest_dir
+        ):
+            return ExactJobLookup.transient()
+        status = status_value
+        if status != "SUCCESS" and not status.startswith("SUCCESS/"):
             return ExactJobLookup.stale()
         return ExactJobLookup.valid(
             {
@@ -304,7 +317,7 @@ def lookup_completed_job_exact(nzbid, settings_getter=None):
                 "dest_dir": _dest_dir(item),
             }
         )
-    return ExactJobLookup.stale()
+    return ExactJobLookup.transient() if malformed else ExactJobLookup.stale()
 
 
 def completed_by_id(nzbid, settings_getter=None):

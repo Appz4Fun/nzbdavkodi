@@ -5,6 +5,7 @@
 from unittest.mock import MagicMock, patch
 
 from resources.lib import season_pack_reuse
+from resources.lib.episode_inventory import build_video_inventory
 from resources.lib.exact_job import ExactJobLookup
 
 
@@ -36,10 +37,12 @@ def _record(backend="nzbget", job_id="41", folder="/downloads/show"):
     }
 
 
-class _Inventory:
-    def __init__(self, path=None, files=None):
+class _Inventory:  # pylint: disable=too-few-public-methods
+    def __init__(self, path=None, files=None, episodes=(1, 2), pack_season=1):
         self.selected_path = path
         self.files = list(files if files is not None else ([path] if path else []))
+        self.episodes = episodes
+        self.pack_season = pack_season
 
 
 def test_nzbget_valid_exact_job_reuses_requested_episode_without_submit():
@@ -68,7 +71,44 @@ def test_nzbget_valid_exact_job_reuses_requested_episode_without_submit():
     scan.assert_called_once_with("smb://box/done/show", requested_episode=(1, 1))
     submit.assert_not_called()
     assert upsert.call_args.args[0]["job_id"] == "41"
-    assert upsert.call_args.args[0]["last_confirmed"] > 10
+    assert upsert.call_args.args[0]["episodes"] == [1, 2]
+
+
+def test_nzbget_successful_rescan_refreshes_exact_catalog_episode_inventory(
+    tmp_path, monkeypatch
+):
+    record = _record()
+    monkeypatch.setattr(
+        season_pack_reuse.season_pack, "_catalog_dir", lambda: str(tmp_path)
+    )
+    assert season_pack_reuse.season_pack.upsert(record)
+    inventory = build_video_inventory(
+        [
+            ("smb://box/show/Spider-Noir.S01E01.mkv", 100),
+            ("smb://box/show/Spider-Noir.S01E02.mkv", 100),
+            ("smb://box/show/Spider-Noir.S01E03.mkv", 100),
+        ],
+        requested=(1, 3),
+    )
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/downloads/show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse._nzbget_folder_for_record",
+        return_value="smb://box/show",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory", return_value=inventory
+    ):
+        result = season_pack_reuse.reuse_exact_job(record, _context(3), "nzbget")
+
+    assert result.state == "valid"
+    refreshed = season_pack_reuse.season_pack.find_exact("nzbget", "41")
+    assert refreshed["episodes"] == [1, 2, 3]
+    assert refreshed["season"] == 1
+    assert refreshed["last_confirmed"] > 10
+    assert refreshed["folder"] == "/downloads/show"
 
 
 def test_nzbget_duplicate_name_different_id_is_never_substituted():
@@ -181,6 +221,49 @@ def test_nzbdav_valid_exact_job_requires_playable_body():
     assert result.stream_url == "http://box/show/S01E01.mkv"
     assert result.stream_headers == {"Authorization": "x"}
     body.assert_called_once()
+
+
+def test_nzbdav_successful_rescan_refreshes_exact_catalog_episode_inventory(
+    tmp_path, monkeypatch
+):
+    record = _record("nzbdav", "nzo-1", "/data/completed/show")
+    monkeypatch.setattr(
+        season_pack_reuse.season_pack, "_catalog_dir", lambda: str(tmp_path)
+    )
+    assert season_pack_reuse.season_pack.upsert(record)
+    inventory = build_video_inventory(
+        [
+            ("/completed/show/Spider-Noir.S01E01.mkv", 100),
+            ("/completed/show/Spider-Noir.S01E02.mkv", 100),
+            ("/completed/show/Spider-Noir.S01E03.mkv", 100),
+        ],
+        requested=(1, 3),
+    )
+    with patch(
+        "resources.lib.nzbdav_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzo_id": "nzo-1", "storage": "/data/completed/show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse._webdav_folder_for_record",
+        return_value="/completed/show",
+    ), patch(
+        "resources.lib.season_pack_reuse.webdav.folder_video_inventory",
+        return_value=inventory,
+    ), patch(
+        "resources.lib.season_pack_reuse.webdav.get_webdav_stream_url_for_path",
+        return_value=("http://box/show/S01E03.mkv", {}),
+    ), patch(
+        "resources.lib.season_pack_reuse._stream_body_available", return_value=True
+    ):
+        result = season_pack_reuse.reuse_exact_job(record, _context(3), "nzbdav")
+
+    assert result.state == "valid"
+    refreshed = season_pack_reuse.season_pack.find_exact("nzbdav", "nzo-1")
+    assert refreshed["episodes"] == [1, 2, 3]
+    assert refreshed["season"] == 1
+    assert refreshed["last_confirmed"] > 10
+    assert refreshed["folder"] == "/data/completed/show"
 
 
 def test_nzbdav_body_unavailable_is_transient_and_preserves_record():

@@ -3,7 +3,6 @@
 
 """Validate and reuse one exact completed season-pack job."""
 
-import time
 from typing import NamedTuple
 
 import xbmcaddon
@@ -24,13 +23,17 @@ def _stale(record):
     return ReuseResult("stale", None, None)
 
 
-def _confirmed(record):
-    refreshed = dict(record)
-    refreshed["last_confirmed"] = time.time()
-    try:
-        season_pack.upsert(refreshed)
-    except Exception:  # pylint: disable=broad-except
-        pass
+def _refresh_inventory(record, episode_context, inventory):
+    from resources.lib.season_pack_recording import record_completed_inventory
+
+    record_completed_inventory(
+        record.get("backend"),
+        record.get("job_id"),
+        record.get("job_name"),
+        record.get("folder"),
+        episode_context,
+        inventory,
+    )
 
 
 def _bound_setting_getter(settings_getter):
@@ -75,7 +78,7 @@ def _stream_body_available(url, headers):
     return _completed_stream_body_available(url, headers)
 
 
-def _reuse_nzbget(record, requested, settings_getter):
+def _reuse_nzbget(record, requested, episode_context, settings_getter):
     validation = season_pack.validate_job(record, settings_getter=settings_getter)
     if validation.outcome == "transient":
         return ReuseResult("transient", None, None)
@@ -95,11 +98,11 @@ def _reuse_nzbget(record, requested, settings_getter):
         return ReuseResult("transient", None, None)
     if not inventory.files or not inventory.selected_path:
         return _stale(record)
-    _confirmed(record)
+    _refresh_inventory(record, episode_context, inventory)
     return ReuseResult("valid", inventory.selected_path, {})
 
 
-def _reuse_nzbdav(record, requested, settings_getter):
+def _reuse_nzbdav(record, requested, episode_context, settings_getter):
     validation = season_pack.validate_job(record, settings_getter=settings_getter)
     if validation.outcome == "transient":
         return ReuseResult("transient", None, None)
@@ -126,7 +129,7 @@ def _reuse_nzbdav(record, requested, settings_getter):
             return ReuseResult("transient", None, None)
     except Exception:  # pylint: disable=broad-except
         return ReuseResult("transient", None, None)
-    _confirmed(record)
+    _refresh_inventory(record, episode_context, inventory)
     return ReuseResult("valid", stream_url, stream_headers)
 
 
@@ -144,7 +147,7 @@ def reuse_exact_job(record, episode_context, active_backend, settings_getter=Non
     if requested is None:
         return ReuseResult("not_applicable", None, None)
     if active_backend == "nzbget":
-        return _reuse_nzbget(record, requested, settings_getter)
+        return _reuse_nzbget(record, requested, episode_context, settings_getter)
     if active_backend == "nzbdav":
-        return _reuse_nzbdav(record, requested, settings_getter)
+        return _reuse_nzbdav(record, requested, episode_context, settings_getter)
     return ReuseResult("not_applicable", None, None)

@@ -108,3 +108,47 @@ def test_noncompleted_exact_jobs_are_conclusively_stale():
         assert nzbdav_api.lookup_completed_job_exact("wanted", _getter).state == (
             "stale"
         )
+
+
+def test_malformed_nzbget_history_cannot_prove_exact_job_missing_or_stale():
+    malformed_payloads = (
+        ["broken-row"],
+        [{"Name": "Spider-Noir.S01", "Status": "SUCCESS/ALL"}],
+        [{"NZBID": 41, "DestDir": "/downloads/show"}],
+        [{"NZBID": 41, "Status": "SUCCESS/ALL"}],
+        [{"NZBID": 41, "Status": "FAILURE/HEALTH"}],
+    )
+    for history in malformed_payloads:
+        with patch.object(nzbget_api, "_rpc_call", return_value=(history, None)):
+            result = nzbget_api.lookup_completed_job_exact(41, _getter)
+        assert result.state == "transient"
+
+
+def test_nzbget_exact_success_status_is_token_bounded():
+    row = {
+        "NZBID": 41,
+        "Status": "SUCCESSFUL/ALL",
+        "DestDir": "/downloads/show",
+    }
+    with patch.object(nzbget_api, "_rpc_call", return_value=([row], None)):
+        assert nzbget_api.lookup_completed_job_exact(41, _getter).state == "stale"
+
+    for status in ("SUCCESS", "SUCCESS/ALL"):
+        row["Status"] = status
+        with patch.object(nzbget_api, "_rpc_call", return_value=([dict(row)], None)):
+            assert nzbget_api.lookup_completed_job_exact(41, _getter).state == "valid"
+
+
+def test_malformed_nzbdav_history_cannot_prove_exact_job_missing_or_stale():
+    malformed_slots = (
+        ["broken-row"],
+        [{"name": "Spider-Noir.S01", "status": "Completed"}],
+        [{"nzo_id": "wanted", "storage": "/downloads/show"}],
+        [{"nzo_id": "wanted", "status": "Completed"}],
+        [{"nzo_id": "wanted", "status": "Failed"}],
+    )
+    for slots in malformed_slots:
+        payload = {"history": {"slots": slots}}
+        with patch.object(nzbdav_api, "_http_get", return_value=json.dumps(payload)):
+            result = nzbdav_api.lookup_completed_job_exact("wanted", _getter)
+        assert result.state == "transient"
