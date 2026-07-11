@@ -269,11 +269,43 @@ _FOLDER_TOTAL_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv",
 
 
 def _folder_total_resource_key(resource_path):
-    """Return a decoded path key for cycle and duplicate suppression."""
+    """Return a decoded, traversal-normalized path key for containment."""
+    import posixpath
     from urllib.parse import unquote
 
-    normalized = unquote(resource_path or "").rstrip("/")
+    decoded = unquote(resource_path or "").replace("\\", "/")
+    if not decoded:
+        return "/"
+    was_absolute = decoded.startswith("/")
+    normalized = posixpath.normpath(decoded)
+    if was_absolute:
+        normalized = "/" + normalized.lstrip("/")
+    normalized = normalized.rstrip("/")
     return normalized or "/"
+
+
+def _folder_total_absolute_path(resource_path):
+    """Return a slash-rooted href path without changing its URL encoding."""
+    if not resource_path:
+        return "/"
+    return resource_path if resource_path.startswith("/") else "/" + resource_path
+
+
+def _folder_total_resolve_child_path(href_path, request_path):
+    """Resolve a relative PROPFIND href beneath the current request folder."""
+    from urllib.parse import urljoin
+
+    if href_path.startswith("/"):
+        return href_path
+    return urljoin(request_path.rstrip("/") + "/", href_path)
+
+
+def _folder_total_path_is_contained(resource_path, request_path):
+    """Return whether ``resource_path`` is self or beneath ``request_path``."""
+    resource_key = _folder_total_resource_key(resource_path)
+    request_key = _folder_total_resource_key(request_path)
+    prefix = "/" if request_key == "/" else request_key + "/"
+    return resource_key == request_key or resource_key.startswith(prefix)
 
 
 def _folder_total_enter(folder_path, depth, visited):
@@ -288,7 +320,7 @@ def _folder_total_enter(folder_path, depth, visited):
         return visited, "depth"
     if visited is None:
         visited = set()
-    normalized = _folder_total_resource_key(folder_path)
+    normalized = _folder_total_resource_key(_folder_total_absolute_path(folder_path))
     if normalized in visited:
         return visited, "visited"
     visited.add(normalized)
@@ -380,8 +412,10 @@ def _folder_total_collect_subdir(response, href_path, request_path, subdirs, ns)
     if resource_type is None:
         return False
     child = href_path.rstrip("/")
-    if child != request_path:
-        segment = child.rsplit("/", 1)[-1]
+    child_key = _folder_total_resource_key(child)
+    request_key = _folder_total_resource_key(request_path)
+    if child_key != request_key:
+        segment = child_key.rsplit("/", 1)[-1]
         if not segment.startswith("."):
             subdirs.append(child + "/")
     return True
@@ -419,17 +453,17 @@ def _folder_total_track_video(stats, href_path, size):
         stats.setdefault("videos", []).append((href_path, size))
 
 
-def _folder_total_scan_entries(root, url, stats, seen_resources):
+def _folder_total_scan_entries(root, folder_path, stats, seen_resources):
     """Walk the PROPFIND responses once; return ``(total, incomplete, subdirs)``.
 
     Sums every video file's bytes at this level, collects child subdirs for the
     caller to recurse into, and flags ``incomplete`` when a video file cannot be
     sized. Tracks the largest single file via ``_folder_total_track_max``.
     """
-    from urllib.parse import unquote, urlparse
+    from urllib.parse import unquote
 
     ns = {"D": "DAV:"}
-    request_path = urlparse(url).path.rstrip("/")
+    request_path = _folder_total_absolute_path(folder_path).rstrip("/") or "/"
 
     total = 0
     incomplete = False
@@ -439,8 +473,17 @@ def _folder_total_scan_entries(root, url, stats, seen_resources):
         if pair is None:
             continue
         _href_text, href_path = pair
+        href_path = _folder_total_resolve_child_path(href_path, request_path)
         resource_key = _folder_total_resource_key(href_path)
         if resource_key in seen_resources:
+            continue
+        if not _folder_total_path_is_contained(href_path, request_path):
+            xbmc.log(
+                "NZB-DAV: folder inventory ignored out-of-tree href '{}' "
+                "for '{}'".format(href_path, request_path),
+                xbmc.LOGWARNING,
+            )
+            incomplete = True
             continue
         seen_resources.add(resource_key)
         if _folder_total_collect_subdir(response, href_path, request_path, subdirs, ns):
@@ -515,8 +558,9 @@ def folder_video_total_bytes(
     * ``0``    -- the folder is genuinely empty of video (no files seen).
     * ``< 0`` (``_FOLDER_TOTAL_INCOMPLETE``) -- the size picture is INCOMPLETE: a
       PROPFIND/parse error, or a matched video file whose ``getcontentlength`` was
-      missing/non-numeric/negative, or a discovered subtree extending beyond the
-      traversal depth cap (so summing would silently under-count). The caller must
+      missing/non-numeric/negative, a discovered subtree extending beyond the
+      traversal depth cap, or a suspicious href outside the requested folder
+      subtree (so summing would silently under-count or mix jobs). The caller must
       fail OPEN here rather than compare a partial total against the floor --
       ``_discovered_video_is_stub``'s ``total <= 0 -> return False`` does exactly
       that. Incompleteness propagates up through recursion (a subfolder that could
@@ -535,7 +579,9 @@ def folder_video_total_bytes(
         return 0
     if _seen_resources is None:
         _seen_resources = set()
-    _seen_resources.add(_folder_total_resource_key(folder_path))
+    _seen_resources.add(
+        _folder_total_resource_key(_folder_total_absolute_path(folder_path))
+    )
 
     settings, url = _folder_total_resolve_url(
         settings_getter, _settings, folder_path, _already_encoded
@@ -544,7 +590,7 @@ def folder_video_total_bytes(
     try:
         root = _folder_total_fetch_root(url, settings["username"], settings["password"])
         total, incomplete, subdirs = _folder_total_scan_entries(
-            root, url, _stats, _seen_resources
+            root, folder_path, _stats, _seen_resources
         )
     except Exception as error:  # pylint: disable=broad-except
         # A PROPFIND/parse failure means we cannot trust the total; signal

@@ -1013,6 +1013,52 @@ def test_folder_video_walk_cycle_suppression_remains_complete(
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
+def test_folder_video_inventory_is_incomplete_for_out_of_tree_file_href(
+    mock_urlopen, mock_settings
+):
+    """A malformed sibling-job file cannot enter this job's inventory."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/Show.S01E01.mkv", False, 8_000),
+            (
+                "/downloads/Show/%2e%2e/Other/Other.S01E01.mkv",
+                False,
+                20_000,
+            ),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    inventory = folder_video_inventory("/downloads/Show/", requested=(1, 1))
+
+    assert inventory is None
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_inventory_rejects_out_of_tree_collection_without_traversal(
+    mock_urlopen, mock_settings
+):
+    """A sibling-job collection is suspicious but is never PROPFINDed."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Other/", True, None),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    inventory = folder_video_inventory("/downloads/Show/", requested=(1, 1))
+
+    assert inventory is None
+    assert mock_urlopen.call_count == 1
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
 def test_find_video_file_returns_none_when_no_video(mock_urlopen, mock_settings):
     """find_video_file returns None when no video file is found in the folder."""
     mock_settings.return_value = _SETTINGS_WITH_AUTH
