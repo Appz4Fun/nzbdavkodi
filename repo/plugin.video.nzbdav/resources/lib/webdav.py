@@ -268,22 +268,31 @@ _FOLDER_TOTAL_INCOMPLETE = -1
 _FOLDER_TOTAL_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
 
-def _folder_total_enter(folder_path, depth, visited):
-    """Apply the depth cap and cycle guard; return ``(visited, skip)``.
+def _folder_total_resource_key(resource_path):
+    """Return a decoded path key for cycle and duplicate suppression."""
+    from urllib.parse import unquote
 
-    ``skip`` is ``True`` past the depth cap or for an already-visited folder (a
-    hostile/misconfigured server returning a parent or itself as a child). The
-    returned ``visited`` set is lazily created and has this folder marked.
+    normalized = unquote(resource_path or "").rstrip("/")
+    return normalized or "/"
+
+
+def _folder_total_enter(folder_path, depth, visited):
+    """Apply the depth cap and cycle guard; return ``(visited, skip_reason)``.
+
+    Depth truncation is incomplete because unseen resources may remain below
+    the cap. An already-visited folder is a known cycle/duplicate and is safely
+    ignored. The returned ``visited`` set is lazily created and has this folder
+    marked.
     """
     if depth > 2:
-        return visited, True
+        return visited, "depth"
     if visited is None:
         visited = set()
-    normalized = (folder_path or "").rstrip("/")
+    normalized = _folder_total_resource_key(folder_path)
     if normalized in visited:
-        return visited, True
+        return visited, "visited"
     visited.add(normalized)
-    return visited, False
+    return visited, None
 
 
 def _folder_total_resolve_url(settings_getter, settings, folder_path, already_encoded):
@@ -347,10 +356,9 @@ def _folder_total_href_path(response, ns):
         return None
     try:
         parsed_href = urlparse(href_text)
-        if href_text.startswith("//") or parsed_href.scheme:
-            href_path = parsed_href.path
-        else:
-            href_path = href_text
+        # Always use the parsed path, including for relative hrefs, so query
+        # strings and fragments cannot interfere with file classification.
+        href_path = parsed_href.path
     except Exception as e:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: folder_video_total_bytes skipping malformed href "
@@ -411,14 +419,14 @@ def _folder_total_track_video(stats, href_path, size):
         stats.setdefault("videos", []).append((href_path, size))
 
 
-def _folder_total_scan_entries(root, url, stats):
+def _folder_total_scan_entries(root, url, stats, seen_resources):
     """Walk the PROPFIND responses once; return ``(total, incomplete, subdirs)``.
 
     Sums every video file's bytes at this level, collects child subdirs for the
     caller to recurse into, and flags ``incomplete`` when a video file cannot be
     sized. Tracks the largest single file via ``_folder_total_track_max``.
     """
-    from urllib.parse import urlparse
+    from urllib.parse import unquote, urlparse
 
     ns = {"D": "DAV:"}
     request_path = urlparse(url).path.rstrip("/")
@@ -430,10 +438,14 @@ def _folder_total_scan_entries(root, url, stats):
         pair = _folder_total_href_path(response, ns)
         if pair is None:
             continue
-        href_text, href_path = pair
+        _href_text, href_path = pair
+        resource_key = _folder_total_resource_key(href_path)
+        if resource_key in seen_resources:
+            continue
+        seen_resources.add(resource_key)
         if _folder_total_collect_subdir(response, href_path, request_path, subdirs, ns):
             continue
-        lowered = href_text.lower()
+        lowered = unquote(href_path).lower()
         if not any(lowered.endswith(ext) for ext in _FOLDER_TOTAL_VIDEO_EXTENSIONS):
             continue
         size, entry_incomplete = _folder_total_video_size(response, ns)
@@ -446,7 +458,7 @@ def _folder_total_scan_entries(root, url, stats):
     return total, incomplete, subdirs
 
 
-def _folder_total_sum_subdirs(subdirs, settings, depth, visited, stats):
+def _folder_total_sum_subdirs(subdirs, settings, depth, visited, stats, seen_resources):
     """Recurse into collected subdirs; return ``(added_total, incomplete)``.
 
     A subfolder that could not be fully sized (negative result) makes the whole
@@ -462,6 +474,7 @@ def _folder_total_sum_subdirs(subdirs, settings, depth, visited, stats):
             _visited=visited,
             _already_encoded=True,
             _stats=stats,
+            _seen_resources=seen_resources,
         )
         if sub_total < 0:
             incomplete = True
@@ -478,6 +491,7 @@ def folder_video_total_bytes(
     _visited=None,
     _already_encoded=False,
     _stats=None,
+    _seen_resources=None,
 ):
     """Return the summed bytes of every video file in a completed WebDAV folder.
 
@@ -501,11 +515,12 @@ def folder_video_total_bytes(
     * ``0``    -- the folder is genuinely empty of video (no files seen).
     * ``< 0`` (``_FOLDER_TOTAL_INCOMPLETE``) -- the size picture is INCOMPLETE: a
       PROPFIND/parse error, or a matched video file whose ``getcontentlength`` was
-      missing/non-numeric/negative (so summing it would silently under-count). The
-      caller must fail OPEN here rather than compare a partial total against the
-      floor -- ``_discovered_video_is_stub``'s ``total <= 0 -> return False`` does
-      exactly that. Incompleteness propagates up through recursion (a subfolder
-      that could not be fully sized makes the whole folder incomplete).
+      missing/non-numeric/negative, or a discovered subtree extending beyond the
+      traversal depth cap (so summing would silently under-count). The caller must
+      fail OPEN here rather than compare a partial total against the floor --
+      ``_discovered_video_is_stub``'s ``total <= 0 -> return False`` does exactly
+      that. Incompleteness propagates up through recursion (a subfolder that could
+      not be fully sized makes the whole folder incomplete).
 
     ``_stats`` (internal): when a dict is passed, ``_stats["max"]`` is populated
     with the size of the LARGEST single video file seen across the whole tree.
@@ -513,9 +528,14 @@ def folder_video_total_bytes(
     versus a real sibling (the folder total can clear the floor on a sibling's
     bytes while ``video_path`` is still the job-start stub -- #355 review).
     """
-    _visited, skip = _folder_total_enter(folder_path, _depth, _visited)
-    if skip:
+    _visited, skip_reason = _folder_total_enter(folder_path, _depth, _visited)
+    if skip_reason == "depth":
+        return _FOLDER_TOTAL_INCOMPLETE
+    if skip_reason:
         return 0
+    if _seen_resources is None:
+        _seen_resources = set()
+    _seen_resources.add(_folder_total_resource_key(folder_path))
 
     settings, url = _folder_total_resolve_url(
         settings_getter, _settings, folder_path, _already_encoded
@@ -523,7 +543,9 @@ def folder_video_total_bytes(
 
     try:
         root = _folder_total_fetch_root(url, settings["username"], settings["password"])
-        total, incomplete, subdirs = _folder_total_scan_entries(root, url, _stats)
+        total, incomplete, subdirs = _folder_total_scan_entries(
+            root, url, _stats, _seen_resources
+        )
     except Exception as error:  # pylint: disable=broad-except
         # A PROPFIND/parse failure means we cannot trust the total; signal
         # incomplete so the guard fails OPEN rather than rejecting on a partial
@@ -537,7 +559,7 @@ def folder_video_total_bytes(
         return _FOLDER_TOTAL_INCOMPLETE
 
     added, sub_incomplete = _folder_total_sum_subdirs(
-        subdirs, settings, _depth, _visited, _stats
+        subdirs, settings, _depth, _visited, _stats, _seen_resources
     )
     total += added
     if sub_incomplete:
@@ -763,6 +785,8 @@ def find_video_stream_for_folder(
             # episode, or an incomplete scan, must never degrade to the
             # title-derived/legacy candidate from find_video_file().
             video_path = inventory.selected_path if inventory is not None else None
+            if inventory is not None and video_path:
+                _remember_video_file_size_hint(video_path, inventory.selected_size)
     if on_inventory is not None and inventory is not None:
         try:
             on_inventory(inventory)

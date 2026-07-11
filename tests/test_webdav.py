@@ -12,6 +12,7 @@ from resources.lib.webdav import (
     find_video_stream_for_folder,
     folder_video_inventory,
     folder_video_total_bytes,
+    get_video_file_size_hint,
     get_webdav_stream_url_for_path,
     probe_webdav_reachable,
 )
@@ -847,6 +848,167 @@ def test_find_video_stream_does_not_callback_on_incomplete_inventory(
 
     assert result == (None, None, None)
     callback.assert_not_called()
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_explicit_inventory_selection_remembers_selected_file_size_hint(
+    mock_urlopen, mock_settings
+):
+    """An inventory override keeps the exact file's downstream stub metadata."""
+    from resources.lib import webdav
+
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    exact_path = "/downloads/Show/Show.S01E01.mkv"
+    generic_path = "/downloads/Show/video.mkv"
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            (exact_path, False, 1_000),
+            (generic_path, False, 10_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+    webdav._VIDEO_FILE_SIZE_HINTS.pop(exact_path, None)
+    try:
+        path, _url, _headers = find_video_stream_for_folder(
+            "/downloads/Show/",
+            requested_episode=(1, 1),
+            min_video_size=5_000,
+        )
+
+        assert path == exact_path
+        assert get_video_file_size_hint(exact_path) == 1_000
+    finally:
+        webdav._VIDEO_FILE_SIZE_HINTS.pop(exact_path, None)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_explicit_episode_does_not_fallback_when_tagged_subtree_exceeds_depth_cap(
+    mock_urlopen, mock_settings
+):
+    """A truncated subtree is unknown, not proof that a generic file is enough."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listings = {
+        "/Show/": _propfind_listing(
+            [
+                ("/downloads/Show/", True, None),
+                ("/downloads/Show/video.mkv", False, 9_000),
+                ("/downloads/Show/one/", True, None),
+            ]
+        ),
+        "/one/": _propfind_listing(
+            [
+                ("/downloads/Show/one/", True, None),
+                ("/downloads/Show/one/two/", True, None),
+            ]
+        ),
+        "/two/": _propfind_listing(
+            [
+                ("/downloads/Show/one/two/", True, None),
+                ("/downloads/Show/one/two/Show.S01E01/", True, None),
+            ]
+        ),
+    }
+
+    def propfind(req, **_kwargs):
+        for suffix, listing in listings.items():
+            if req.full_url.endswith(suffix):
+                return _propfind_resp(listing)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(req.full_url))
+
+    mock_urlopen.side_effect = propfind
+
+    result = find_video_stream_for_folder("/downloads/Show/", requested_episode=(1, 1))
+
+    assert result == (None, None, None)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_inventory_classifies_encoded_extension_before_uri_query(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    encoded_path = "/downloads/Show/Show.S01E01%2Emkv"
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            (
+                "http://internal:8080{}?download=1".format(encoded_path),
+                False,
+                8_000,
+            ),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    inventory = folder_video_inventory("/downloads/Show/", requested=(1, 1))
+
+    assert inventory.selected_path == encoded_path
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_walk_deduplicates_normalized_resource_paths(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    encoded_path = "/downloads/Show/Show%20Name.S01E01.mkv"
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            (encoded_path, False, 8_000),
+            (
+                "http://internal:8080/downloads/Show/Show%20Name.S01E01.mkv",
+                False,
+                8_000,
+            ),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+    stats = {}
+
+    total = folder_video_total_bytes("/downloads/Show/", _stats=stats)
+
+    assert total == 8_000
+    assert stats["videos"] == [(encoded_path, 8_000)]
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_walk_cycle_suppression_remains_complete(
+    mock_urlopen, mock_settings
+):
+    """A repeated ancestor is a known cycle, unlike an unseen depth overflow."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/one/", True, None),
+        ]
+    )
+    child = _propfind_listing(
+        [
+            ("/downloads/Show/one/", True, None),
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/one/Show.S01E01.mkv", False, 8_000),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        if req.full_url.endswith("/Show/"):
+            return _propfind_resp(root)
+        if req.full_url.endswith("/one/"):
+            return _propfind_resp(child)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(req.full_url))
+
+    mock_urlopen.side_effect = propfind
+
+    inventory = folder_video_inventory("/downloads/Show/", requested=(1, 1))
+
+    assert inventory.selected_path.endswith("Show.S01E01.mkv")
 
 
 @patch("resources.lib.webdav._get_settings")
