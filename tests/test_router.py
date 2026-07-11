@@ -1670,6 +1670,95 @@ def test_season_pack_result_uses_only_active_backend_and_localized_summary():
     assert result["_display_title"] == "local label"
 
 
+def _three_provider_rows():
+    return [
+        {
+            "title": "Show.S01E0{}.mkv".format(number),
+            "link": "http://i/{}".format(number),
+        }
+        for number in range(1, 4)
+    ]
+
+
+def _local_pack_row():
+    return {"title": "Show.S01", "link": "", "_season_pack": {"job_id": "41"}}
+
+
+def test_handle_play_picker_total_includes_synthetic_pack_row():
+    from resources.lib.router_play import _handle_play_filter_and_select
+
+    providers = _three_provider_rows()
+    with patch(
+        "resources.lib.filter.filter_results", return_value=(providers, providers)
+    ), patch("resources.lib.router._tag_available"), patch(
+        "resources.lib.results_dialog.show_results_dialog", return_value=None
+    ) as dialog, patch(
+        "xbmcaddon.Addon"
+    ) as addon:
+        addon.return_value.getSetting.return_value = "false"
+        _handle_play_filter_and_select(
+            7,
+            providers,
+            "Show",
+            "2026",
+            MagicMock(),
+            pack_result=_local_pack_row(),
+        )
+
+    assert len(dialog.call_args.args[0]) == 4
+    assert dialog.call_args.kwargs["total_count"] == 4
+
+
+def test_handle_search_picker_total_includes_synthetic_pack_row():
+    from resources.lib.router_play import _handle_search_filter_and_select
+
+    providers = _three_provider_rows()
+    with patch(
+        "resources.lib.filter.filter_results", return_value=(providers, providers)
+    ), patch("resources.lib.router._tag_available"), patch(
+        "resources.lib.results_dialog.show_results_dialog", return_value=None
+    ) as dialog, patch(
+        "xbmcaddon.Addon"
+    ) as addon, patch(
+        "xbmcplugin.endOfDirectory"
+    ):
+        addon.return_value.getSetting.return_value = "false"
+        _handle_search_filter_and_select(
+            7,
+            {},
+            providers,
+            "Show",
+            "2026",
+            MagicMock(),
+            pack_result=_local_pack_row(),
+        )
+
+    assert len(dialog.call_args.args[0]) == 4
+    assert dialog.call_args.kwargs["total_count"] == 4
+
+
+def test_script_play_picker_total_includes_synthetic_pack_row():
+    from resources.lib.router_scriptplay import _script_play_filter_autoselect_tag
+
+    providers = _three_provider_rows()
+    with patch(
+        "resources.lib.filter.filter_results", return_value=(providers, providers)
+    ), patch("resources.lib.router._get_script_setting", return_value="false"), patch(
+        "resources.lib.router_scriptplay._script_play_tag_available"
+    ):
+        filtered, total_count, _completed = _script_play_filter_autoselect_tag(
+            MagicMock(),
+            {},
+            providers,
+            "Show",
+            MagicMock(),
+            pack_result=_local_pack_row(),
+        )
+
+    assert len(filtered) == 4
+    assert total_count == 4
+
+
 @patch("xbmcaddon.Addon")
 @patch("resources.lib.resolver.resolve")
 @patch("resources.lib.results_dialog.show_results_dialog")
@@ -2394,6 +2483,7 @@ def test_handle_search_episode_threads_canonical_context_to_resolver(
     assert context == {
         "type": "episode",
         "title": "Spider-Noir",
+        "year": None,
         "imdb": "",
         "tvdb": "451234",
         "tmdb_id": "",
@@ -2411,6 +2501,7 @@ def test_handle_play_auto_select_threads_resolved_episode_context(mock_resolve):
     identity = {
         "type": "episode",
         "title": "Spider-Noir",
+        "year": "2026",
         "imdb": "tt1234567",
         "tvdb": "",
         "tmdb_id": "987",
@@ -2424,6 +2515,7 @@ def test_handle_play_auto_select_threads_resolved_episode_context(mock_resolve):
     assert mock_resolve.call_args.args[1]["_episode_context"] == {
         "type": "episode",
         "title": "Spider-Noir",
+        "year": 2026,
         "imdb": "tt1234567",
         "tvdb": "",
         "tmdb_id": "987",

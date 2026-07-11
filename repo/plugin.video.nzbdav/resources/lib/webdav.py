@@ -805,8 +805,10 @@ def find_video_stream_for_folder(
 
     ``requested_episode`` is an explicit ``(season, episode)`` identity. Unlike
     the advisory title hint, it fails closed when the completed folder contains
-    named episodes but not the requested one. ``on_inventory`` receives the
-    confirmed full-tree inventory; callback failures never block playback.
+    named episodes but not the requested one, or multiple untagged videos that
+    cannot be mapped to an episode. A single untagged video remains a valid
+    ordinary-release fallback. ``on_inventory`` receives the confirmed
+    full-tree inventory; callback failures never block playback.
     """
     settings = _read_settings(settings_getter)
     explicit_tags = (

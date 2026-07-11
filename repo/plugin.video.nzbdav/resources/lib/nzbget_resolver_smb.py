@@ -279,9 +279,9 @@ def resolve_smb_video(
     Kodi shutdown. When a ``dialog`` (DialogProgress) is supplied, it shows a
     progress bar over the wait and its Cancel button aborts the search.
     With episode context, an exact tagged episode beats larger pack members;
-    named wrong episodes fail closed, while untagged videos retain the legacy
-    largest-file fallback. Returns None if no playable selection appears
-    within the budget.
+    named wrong episodes and multiple untagged videos fail closed, while one
+    untagged video retains the ordinary single-file fallback. Returns None if
+    no playable selection appears within the budget.
     """
     if monitor is None:
         monitor = _core.xbmc.Monitor()

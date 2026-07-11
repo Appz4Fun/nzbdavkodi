@@ -37,6 +37,7 @@ def _record(backend, job_id, job_name, folder, context, inventory):
         "job_name": str(job_name or "").strip(),
         "folder": str(folder).strip(),
         "title": str(context.get("title") or "").strip(),
+        "year": _number(context.get("year")),
         "imdb": str(context.get("imdb") or "").strip(),
         "tvdb": str(context.get("tvdb") or "").strip(),
         "tmdb_id": str(context.get("tmdb_id") or "").strip(),

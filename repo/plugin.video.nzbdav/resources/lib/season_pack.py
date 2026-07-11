@@ -8,11 +8,19 @@ import math
 import os
 import re
 import tempfile
+import threading
 import time
+import uuid
+from contextlib import contextmanager
 from typing import NamedTuple
 
 import xbmc
 import xbmcvfs
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - CoreELEC and macOS provide fcntl
+    fcntl = None
 
 _PROFILE_SPECIAL_PATH = "special://profile/addon_data/plugin.video.nzbdav"
 _CATALOG_FILENAME = "season_packs.json"
@@ -24,6 +32,7 @@ _RECORD_FIELDS = (
     "job_name",
     "folder",
     "title",
+    "year",
     "imdb",
     "tvdb",
     "tmdb_id",
@@ -33,6 +42,10 @@ _RECORD_FIELDS = (
 )
 _TITLE_RE = re.compile(r"[^a-z0-9]+")
 _IO_ERRORS = (IOError, OSError, TypeError, ValueError)
+_THREAD_LOCK = threading.RLock()
+_LOCK_TIMEOUT = 2.0
+_LOCK_RETRY = 0.02
+_STALE_LOCK_SECONDS = 30.0
 
 
 def _catalog_dir():
@@ -112,6 +125,7 @@ def _normalize_record(record, default_timestamp=0.0):
         "job_name": _text(record.get("job_name")),
         "folder": folder,
         "title": _text(record.get("title")),
+        "year": _number(record.get("year")),
         "imdb": _text(record.get("imdb")),
         "tvdb": _text(record.get("tvdb")),
         "tmdb_id": _text(record.get("tmdb_id")),
@@ -143,9 +157,9 @@ def _canonical_records(records):
     ]
 
 
-def load_records():
-    """Load valid catalog rows, returning an empty list on any read failure."""
-    path = _catalog_path()
+def _load_records_unlocked(path=None):
+    """Load rows while the caller owns any required transaction lock."""
+    path = path or _catalog_path()
     if not path:
         return []
     try:
@@ -155,6 +169,11 @@ def load_records():
         return []
     records = payload.get("records") if isinstance(payload, dict) else None
     return _canonical_records(records)
+
+
+def load_records():
+    """Load valid catalog rows, returning an empty list on any read failure."""
+    return _load_records_unlocked()
 
 
 def _discard_temp(fd, tmp_path):
@@ -170,9 +189,9 @@ def _discard_temp(fd, tmp_path):
             pass
 
 
-def save_records(records):
-    """Atomically save normalized rows; catalog failures never escape."""
-    path = _catalog_path()
+def _save_records_unlocked(records, path=None):
+    """Atomically save rows while the caller owns the transaction lock."""
+    path = path or _catalog_path()
     if not path:
         return False
     directory = os.path.dirname(path)
@@ -204,24 +223,163 @@ def save_records(records):
         return False
 
 
+def _pid_is_alive(pid):
+    """Return True unless the OS conclusively reports that ``pid`` is dead."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, PermissionError):
+        return True
+    return True
+
+
+def _directory_lock_owner(lock_dir):
+    try:
+        owner_path = os.path.join(lock_dir, "owner.json")
+        with open(owner_path, "r", encoding="utf-8") as handle:
+            owner = json.load(handle)
+        return int(owner["pid"]), str(owner["token"])
+    except (KeyError,) + _IO_ERRORS:
+        return None
+
+
+def _remove_stale_directory_lock(lock_dir):
+    """Remove only a sufficiently old fallback lock owned by a dead process."""
+    try:
+        age = time.time() - os.path.getmtime(lock_dir)
+    except OSError:
+        return
+    owner = _directory_lock_owner(lock_dir)
+    if age < _STALE_LOCK_SECONDS or owner is None or _pid_is_alive(owner[0]):
+        return
+    try:
+        os.remove(os.path.join(lock_dir, "owner.json"))
+        os.rmdir(lock_dir)
+    except OSError:
+        pass
+
+
+def _acquire_directory_lock(lock_path, deadline):
+    """Portable fallback for platforms without ``fcntl``."""
+    lock_dir = lock_path + ".d"
+    token = uuid.uuid4().hex
+    while True:
+        created = False
+        try:
+            os.mkdir(lock_dir)
+            created = True
+            with open(
+                os.path.join(lock_dir, "owner.json"), "w", encoding="utf-8"
+            ) as handle:
+                json.dump({"pid": os.getpid(), "token": token}, handle)
+            return ("directory", lock_dir, token)
+        except FileExistsError:
+            _remove_stale_directory_lock(lock_dir)
+        except _IO_ERRORS:
+            if created:
+                try:
+                    os.rmdir(lock_dir)
+                except OSError:
+                    pass
+            return None
+        if time.monotonic() >= deadline:
+            return None
+        threading.Event().wait(_LOCK_RETRY)
+
+
+def _acquire_process_lock(lock_path):
+    deadline = time.monotonic() + _LOCK_TIMEOUT
+    if fcntl is None:
+        return _acquire_directory_lock(lock_path, deadline)
+    try:
+        handle = open(lock_path, "a+", encoding="utf-8")
+    except _IO_ERRORS:
+        return None
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return ("fcntl", handle, None)
+        except (BlockingIOError, OSError):
+            if time.monotonic() >= deadline:
+                handle.close()
+                return None
+            threading.Event().wait(_LOCK_RETRY)
+
+
+def _release_process_lock(lock):
+    kind, resource, token = lock
+    if kind == "fcntl":
+        try:
+            fcntl.flock(resource.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        resource.close()
+        return
+    owner = _directory_lock_owner(resource)
+    if owner != (os.getpid(), token):
+        return
+    try:
+        os.remove(os.path.join(resource, "owner.json"))
+        os.rmdir(resource)
+    except OSError:
+        pass
+
+
+@contextmanager
+def _catalog_transaction():
+    """Serialize one catalog mutation across this process and other processes."""
+    with _THREAD_LOCK:
+        path = _catalog_path()
+        if not path:
+            yield ""
+            return
+        lock = _acquire_process_lock(path + ".lock")
+        if lock is None:
+            yield ""
+            return
+        try:
+            yield path
+        finally:
+            _release_process_lock(lock)
+
+
+def save_records(records):
+    """Atomically save normalized rows; catalog failures never escape."""
+    with _catalog_transaction() as path:
+        if not path:
+            return False
+        return _save_records_unlocked(records, path=path)
+
+
 def upsert(record):
     """Insert or refresh one exact ``(backend, job_id)`` catalog row."""
     normalized = _normalize_record(record, default_timestamp=time.time())
     if normalized is None:
         return False
-    rows = [row for row in load_records() if _job_key(row) != _job_key(normalized)]
-    rows.append(normalized)
-    return save_records(rows)
+    with _catalog_transaction() as path:
+        if not path:
+            return False
+        rows = [
+            row
+            for row in _load_records_unlocked(path=path)
+            if _job_key(row) != _job_key(normalized)
+        ]
+        rows.append(normalized)
+        return _save_records_unlocked(rows, path=path)
 
 
 def remove(backend, job_id):
     """Remove only the row with the exact backend and job identifier."""
     key = _text(backend), _text(job_id)
-    rows = load_records()
-    remaining = [row for row in rows if _job_key(row) != key]
-    if len(remaining) == len(rows):
-        return True
-    return save_records(remaining)
+    with _catalog_transaction() as path:
+        if not path:
+            return False
+        rows = _load_records_unlocked(path=path)
+        remaining = [row for row in rows if _job_key(row) != key]
+        if len(remaining) == len(rows):
+            return True
+        return _save_records_unlocked(remaining, path=path)
 
 
 def find_exact(backend, job_id):
@@ -284,7 +442,13 @@ def _content_matches(record, context):
     ):
         return False
     title = _normalize_title(record.get("title"))
-    return bool(title) and title == _normalize_title(context.get("title"))
+    if not title or title != _normalize_title(context.get("title")):
+        return False
+    record_year = _number(record.get("year"))
+    context_year = _number(context.get("year"))
+    if record_year is None or context_year is None:
+        return record_year is None and context_year is None
+    return record_year == context_year
 
 
 def find_for_episode(context, backend):
@@ -315,6 +479,7 @@ def context_from_params(params, title=None, season=None, episode=None):
     return {
         "type": params.get("type", "movie"),
         "title": title if title is not None else params.get("title", ""),
+        "year": _number(params.get("year")),
         "imdb": params.get("imdb", ""),
         "tvdb": params.get("tvdb", ""),
         "tmdb_id": params.get("tmdb_id", ""),

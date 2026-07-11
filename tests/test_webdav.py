@@ -730,7 +730,7 @@ def test_find_video_stream_explicit_episode_rejects_named_wrong_fallback(
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
-def test_find_video_stream_explicit_episode_uses_generic_largest_fallback(
+def test_find_video_stream_explicit_episode_rejects_multiple_generic_videos(
     mock_urlopen, mock_settings
 ):
     mock_settings.return_value = _SETTINGS_WITH_AUTH
@@ -743,11 +743,30 @@ def test_find_video_stream_explicit_episode_uses_generic_largest_fallback(
     )
     mock_urlopen.return_value = _propfind_resp(listing)
 
+    result = find_video_stream_for_folder("/downloads/Show/", requested_episode=(1, 1))
+
+    assert result == (None, None, None)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_explicit_episode_allows_one_generic_video(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/video.mkv", False, 9_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
     path, _url, _headers = find_video_stream_for_folder(
         "/downloads/Show/", requested_episode=(1, 1)
     )
 
-    assert path == "/downloads/Show/video-large.mkv"
+    assert path == "/downloads/Show/video.mkv"
 
 
 @patch("resources.lib.webdav._get_settings")

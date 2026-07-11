@@ -178,8 +178,11 @@ def build_video_inventory(rows, requested=None):
         exact = tuple(item for item in tagged if requested in item.episode_tags)
         if exact:
             selected = _largest(exact)
-        elif not tagged:
-            selected = _largest(main_files or files)
+        elif not tagged and len(main_files) == 1:
+            # A lone generic video is a defensible ordinary-release fallback.
+            # Multiple untagged videos are ambiguous for an explicit episode:
+            # selecting by size would silently play an arbitrary file.
+            selected = main_files[0]
     else:
         selected = _largest(files)
 

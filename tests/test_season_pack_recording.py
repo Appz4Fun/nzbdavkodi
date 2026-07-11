@@ -13,6 +13,7 @@ def _context(**overrides):
     context = {
         "type": "episode",
         "title": "Spider-Noir",
+        "year": "2026",
         "imdb": "tt123",
         "tvdb": "456",
         "tmdb_id": "789",
@@ -53,6 +54,7 @@ def test_records_exact_backend_job_and_media_identity_for_real_pack():
         "job_name": "Spider-Noir.S01.2160p",
         "folder": "/content/tv/exact/",
         "title": "Spider-Noir",
+        "year": 2026,
         "imdb": "tt123",
         "tvdb": "456",
         "tmdb_id": "789",

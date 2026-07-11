@@ -230,7 +230,9 @@ def _script_play_filter_autoselect_tag(
         if not filtered:
             return None
 
+    provider_row_count = len(filtered)
     filtered = _router._prepend_pack(filtered, pack_result)
+    total_count += len(filtered) - provider_row_count
 
     if (
         _router._get_script_setting("auto_select_best", "false").lower() == "true"

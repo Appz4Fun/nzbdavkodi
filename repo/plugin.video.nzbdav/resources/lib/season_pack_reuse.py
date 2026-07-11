@@ -27,8 +27,11 @@ def _refresh_inventory(record, episode_context, inventory):
     from resources.lib.season_pack_recording import record_completed_inventory
 
     merged_context = dict(episode_context or {})
-    for field in ("title", "imdb", "tvdb", "tmdb_id"):
-        if not str(merged_context.get(field) or "").strip() and record.get(field):
+    for field in ("title", "year", "imdb", "tvdb", "tmdb_id"):
+        if merged_context.get(field) in (None, "") and record.get(field) not in (
+            None,
+            "",
+        ):
             merged_context[field] = record[field]
     if not merged_context.get("type"):
         merged_context["type"] = "episode"
@@ -57,15 +60,21 @@ def _bound_setting_getter(settings_getter):
 
 
 def _nzbget_folder_for_record(record, settings_getter=None):
-    from resources.lib.nzbget_resolver_smb import nzbget_smb_target
+    # Cached reuse must prove the server-native completed folder maps under
+    # NZBGet's configured completed base.  The ordinary first-play resolver may
+    # use its heuristic fallback, but applying that here could map an unrelated
+    # same-tail folder to a remembered job.
+    from resources.lib import nzbget_resolver
 
     getter = _bound_setting_getter(settings_getter)
     smb_root = getter("nzbget_smb_root", "").strip()
-    _url, _user, _password, category = nzbget_api._get_settings(
-        settings_getter=settings_getter
-    )
     completed_base = nzbget_api.completed_base_dir(settings_getter=settings_getter)
-    return nzbget_smb_target(smb_root, record.get("folder"), category, completed_base)
+    native_folder = str(record.get("folder") or "").replace("\\", "/").rstrip("/")
+    if not smb_root or not completed_base or not native_folder:
+        return None
+    return nzbget_resolver._smb_exact_mapping(
+        native_folder, smb_root.rstrip("/"), completed_base
+    )
 
 
 def _smb_inventory(folder, requested_episode=None):

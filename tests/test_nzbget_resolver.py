@@ -239,22 +239,45 @@ def test_resolve_smb_video_does_not_play_named_wrong_episode():
     assert seen[0].has_tagged_files is True
 
 
-def test_resolve_smb_video_requested_episode_uses_largest_generic_file():
+def test_resolve_smb_video_explicit_episode_rejects_multiple_generic_videos():
+    """Exact episode playback must not guess among an untagged multi-file job."""
     xbmcvfs = sys.modules["xbmcvfs"]
 
     def fake_stat(path):
         stat = MagicMock()
-        stat.st_size.return_value = 9_000 if path.endswith("video-b.mkv") else 5_000
+        stat.st_size.return_value = 9_000 if path.endswith("video-large.mkv") else 4_000
         return stat
 
     with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
-        xbmcvfs, "listdir", return_value=([], ["video-a.mkv", "video-b.mkv"])
+        xbmcvfs,
+        "listdir",
+        return_value=([], ["video-small.mkv", "video-large.mkv"]),
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+        )
+
+    assert url is None
+
+
+def test_resolve_smb_video_requested_episode_allows_one_generic_file():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 9_000
+        return stat
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["video.mkv"])
     ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
         url = resolve_smb_video(
             "smb://host/Show", monitor=_Monitor(), requested_episode=(1, 1)
         )
 
-    assert url == "smb://host/Show/video-b.mkv"
+    assert url == "smb://host/Show/video.mkv"
 
 
 def test_resolve_smb_video_without_episode_keeps_legacy_largest_selection():

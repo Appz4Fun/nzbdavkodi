@@ -4,10 +4,13 @@
 """Tests for completed season-pack catalog persistence and matching."""
 
 import json
+import multiprocessing
 import os
 from unittest.mock import patch
 
 from resources.lib import season_pack
+
+from tests.season_pack_process_helper import racing_upsert
 
 
 def _context(episode=2, **overrides):
@@ -87,6 +90,35 @@ def test_upsert_replaces_only_the_same_exact_job_key(tmp_path, monkeypatch):
     assert season_pack.find_exact("nzbget", "41")["folder"] == "/downloads/new"
 
 
+def test_concurrent_process_upserts_preserve_both_exact_jobs(tmp_path, monkeypatch):
+    """The load-modify-save transaction must be serialized across processes."""
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    processes = [
+        context.Process(
+            target=racing_upsert,
+            args=(
+                str(tmp_path),
+                _record(job_id, "/downloads/{}".format(job_id)),
+                barrier,
+                results,
+            ),
+        )
+        for job_id in ("41", "42")
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert [results.get(timeout=1) for _process in processes] == [True, True]
+    _use_catalog(tmp_path, monkeypatch)
+    assert {row["job_id"] for row in season_pack.load_records()} == {"41", "42"}
+
+
 def test_remove_deletes_only_exact_backend_job_key(tmp_path, monkeypatch):
     _use_catalog(tmp_path, monkeypatch)
     season_pack.upsert(_record("41", "/downloads/a"))
@@ -152,6 +184,29 @@ def test_title_fallback_is_normalized_when_both_sides_lack_ids(tmp_path, monkeyp
 
     context = _context(tvdb="", tmdb_id="", imdb="", title=" spider noir ")
     assert season_pack.find_for_episode(context, "nzbget") is not None
+
+
+def test_title_fallback_requires_matching_years_when_known(tmp_path, monkeypatch):
+    _use_catalog(tmp_path, monkeypatch)
+    no_ids = {"tvdb": "", "tmdb_id": "", "imdb": ""}
+    season_pack.upsert(_record(**no_ids, year=2026))
+
+    assert (
+        season_pack.find_for_episode(_context(**no_ids, year="2026"), "nzbget")
+        is not None
+    )
+    assert season_pack.find_for_episode(_context(**no_ids, year=2025), "nzbget") is None
+    assert season_pack.find_for_episode(_context(**no_ids), "nzbget") is None
+
+
+def test_title_fallback_rejects_legacy_record_year_when_current_year_is_known(
+    tmp_path, monkeypatch
+):
+    _use_catalog(tmp_path, monkeypatch)
+    no_ids = {"tvdb": "", "tmdb_id": "", "imdb": ""}
+    season_pack.upsert(_record(**no_ids))
+
+    assert season_pack.find_for_episode(_context(**no_ids, year=2026), "nzbget") is None
 
 
 def test_find_returns_newest_confirmed_matching_job(tmp_path, monkeypatch):
@@ -242,6 +297,16 @@ def test_failed_atomic_replace_preserves_existing_catalog_and_fails_soft(
     assert not list(tmp_path.glob("season-pack-*.json"))
 
 
+def test_directory_lock_owner_write_failure_cleans_created_lock(tmp_path, monkeypatch):
+    monkeypatch.setattr(season_pack, "fcntl", None)
+    lock_path = str(tmp_path / "catalog.lock")
+
+    with patch("builtins.open", side_effect=OSError("read-only filesystem")):
+        assert season_pack._acquire_process_lock(lock_path) is None
+
+    assert not os.path.exists(lock_path + ".d")
+
+
 def test_context_from_params_safely_converts_numeric_fields_and_overrides():
     context = season_pack.context_from_params(
         {
@@ -249,6 +314,7 @@ def test_context_from_params_safely_converts_numeric_fields_and_overrides():
             "title": "Wrong",
             "season": " 01 ",
             "episode": "bad",
+            "year": " 2026 ",
             "imdb": "tt789",
             "tvdb": 123,
             "tmdb_id": "456",
@@ -263,6 +329,7 @@ def test_context_from_params_safely_converts_numeric_fields_and_overrides():
         "imdb": "tt789",
         "tvdb": 123,
         "tmdb_id": "456",
+        "year": 2026,
         "season": 1,
         "episode": 8,
     }
@@ -326,6 +393,7 @@ def test_catalog_payload_contains_version_and_canonical_record_fields(
         "job_name",
         "folder",
         "title",
+        "year",
         "imdb",
         "tvdb",
         "tmdb_id",

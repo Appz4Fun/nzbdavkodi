@@ -335,7 +335,9 @@ def _handle_play_filter_and_select(
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
 
+    provider_row_count = len(filtered)
     filtered = _prepend_pack(filtered, pack_result)
+    total_count += len(filtered) - provider_row_count
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
@@ -781,7 +783,9 @@ def _handle_search_filter_and_select(
             xbmcplugin.endOfDirectory(handle, succeeded=False)
             return
 
+    provider_row_count = len(filtered)
     filtered = _prepend_pack(filtered, pack_result)
+    total_count += len(filtered) - provider_row_count
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon("plugin.video.nzbdav")

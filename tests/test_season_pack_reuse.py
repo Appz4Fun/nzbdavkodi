@@ -13,6 +13,7 @@ def _context(episode=1):
     return {
         "type": "episode",
         "title": "Spider-Noir",
+        "year": 2026,
         "imdb": "tt123",
         "tvdb": "456",
         "tmdb_id": "789",
@@ -28,6 +29,7 @@ def _record(backend="nzbget", job_id="41", folder="/downloads/show"):
         "job_name": "Spider-Noir.S01",
         "folder": folder,
         "title": "Spider-Noir",
+        "year": 2026,
         "imdb": "tt123",
         "tvdb": "456",
         "tmdb_id": "789",
@@ -73,7 +75,92 @@ def test_nzbget_valid_exact_job_reuses_requested_episode_without_submit():
     scan.assert_called_once_with("smb://box/done/show", requested_episode=(1, 1))
     submit.assert_not_called()
     assert upsert.call_args.args[0]["job_id"] == "41"
+    assert upsert.call_args.args[0]["year"] == 2026
     assert upsert.call_args.args[0]["episodes"] == [1, 2]
+
+
+def test_nzbget_reuse_missing_completed_base_is_transient_without_scanning():
+    record = _record(folder="/srv/downloads/show")
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": "smb://box/completed"}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/srv/downloads/show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value=None,
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory"
+    ) as scan, patch(
+        "resources.lib.season_pack_reuse.season_pack.remove"
+    ) as remove:
+        result = season_pack_reuse.reuse_exact_job(
+            record, _context(), "nzbget", settings_getter=getter
+        )
+
+    assert result.state == "transient"
+    scan.assert_not_called()
+    remove.assert_not_called()
+
+
+def test_nzbget_reuse_rejects_same_tail_from_outside_completed_base():
+    record = _record(folder="/other/native/show")
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": "smb://box/completed"}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/other/native/show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value="/srv/downloads",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory"
+    ) as scan, patch(
+        "resources.lib.season_pack_reuse.season_pack.remove"
+    ) as remove:
+        result = season_pack_reuse.reuse_exact_job(
+            record, _context(), "nzbget", settings_getter=getter
+        )
+
+    assert result.state == "transient"
+    scan.assert_not_called()
+    remove.assert_not_called()
+
+
+def test_nzbget_reuse_rejects_job_folder_equal_to_completed_base():
+    record = _record(folder="/srv/downloads")
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": "smb://box/completed"}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/srv/downloads"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value="/srv/downloads",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory"
+    ) as scan, patch(
+        "resources.lib.season_pack_reuse.season_pack.remove"
+    ) as remove:
+        result = season_pack_reuse.reuse_exact_job(
+            record, _context(), "nzbget", settings_getter=getter
+        )
+
+    assert result.state == "transient"
+    scan.assert_not_called()
+    remove.assert_not_called()
 
 
 def test_nzbget_successful_rescan_refreshes_exact_catalog_episode_inventory(
