@@ -18,6 +18,15 @@ def test_named_wrong_episode_fails_closed_but_no_context_keeps_largest():
     assert build_video_inventory(rows).selected_path.endswith("S01E05.mkv")
 
 
+def test_no_context_keeps_largest_even_when_it_is_auxiliary():
+    rows = [("/pack/movie.mkv", 800), ("/pack/movie.sample.mkv", 900)]
+
+    inventory = build_video_inventory(rows)
+
+    assert inventory.selected_path == "/pack/movie.sample.mkv"
+    assert inventory.selected_size == 900
+
+
 def test_pack_requires_two_episodes_in_exactly_one_season():
     pack = build_video_inventory(
         [("/p/Show.S01E01.mkv", 100), ("/p/Show.S01E02.mkv", 90)],

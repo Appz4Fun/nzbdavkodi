@@ -67,7 +67,7 @@ def build_video_inventory(rows, requested=None):
         elif not tagged:
             selected = _largest(main_files or files)
     else:
-        selected = _largest(main_files or files)
+        selected = _largest(files)
 
     seasons = {season for item in tagged for season, _episode in item.episode_tags}
     pack_season = next(iter(seasons)) if len(seasons) == 1 else None
