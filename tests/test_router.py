@@ -1614,6 +1614,321 @@ def test_handle_play_notifies_when_no_results(
     mock_resolved.assert_called_once_with(3, False, "li")
 
 
+def test_prepend_pack_keeps_one_local_row_first():
+    from resources.lib.router_play import _prepend_pack
+
+    pack = {
+        "title": "Spider-Noir.S01",
+        "_season_pack": {"backend": "nzbget", "job_id": "41"},
+    }
+    duplicate = dict(pack)
+    online = {"title": "Spider-Noir.S01E02", "link": "http://indexer/2.nzb"}
+
+    assert _prepend_pack([online, duplicate], pack) == [pack, online]
+
+
+def test_ordinary_selection_never_treats_pack_row_as_provider_fallback():
+    from resources.lib.router_play import _selection_target
+
+    pack = {
+        "title": "Spider-Noir.S01",
+        "link": "",
+        "_season_pack": {"backend": "nzbget", "job_id": "41"},
+    }
+    online = {"title": "Spider-Noir.S01E02", "link": "http://indexer/2.nzb"}
+
+    target, providers = _selection_target(online, [pack, online])
+
+    assert target is online
+    assert providers == [online]
+
+
+def test_season_pack_result_uses_only_active_backend_and_localized_summary():
+    from resources.lib.router_play import _season_pack_result
+
+    context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "tvdb": "451234",
+        "season": 1,
+        "episode": 2,
+    }
+    record = {
+        "backend": "nzbget",
+        "job_id": "41",
+        "job_name": "Spider-Noir.S01",
+        "episodes": [1, 2, 3, 4, 5, 6, 7, 8],
+    }
+    with patch("resources.lib.router._nzbget_mode_enabled", return_value=True), patch(
+        "resources.lib.season_pack.find_for_episode", return_value=record
+    ) as find, patch("resources.lib.router._fmt", return_value="local label") as fmt:
+        result = _season_pack_result(context)
+
+    find.assert_called_once_with(context, "nzbget")
+    fmt.assert_called_once_with(30364, "1-8")
+    assert result["_season_pack"] == record
+    assert result["_display_title"] == "local label"
+
+
+@patch("xbmcaddon.Addon")
+@patch("resources.lib.resolver.resolve")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_pack_is_selectable_when_providers_are_empty(
+    mock_cache, mock_search, mock_dialog, mock_resolve, mock_addon
+):
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    record = {
+        "backend": "nzbdav",
+        "job_id": "nzo-1",
+        "job_name": "Spider-Noir.S01",
+        "folder": "/done/Spider-Noir.S01",
+        "title": "Spider-Noir",
+        "imdb": "",
+        "tvdb": "451234",
+        "tmdb_id": "",
+        "season": 1,
+        "episodes": [1, 2],
+        "last_confirmed": 1,
+    }
+
+    def choose(results, **_kwargs):
+        assert len(results) == 1
+        assert results[0]["_season_pack"]["job_id"] == "nzo-1"
+        return results[0]
+
+    mock_dialog.side_effect = choose
+    with patch("resources.lib.season_pack.find_for_episode", return_value=record):
+        _handle_play(
+            9,
+            {
+                "type": "episode",
+                "title": "Spider-Noir",
+                "tvdb": "451234",
+                "season": "1",
+                "episode": "2",
+            },
+        )
+
+    params = mock_resolve.call_args.args[1]
+    assert params["nzburl"] == ""
+    assert params["_season_pack"]["job_id"] == "nzo-1"
+    assert params["_episode_context"]["episode"] == 2
+
+
+@patch("xbmcaddon.Addon")
+@patch("resources.lib.resolver.resolve")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch(
+    "resources.lib.router._search_all_providers",
+    return_value=([], "provider unavailable"),
+)
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_pack_survives_provider_error(
+    mock_cache, mock_search, mock_dialog, mock_resolve, mock_addon
+):
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    record = {
+        "backend": "nzbdav",
+        "job_id": "nzo-1",
+        "job_name": "Spider-Noir.S01",
+        "folder": "/done/Spider-Noir.S01",
+        "title": "Spider-Noir",
+        "imdb": "",
+        "tvdb": "451234",
+        "tmdb_id": "",
+        "season": 1,
+        "episodes": [2],
+        "last_confirmed": 1,
+    }
+    mock_dialog.side_effect = lambda results, **_kwargs: results[0]
+    with patch(
+        "resources.lib.season_pack.find_for_episode", return_value=record
+    ), patch("resources.lib.router._show_error_dialog") as error_dialog:
+        _handle_play(
+            9,
+            {
+                "type": "episode",
+                "title": "Spider-Noir",
+                "tvdb": "451234",
+                "season": "1",
+                "episode": "2",
+            },
+        )
+
+    error_dialog.assert_not_called()
+    assert mock_resolve.call_args.args[1]["_season_pack"]["job_id"] == "nzo-1"
+
+
+@patch("resources.lib.resolver.resolve")
+def test_pack_selection_uses_first_provider_only_as_stale_fallthrough(mock_resolve):
+    from resources.lib.router_play import _handle_play_resolve_selection
+
+    record = {"backend": "nzbdav", "job_id": "nzo-1"}
+    pack = {
+        "title": "Spider-Noir.S01",
+        "link": "",
+        "_season_pack": record,
+    }
+    provider = {
+        "title": "Spider-Noir.S01E02.2160p",
+        "link": "http://indexer/episode.nzb",
+    }
+    identity = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "season": "1",
+        "episode": "2",
+    }
+    with patch("resources.lib.router._fallback_candidate_loader_for_selection"):
+        _handle_play_resolve_selection(7, pack, [pack, provider], None, identity)
+
+    params = mock_resolve.call_args.args[1]
+    assert params["nzburl"] == provider["link"]
+    assert params["title"] == provider["title"]
+    assert params["_season_pack"] == record
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.endOfDirectory")
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("resources.lib.router._search_all_providers", return_value=([], None))
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_search_pack_is_selectable_without_provider_results(
+    mock_cache,
+    mock_search,
+    mock_dialog,
+    mock_resolve_and_play,
+    mock_end,
+    mock_addon,
+):
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("false")
+    record = {
+        "backend": "nzbdav",
+        "job_id": "nzo-1",
+        "job_name": "Spider-Noir.S01",
+        "folder": "/done/Spider-Noir.S01",
+        "title": "Spider-Noir",
+        "imdb": "",
+        "tvdb": "451234",
+        "tmdb_id": "",
+        "season": 1,
+        "episodes": [2],
+        "last_confirmed": 1,
+    }
+    mock_dialog.side_effect = lambda results, **_kwargs: results[0]
+    with patch("resources.lib.season_pack.find_for_episode", return_value=record):
+        _handle_search(
+            6,
+            {
+                "type": "episode",
+                "title": "Spider-Noir",
+                "tvdb": "451234",
+                "season": "1",
+                "episode": "2",
+            },
+        )
+
+    params = mock_resolve_and_play.call_args.kwargs["params"]
+    assert params["_season_pack"]["job_id"] == "nzo-1"
+    assert params["_episode_context"]["episode"] == 2
+    mock_end.assert_called_once_with(6, succeeded=False)
+
+
+@patch("xbmcaddon.Addon")
+@patch("resources.lib.resolver.resolve")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_play_auto_select_prefers_downloaded_pack_row(
+    mock_cache, mock_search, mock_filter, mock_resolve, mock_addon
+):
+    mock_addon.return_value.getSetting.side_effect = lambda key: (
+        "true" if key == "auto_select_best" else "false"
+    )
+    provider = {
+        "title": "Spider-Noir.S01E02.2160p",
+        "link": "http://indexer/episode.nzb",
+    }
+    record = {
+        "backend": "nzbdav",
+        "job_id": "nzo-1",
+        "job_name": "Spider-Noir.S01",
+        "folder": "/done/Spider-Noir.S01",
+        "title": "Spider-Noir",
+        "imdb": "",
+        "tvdb": "451234",
+        "tmdb_id": "",
+        "season": 1,
+        "episodes": [2],
+        "last_confirmed": 1,
+    }
+    mock_search.return_value = ([provider], None)
+    mock_filter.return_value = ([provider], [provider])
+    with patch("resources.lib.season_pack.find_for_episode", return_value=record):
+        _handle_play(
+            7,
+            {
+                "type": "episode",
+                "title": "Spider-Noir",
+                "tvdb": "451234",
+                "season": "1",
+                "episode": "2",
+            },
+        )
+
+    params = mock_resolve.call_args.args[1]
+    assert params["_season_pack"]["job_id"] == "nzo-1"
+    # This provider URL is dormant unless exact pack validation falls through.
+    assert params["nzburl"] == provider["link"]
+
+
+@patch("resources.lib.router._get_script_setting", side_effect=_stub_setting("false"))
+@patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch(
+    "resources.lib.router._search_all_providers",
+    return_value=([], "provider unavailable"),
+)
+def test_runscript_pack_survives_provider_error(
+    mock_search, mock_dialog, mock_resolve_and_play, mock_script_setting
+):
+    from resources.lib.router import _handle_script_play
+
+    record = {
+        "backend": "nzbdav",
+        "job_id": "nzo-1",
+        "job_name": "Spider-Noir.S01",
+        "folder": "/done/Spider-Noir.S01",
+        "title": "Spider-Noir",
+        "imdb": "",
+        "tvdb": "451234",
+        "tmdb_id": "",
+        "season": 1,
+        "episodes": [2],
+        "last_confirmed": 1,
+    }
+    mock_dialog.side_effect = lambda results, **_kwargs: results[0]
+    with patch(
+        "resources.lib.season_pack.find_for_episode", return_value=record
+    ), patch("resources.lib.router._show_error_dialog") as error_dialog:
+        _handle_script_play(
+            {
+                "type": "episode",
+                "title": "Spider-Noir",
+                "tvdb": "451234",
+                "season": "1",
+                "episode": "2",
+            }
+        )
+
+    error_dialog.assert_not_called()
+    params = mock_resolve_and_play.call_args.kwargs["params"]
+    assert params["_season_pack"]["job_id"] == "nzo-1"
+
+
 @patch("xbmcaddon.Addon")
 @patch("xbmcplugin.setResolvedUrl")
 @patch("xbmcgui.ListItem")

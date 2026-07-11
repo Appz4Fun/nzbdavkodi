@@ -122,7 +122,9 @@ def _script_play_picker_and_resolve(
     _script_play_resolve_selected(params, selected, filtered, completed_jobs)
 
 
-def _script_play_search_results(search_type, title, search_kwargs, notify):
+def _script_play_search_results(
+    search_type, title, search_kwargs, notify, allow_local_pack=False
+):
     """Run the RunScript provider search, returning results or ``None`` to stop.
 
     Shows the provider-error dialog (or the no-results notify) and returns
@@ -143,21 +145,25 @@ def _script_play_search_results(search_type, title, search_kwargs, notify):
             "NZB-DAV: Search stage: provider error - {}".format(search_error),
             xbmc.LOGWARNING,
         )
-        _router._show_error_dialog(search_error)
-        return None
+        if not allow_local_pack:
+            _router._show_error_dialog(search_error)
+            return None
+        return []
 
     if not results:
         xbmc.log(
             "NZB-DAV: Search stage: no results found for '{}'".format(title),
             xbmc.LOGINFO,
         )
-        notify(_router._addon_name(), _router._fmt(30087, title), 3000)
-        return None
+        if not allow_local_pack:
+            notify(_router._addon_name(), _router._fmt(30087, title), 3000)
+            return None
+        return []
     return results
 
 
 def _script_play_search_filter_tag(
-    params, search_type, title, year, search_kwargs, notify
+    params, search_type, title, year, search_kwargs, notify, pack_result=None
 ):
     """Search, filter, optionally auto-play, and tag for the RunScript flow.
 
@@ -176,17 +182,25 @@ def _script_play_search_filter_tag(
     # early return / exception below.
     loading = _router._open_loading_dialog(title)
     try:
-        results = _script_play_search_results(search_type, title, search_kwargs, notify)
-        if not results:
+        results = _script_play_search_results(
+            search_type,
+            title,
+            search_kwargs,
+            notify,
+            allow_local_pack=pack_result is not None,
+        )
+        if results is None:
             return None
         return _script_play_filter_autoselect_tag(
-            loading, params, results, title, notify
+            loading, params, results, title, notify, pack_result=pack_result
         )
     finally:
         _router._close_loading_dialog(loading)
 
 
-def _script_play_filter_autoselect_tag(loading, params, results, title, notify):
+def _script_play_filter_autoselect_tag(
+    loading, params, results, title, notify, pack_result=None
+):
     """Filter, optionally auto-play, and tag for the RunScript flow.
 
     Returns ``None`` when the caller should stop (unfiltered-prompt declined or
@@ -211,10 +225,12 @@ def _script_play_filter_autoselect_tag(loading, params, results, title, notify):
         )
     )
 
-    if not filtered:
+    if not filtered and pack_result is None:
         filtered = _script_play_filtered_or_prompt(loading, all_parsed, title, notify)
         if not filtered:
             return None
+
+    filtered = _router._prepend_pack(filtered, pack_result)
 
     if (
         _router._get_script_setting("auto_select_best", "false").lower() == "true"
@@ -225,7 +241,8 @@ def _script_play_filter_autoselect_tag(loading, params, results, title, notify):
         _script_play_auto_select(params, filtered[0], filtered)
         return None
 
-    completed_jobs = _script_play_tag_available(filtered)
+    providers = _router._provider_rows(filtered)
+    completed_jobs = _script_play_tag_available(providers) if providers else None
     return filtered, total_count, completed_jobs
 
 
@@ -280,31 +297,39 @@ def _script_play_auto_select(params, best, filtered):
     import resources.lib.router as _router
     from resources.lib.resolver import resolve_and_play
 
+    target, provider_rows = _router._selection_target(best, filtered)
     resolver_params = dict(params)
     resolver_params["_fallback_candidates"] = []
     resolver_params["_fallback_candidate_loader"] = (
         _router._fallback_candidate_loader_for_selection(
-            best, filtered, settings_getter=_router._get_script_setting
+            target, provider_rows, settings_getter=_router._get_script_setting
         )
     )
     completed_job = None
-    if not _router._nzbget_mode_enabled(_router._get_script_setting):
+    if not best.get("_season_pack") and not _router._nzbget_mode_enabled(
+        _router._get_script_setting
+    ):
         # In NZBGet mode the nzbdav completed-history hint is dead weight
         # (resolve_and_play delegates to NZBGet before reading it) — skip the
         # lookup instead of stalling on a stale nzbdav config.
-        completed_job = _router._script_completed_job_for_selection(best)
+        completed_job = _router._script_completed_job_for_selection(target)
     if completed_job:
         resolver_params["_completed_job"] = completed_job
     else:
         resolver_params["_completed_job_lookup_done"] = True
     resolver_params["_settings_getter"] = _router._get_script_setting
     _router._attach_nzbget_dupe(
-        resolver_params, best, filtered, _router._identity_from_params(params)
+        resolver_params,
+        target,
+        provider_rows,
+        _router._identity_from_params(params),
     )
-    _router._ensure_nzbget_completed_hint(best, _router._get_script_setting)
-    _router._attach_selected_result_metadata(resolver_params, best)
-    _router._script_play_stage("resolve start '{}'".format(best.get("title", "")))
-    resolve_and_play(best["link"], best["title"], params=resolver_params)
+    _router._ensure_nzbget_completed_hint(target, _router._get_script_setting)
+    _router._attach_selected_result_metadata(resolver_params, target)
+    if best.get("_season_pack"):
+        resolver_params["_season_pack"] = best["_season_pack"]
+    _router._script_play_stage("resolve start '{}'".format(target.get("title", "")))
+    resolve_and_play(target["link"], target["title"], params=resolver_params)
     _router._script_play_stage("resolve returned")
 
 
@@ -313,25 +338,35 @@ def _script_play_resolve_selected(params, selected, filtered, completed_jobs):
     import resources.lib.router as _router
     from resources.lib.resolver import resolve_and_play
 
+    target, provider_rows = _router._selection_target(selected, filtered)
     resolver_params = dict(params)
     resolver_params["_fallback_candidates"] = []
     resolver_params["_fallback_candidate_loader"] = (
         _router._fallback_candidate_loader_for_selection(
-            selected, filtered, settings_getter=_router._get_script_setting
+            target, provider_rows, settings_getter=_router._get_script_setting
         )
     )
     resolver_params["_settings_getter"] = _router._get_script_setting
-    completed_job = selected.get("_completed_job")
-    if not completed_job and not _router._completed_lookup_was_done(completed_jobs):
-        completed_job = _router._script_completed_job_for_selection(selected)
+    completed_job = target.get("_completed_job")
+    if (
+        not selected.get("_season_pack")
+        and not completed_job
+        and not _router._completed_lookup_was_done(completed_jobs)
+    ):
+        completed_job = _router._script_completed_job_for_selection(target)
     if completed_job:
         resolver_params["_completed_job"] = completed_job
     elif _router._completed_lookup_was_done(completed_jobs):
         resolver_params["_completed_job_lookup_done"] = True
     _router._attach_nzbget_dupe(
-        resolver_params, selected, filtered, _router._identity_from_params(params)
+        resolver_params,
+        target,
+        provider_rows,
+        _router._identity_from_params(params),
     )
-    _router._attach_selected_result_metadata(resolver_params, selected)
-    _router._script_play_stage("resolve start '{}'".format(selected.get("title", "")))
-    resolve_and_play(selected["link"], selected["title"], params=resolver_params)
+    _router._attach_selected_result_metadata(resolver_params, target)
+    if selected.get("_season_pack"):
+        resolver_params["_season_pack"] = selected["_season_pack"]
+    _router._script_play_stage("resolve start '{}'".format(target.get("title", "")))
+    resolve_and_play(target["link"], target["title"], params=resolver_params)
     _router._script_play_stage("resolve returned")

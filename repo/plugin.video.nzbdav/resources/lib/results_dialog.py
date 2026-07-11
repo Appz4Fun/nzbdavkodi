@@ -63,7 +63,8 @@ def _available_text():
 def _build_result_item(result, row_index):
     """Build a styled ListItem for a single search result row."""
     meta = result.get("_meta", {})
-    li = xbmcgui.ListItem(label=result.get("title", ""))
+    label = result.get("_display_title") or result.get("title", "")
+    li = xbmcgui.ListItem(label=label)
 
     res = meta.get("resolution", "")
     li.setProperty("resolution", _c(res, _RES_COLORS.get(res, "FFEEEEEE")))

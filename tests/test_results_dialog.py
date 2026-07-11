@@ -63,6 +63,21 @@ def test_build_result_item_sets_alternating_row_backgrounds():
     third_item.setProperty.assert_any_call("row_bg", _BG_A)
 
 
+def test_build_result_item_prefers_internal_display_title():
+    item = MagicMock()
+    result = _make_result(
+        title="Spider-Noir.S01.Pack",
+        _display_title="Already downloaded season pack - Episodes 1-8",
+    )
+
+    with patch(
+        "resources.lib.results_dialog.xbmcgui.ListItem", return_value=item
+    ) as cls:
+        _build_result_item(result, 0)
+
+    cls.assert_called_once_with(label="Already downloaded season pack - Episodes 1-8")
+
+
 # ---------------------------------------------------------------------------
 # show_results_dialog
 # ---------------------------------------------------------------------------
