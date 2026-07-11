@@ -13,7 +13,33 @@ top-level import cycle; same-module sibling helpers are called directly. Every
 moved name is re-exported from ``resolver``.
 """
 
+from typing import NamedTuple
+
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
+
+
+class HistoryContext(NamedTuple):
+    """Optional inputs shared by completed-history classification."""
+
+    max_no_video_retries: int
+    monitor: object
+    settings_getter: object
+    modal_failures: bool
+    download_size: object
+    requested_episode: object
+    episode_context: object
+
+
+HistoryContext.__new__.__defaults__ = (None, None, True, None, None, None)
+
+
+def _history_context(max_no_video_retries, context, options):
+    """Normalize one context source without silently discarding options."""
+    if context is not None:
+        if options:
+            raise TypeError("context and options cannot be combined")
+        return context
+    return HistoryContext(max_no_video_retries, **options)
 
 
 def _abort_poll_before_fetch(
@@ -114,7 +140,14 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
 
 
 def _find_completed_video_stream_with_rechecks(
-    webdav_folder, monitor=None, settings_getter=None, title_hint=None, min_video_size=0
+    webdav_folder,
+    monitor=None,
+    settings_getter=None,
+    title_hint=None,
+    min_video_size=0,
+    requested_episode=None,
+    episode_context=None,
+    on_inventory=None,
 ):
     """Return a completed WebDAV stream, briefly rechecking symlink visibility.
 
@@ -127,11 +160,19 @@ def _find_completed_video_stream_with_rechecks(
     the real file (#282 follow-up D). ``0`` (default) disables the floor.
     """
     _resolver._resolve_stage("find_video_stream_start")
+    discovery_kwargs = {
+        "settings_getter": settings_getter,
+        "title_hint": title_hint,
+        "min_video_size": min_video_size,
+    }
+    if episode_context is not None:
+        discovery_kwargs["episode_context"] = episode_context
+    elif requested_episode is not None:
+        discovery_kwargs["requested_episode"] = requested_episode
+    if on_inventory is not None:
+        discovery_kwargs["on_inventory"] = on_inventory
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(
-        webdav_folder,
-        settings_getter=settings_getter,
-        title_hint=title_hint,
-        min_video_size=min_video_size,
+        webdav_folder, **discovery_kwargs
     )
     _resolver._resolve_stage("find_video_stream_done path={}".format(bool(video_path)))
     if video_path or monitor is None:
@@ -144,12 +185,7 @@ def _find_completed_video_stream_with_rechecks(
             "find_video_stream_retry delay={}".format(delay_seconds)
         )
         video_path, stream_url, stream_headers = (
-            _resolver._find_video_stream_for_folder(
-                webdav_folder,
-                settings_getter=settings_getter,
-                title_hint=title_hint,
-                min_video_size=min_video_size,
-            )
+            _resolver._find_video_stream_for_folder(webdav_folder, **discovery_kwargs)
         )
         _resolver._resolve_stage(
             "find_video_stream_retry_done path={}".format(bool(video_path))
@@ -370,14 +406,7 @@ def _report_no_video_exhaustion(
 
 
 def _handle_history_result(
-    history,
-    title,
-    no_video_retries,
-    max_no_video_retries,
-    monitor=None,
-    settings_getter=None,
-    modal_failures=True,
-    download_size=None,
+    history, title, no_video_retries, max_no_video_retries, context=None, **options
 ):
     """Handle history-based completion and failure states.
 
@@ -389,12 +418,13 @@ def _handle_history_result(
     field falls through to the "not Completed" branch which returns
     cleanly. TODO.md §H.2-M41.
     """
+    context = _history_context(max_no_video_retries, context, options)
     if not history:
         return False, None, None, no_video_retries
 
     status = history.get("status")
     if status == "Failed":
-        _report_history_failed(history, title, modal_failures)
+        _report_history_failed(history, title, context.modal_failures)
         return True, None, None, no_video_retries
 
     if status != "Completed":
@@ -404,22 +434,27 @@ def _handle_history_result(
         history,
         title,
         no_video_retries,
-        max_no_video_retries,
-        monitor=monitor,
-        settings_getter=settings_getter,
-        download_size=download_size,
+        context,
     )
 
 
-def _handle_completed_history(
-    history,
-    title,
-    no_video_retries,
-    max_no_video_retries,
-    monitor=None,
-    settings_getter=None,
-    download_size=None,
-):
+def _record_completed_inventory(history, title, storage, context, inventories):
+    """Persist the latest complete inventory for an available exact job."""
+    if not inventories:
+        return
+    from resources.lib.season_pack_recording import record_completed_inventory
+
+    record_completed_inventory(
+        "nzbdav",
+        history.get("nzo_id"),
+        history.get("name") or title,
+        storage,
+        context.episode_context,
+        inventories[-1],
+    )
+
+
+def _handle_completed_history(history, title, no_video_retries, context):
     """Handle a Completed history row: discover, stub/body-probe, or retry.
 
     Returns the same ``(should_stop, stream_url, stream_headers,
@@ -429,12 +464,22 @@ def _handle_completed_history(
     if not storage:
         return False, None, None, no_video_retries
     webdav_folder = _resolver._storage_to_webdav_path(storage)
+    inventories = [] if context.episode_context is not None else None
+    on_inventory = inventories.append if inventories is not None else None
     outcome, stream_url, stream_headers = _classify_completed_video(
-        webdav_folder, title, monitor, settings_getter, download_size
+        webdav_folder,
+        title,
+        context.monitor,
+        context.settings_getter,
+        context.download_size,
+        requested_episode=context.requested_episode,
+        episode_context=context.episode_context,
+        on_inventory=on_inventory,
     )
     if outcome == "stub":
         return False, None, None, no_video_retries
     if outcome == "available":
+        _record_completed_inventory(history, title, storage, context, inventories)
         return True, stream_url, stream_headers, no_video_retries
 
     # A truthy "unavailable" outcome means the happy-path return above was
@@ -447,13 +492,20 @@ def _handle_completed_history(
         storage,
         webdav_folder,
         no_video_retries,
-        max_no_video_retries,
+        context.max_no_video_retries,
         body_unavailable,
     )
 
 
 def _discover_completed_video(
-    webdav_folder, title, monitor, settings_getter, download_size
+    webdav_folder,
+    title,
+    monitor,
+    settings_getter,
+    download_size,
+    requested_episode=None,
+    episode_context=None,
+    on_inventory=None,
 ):
     """Run WebDAV discovery for a completed folder, returning the stream tuple."""
     # Thread the advertised-size floor into discovery so a root-level job-start
@@ -462,17 +514,30 @@ def _discover_completed_video(
     # unknown size. The accept-time guard shares the same floor via
     # _stub_min_size_floor (folder-total comparison).
     min_video_size = _stub_min_size_floor(download_size)
-    return _resolver._find_completed_video_stream_with_rechecks(
-        webdav_folder,
-        monitor=monitor,
-        settings_getter=settings_getter,
-        title_hint=title,
-        min_video_size=min_video_size,
-    )
+    kwargs = {
+        "monitor": monitor,
+        "settings_getter": settings_getter,
+        "title_hint": title,
+        "min_video_size": min_video_size,
+    }
+    if episode_context is not None:
+        kwargs["episode_context"] = episode_context
+    elif requested_episode is not None:
+        kwargs["requested_episode"] = requested_episode
+    if on_inventory is not None:
+        kwargs["on_inventory"] = on_inventory
+    return _resolver._find_completed_video_stream_with_rechecks(webdav_folder, **kwargs)
 
 
 def _classify_completed_video(
-    webdav_folder, title, monitor, settings_getter, download_size
+    webdav_folder,
+    title,
+    monitor,
+    settings_getter,
+    download_size,
+    requested_episode=None,
+    episode_context=None,
+    on_inventory=None,
 ):
     """Discover the completed video and classify it for the poll loop.
 
@@ -482,7 +547,14 @@ def _classify_completed_video(
     ``"missing"`` (no video discovered yet).
     """
     video_path, stream_url, stream_headers = _discover_completed_video(
-        webdav_folder, title, monitor, settings_getter, download_size
+        webdav_folder,
+        title,
+        monitor,
+        settings_getter,
+        download_size,
+        requested_episode=requested_episode,
+        episode_context=episode_context,
+        on_inventory=on_inventory,
     )
     if not video_path:
         return "missing", None, None

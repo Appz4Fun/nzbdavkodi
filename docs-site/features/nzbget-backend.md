@@ -57,7 +57,9 @@ flowchart LR
   downloads where repair didn't complete) is treated as failure, so you're never
   handed a corrupt file.
 - **File discovery** maps NZBGet's completed directory onto your SMB share,
-  accounting for the category subfolder, then scans for a playable video.
+  accounting for the category subfolder, then scans for a playable video. For
+  episode requests, reliably named files are matched to the exact requested
+  season and episode instead of choosing the largest video in the folder.
 
 ## Smart Duplicates failover
 
@@ -113,6 +115,20 @@ If you play a title that NZBGet already downloaded successfully, NZB-DAV reuses
 the completed file directly instead of resubmitting it. This is deliberate:
 NZBGet's duplicate check would otherwise delete a resubmission of a `SUCCESS`
 item and fail the playback.
+
+Completed folders containing at least two reliably named episodes from one
+season are also remembered as season packs. Later episode pickers place an
+**Already downloaded season pack — Episodes …** row above online releases when
+that exact episode is present. The record is isolated by the `nzbget` backend,
+the exact NZBGet `NZBID`, and that job's `DestDir`; files from another job are
+never merged just because its name looks the same. Selecting the row validates
+that exact successful history item and SMB folder again, then plays the exact
+requested episode without a new submission.
+
+A confirmed missing job, changed folder, or reachable folder without the
+requested episode removes the stale record. Temporary NZBGet, SMB,
+authentication, or network errors fail that reuse attempt without erasing the
+record. Ordinary online results remain available in either case.
 
 ## Resume and playback
 

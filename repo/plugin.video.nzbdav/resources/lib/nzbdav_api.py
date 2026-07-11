@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import xbmc
 import xbmcaddon
 
+from resources.lib.exact_job import ExactJobLookup
 from resources.lib.http_util import http_get as _http_get
 from resources.lib.http_util import redact_text as _redact_text
 from resources.lib.nzbdav_api_parsing import (
@@ -411,7 +412,7 @@ def clear_queue(settings_getter=None, slots=None, timeout=None):
 def get_job_history(nzo_id, settings_getter=None):
     """Check if a job has landed in nzbdav's history.
 
-    Returns dict with keys ``status``, ``storage``, ``name``,
+    Returns dict with keys ``status``, ``storage``, ``name``, ``nzo_id``,
     ``fail_message`` when the nzo_id is found, or ``None`` when it
     hasn't appeared yet (or on any network / settings / parse error —
     the resolver's poll loop treats None as "keep polling", so
@@ -450,9 +451,98 @@ def get_job_history(nzo_id, settings_getter=None):
                 "status": slot.get("status", ""),
                 "storage": slot.get("storage", ""),
                 "name": slot.get("name", ""),
+                "nzo_id": slot.get("nzo_id", ""),
                 "fail_message": slot.get("fail_message", ""),
             }
     return None
+
+
+def _fetch_exact_history(nzo_id, settings_getter):
+    """Fetch and decode the exact-history response, or return ``None``."""
+    try:
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
+        params = {
+            "mode": "history",
+            "nzo_ids": nzo_id,
+            "apikey": api_key,
+            "output": "json",
+        }
+        url = "{}/api?{}".format(base_url, urlencode(params))
+        decoded = json.loads(_http_get(url, timeout=_API_READ_TIMEOUT))
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: exact history lookup failed for nzo_id={}: {}".format(
+                nzo_id, _redact_text(str(error))
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return None
+    return decoded
+
+
+def _exact_history_slots(decoded):
+    """Return a validated nzbdav history-slot list, or ``None``."""
+    if not isinstance(decoded, dict):
+        return None
+    history = decoded.get("history")
+    if not isinstance(history, dict):
+        return None
+    slots = history.get("slots")
+    return slots if isinstance(slots, list) else None
+
+
+def _exact_slot_identifier(slot):
+    """Return a non-empty slot identifier, or ``None`` when malformed."""
+    if not isinstance(slot, dict):
+        return None
+    identifier = slot.get("nzo_id")
+    return identifier if identifier not in (None, "") else None
+
+
+def _matched_exact_slot_result(slot):
+    """Classify one nzbdav history slot already matched by identifier."""
+    status = slot.get("status")
+    if not isinstance(status, str) or not status:
+        return ExactJobLookup.transient()
+    if status != "Completed":
+        return ExactJobLookup.stale()
+    storage = slot.get("storage")
+    if not isinstance(storage, str) or not storage:
+        return ExactJobLookup.transient()
+    return ExactJobLookup.valid(_completed_job_from_slot(slot))
+
+
+def _exact_history_result(slots, nzo_id):
+    """Classify validated history slots for one exact nzbdav identifier."""
+    target = str(nzo_id)
+    malformed = False
+    for slot in slots:
+        identifier = _exact_slot_identifier(slot)
+        if identifier is None:
+            malformed = True
+            continue
+        if str(identifier) == target:
+            return _matched_exact_slot_result(slot)
+    return ExactJobLookup.transient() if malformed else ExactJobLookup.stale()
+
+
+def lookup_completed_job_exact(nzo_id, settings_getter=None):
+    """Tri-state lookup of one exact nzbdav completed-history identifier.
+
+    Unlike :func:`get_job_history`, this keeps a successful empty lookup apart
+    from a network, auth, JSON, or response-shape failure. That distinction is
+    required before deleting a persistent season-pack record.
+    """
+    decoded = _fetch_exact_history(nzo_id, settings_getter)
+    slots = _exact_history_slots(decoded)
+    if slots is None:
+        return ExactJobLookup.transient()
+    return _exact_history_result(slots, nzo_id)
+
+
+def completed_by_id(nzo_id, settings_getter=None):
+    """Return the shared exact-job lookup contract for one nzbdav ID."""
+    return lookup_completed_job_exact(nzo_id, settings_getter=settings_getter)
 
 
 def find_completed_by_name(name, settings_getter=None):

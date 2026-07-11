@@ -14,6 +14,7 @@ import json
 import xbmc
 import xbmcaddon
 
+from resources.lib.exact_job import ExactJobLookup
 from resources.lib.http_util import http_get as _http_get
 from resources.lib.http_util import http_post_json as _http_post_json
 from resources.lib.http_util import redact_text as _redact_text
@@ -248,7 +249,8 @@ def history_status(nzbid, settings_getter=None):
     """Look up a terminal job by NZBID via history.
 
     Returns {"present": bool, "success": bool, "status": str,
-    "dest_dir": str}. "success" is True ONLY for SUCCESS/* statuses, per the
+    "dest_dir": str, "nzbid": object, "job_name": str}. "success" is True
+    ONLY for SUCCESS/* statuses, per the
     spec's completion guarantee (full post-processing = a repaired, unpacked,
     playable file). WARNING/* (incl. WARNING/REPAIRABLE / WARNING/DAMAGED,
     where par2 repair did not run) is deliberately treated as a failure
@@ -268,8 +270,81 @@ def history_status(nzbid, settings_getter=None):
                 "success": status.startswith("SUCCESS"),
                 "status": status,
                 "dest_dir": _dest_dir(item),
+                "nzbid": item.get("NZBID"),
+                "job_name": str(item.get("Name") or ""),
             }
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
+
+
+def _fetch_nzbget_history(settings_getter):
+    """Fetch NZBGet history for exact lookup, preserving transient failures."""
+    try:
+        history, error = _rpc_call("history", [False], settings_getter=settings_getter)
+    except Exception as exc:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: NZBGet exact history lookup failed: {}".format(
+                _redact_text(str(exc))
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return None
+    if error is not None or not isinstance(history, list):
+        return None
+    return history
+
+
+def _exact_nzbget_identifier(item):
+    """Return a non-empty NZBID, or ``None`` when the history row is malformed."""
+    if not isinstance(item, dict):
+        return None
+    identifier = item.get("NZBID")
+    return identifier if identifier not in (None, "") else None
+
+
+def _matched_nzbget_history_result(item):
+    """Classify one NZBGet history row already matched by identifier."""
+    status = item.get("Status")
+    if not isinstance(status, str) or not status:
+        return ExactJobLookup.transient()
+    if status != "SUCCESS" and not status.startswith("SUCCESS/"):
+        return ExactJobLookup.stale()
+    dest_dir = _dest_dir(item)
+    if not isinstance(dest_dir, str) or not dest_dir:
+        return ExactJobLookup.transient()
+    return ExactJobLookup.valid(
+        {
+            "nzbid": item.get("NZBID"),
+            "name": str(item.get("Name") or ""),
+            "status": status,
+            "dest_dir": dest_dir,
+        }
+    )
+
+
+def _exact_nzbget_history_result(history, nzbid):
+    """Classify validated NZBGet history for one exact identifier."""
+    malformed = False
+    for item in history:
+        identifier = _exact_nzbget_identifier(item)
+        if identifier is None:
+            malformed = True
+            continue
+        if _same_nzbid(identifier, nzbid):
+            return _matched_nzbget_history_result(item)
+    return ExactJobLookup.transient() if malformed else ExactJobLookup.stale()
+
+
+def lookup_completed_job_exact(nzbid, settings_getter=None):
+    """Tri-state lookup of one exact NZBGet SUCCESS history identifier."""
+    history = _fetch_nzbget_history(settings_getter)
+    if history is None:
+        return ExactJobLookup.transient()
+    return _exact_nzbget_history_result(history, nzbid)
+
+
+def completed_by_id(nzbid, settings_getter=None):
+    """Return the shared exact-job lookup contract for one NZBGet ID."""
+    return lookup_completed_job_exact(nzbid, settings_getter=settings_getter)
 
 
 class _CompletedHistory(dict):
@@ -602,7 +677,7 @@ def history_success_by_dupekey(dupe_key, exclude_nzbids=None, settings_getter=No
     out STALE successes that predate the resolve (#372 round 4): their files
     may be long gone -- the reuse probe already declined them -- and playing
     one would fail "No video file found" instead of waiting for the fleet's
-    own member. Returns ``{"present","nzbid","dest_dir"}`` or
+    own member. Returns ``{"present","nzbid","job_name","dest_dir"}`` or
     ``{"present": False}``.
     """
     if not dupe_key:
@@ -658,6 +733,7 @@ def _success_history_entry(item, dupe_key):
     return {
         "present": True,
         "nzbid": item.get("NZBID"),
+        "job_name": str(item.get("Name") or ""),
         "dest_dir": _dest_dir(item),
     }
 

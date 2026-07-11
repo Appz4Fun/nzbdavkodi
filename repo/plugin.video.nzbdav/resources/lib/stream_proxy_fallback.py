@@ -74,7 +74,7 @@ def _normalize_fallback_source(source):
     if not isinstance(stream_headers, dict):
         stream_headers = {}
     content_length = _sp._normalize_content_length_hint(source.get("content_length"))
-    return {
+    entry = {
         "title": source.get("title", ""),
         "nzb_url": source.get("nzb_url", ""),
         "job_name": source.get("job_name", ""),
@@ -85,6 +85,9 @@ def _normalize_fallback_source(source):
         "validated": bool(source.get("validated", False)),
         "failed": bool(source.get("failed", False)),
     }
+    if isinstance(source.get("episode_context"), dict):
+        entry["episode_context"] = dict(source["episode_context"])
+    return entry
 
 
 def _normalize_fallback_sources(fallback_sources):

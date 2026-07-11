@@ -63,13 +63,18 @@ from resources.lib.nzbget_resolver_smb import (  # noqa: E402,F401
     _is_video_name,
     _largest_video_in_dir,
     _largest_video_in_tree,
+    _report_smb_inventory,
     _smb_exact_mapping,
     _smb_fallback_mapping,
     _smb_file_size,
+    _smb_inventory,
+    _smb_video_candidates_in_tree,
+    _smb_video_scan_in_tree,
     nzbget_smb_target,
     pick_largest_video,
     resolve_smb_video,
 )
+from resources.lib.season_pack import requested_episode as _requested_episode
 
 # Same extensions the WebDAV path uses (webdav.py VIDEO_EXTENSIONS).
 _POLL_INTERVAL = 2.0
@@ -109,9 +114,10 @@ def poll_nzbget_job(
     """Wait for an NZBGet job (or its duplicate group) to reach a terminal state.
 
     Returns a dict with "outcome" in {"success","failed","canceled",
-    "timeout","aborted"} and, on success, "dest_dir". Drives the progress
-    dialog: download % from listgroups, then a post-processing message once the
-    job leaves the active queue.
+    "timeout","aborted"} and, on success, the exact terminal ``nzbid`` plus
+    ``job_name`` and ``dest_dir``. Drives the progress dialog: download % from
+    listgroups, then a post-processing message once the job leaves the active
+    queue.
 
     When ``dupe_key`` is set (#372 round 2) the poll follows NZBGet's automatic
     failover: if the tracked member fails, a promoted backup (a new active NZBID
@@ -232,7 +238,12 @@ def _tick_tracked_member_terminal(state, hist, current, dupe_key, fleet):
     group-follow. Same return contract as ``_tick_tracked_member``.
     """
     if hist["success"]:
-        return {"outcome": "success", "dest_dir": hist["dest_dir"]}
+        return {
+            "outcome": "success",
+            "dest_dir": hist["dest_dir"],
+            "nzbid": hist.get("nzbid", current),
+            "job_name": hist.get("job_name", ""),
+        }
     if not dupe_key:
         # Plain submit: a DELETED/COPY veto (content already in history, never
         # queued) is recoverable by a one-shot FORCE re-submit (#372 r6);
@@ -274,7 +285,12 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet):
         settings_getter=settings_getter,
     )
     if succeeded["present"]:
-        return {"outcome": "success", "dest_dir": succeeded["dest_dir"]}
+        return {
+            "outcome": "success",
+            "dest_dir": succeeded["dest_dir"],
+            "nzbid": succeeded.get("nzbid"),
+            "job_name": succeeded.get("job_name", ""),
+        }
     promoted = nzbget_api.active_group_by_dupekey(
         dupe_key, exclude_nzbid=state["exclude"], settings_getter=settings_getter
     )
@@ -430,9 +446,7 @@ def _resolve_failure(handle, message=None):
     xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
-def _reuse_completed_job(
-    completed_job, smb_root, category, completed_base, dialog, interval
-):
+def _reuse_completed_job(completed_job, ctx, requested_episode=None, on_inventory=None):
     """Probe an already-completed history match's SMB folder.
 
     Returns the playable video URL when the corroborated ``completed_job``
@@ -442,15 +456,29 @@ def _reuse_completed_job(
     if not (isinstance(completed_job, dict) and completed_job.get("dest_dir")):
         return None
     reuse_folder = nzbget_smb_target(
-        smb_root, completed_job["dest_dir"], category, completed_base
+        ctx.smb_root, completed_job["dest_dir"], ctx.category, ctx.completed_base
     )
     if not reuse_folder:
         return None
+    if requested_episode is None:
+        requested_episode = _requested_episode(ctx.episode_context)
+    if on_inventory is None and ctx.episode_context is not None:
+        from resources.lib.season_pack_recording import inventory_recorder
+
+        on_inventory = inventory_recorder(
+            "nzbget",
+            completed_job.get("nzbid"),
+            completed_job.get("name", ""),
+            completed_job.get("dest_dir"),
+            ctx.episode_context,
+        )
     return resolve_smb_video(
         reuse_folder,
-        dialog=dialog,
-        interval=interval,
+        dialog=ctx.dialog,
+        interval=ctx.interval,
         budget=_SMB_REUSE_PROBE_BUDGET,
+        requested_episode=requested_episode,
+        on_inventory=on_inventory,
     )
 
 
@@ -496,7 +524,7 @@ def _handle_poll_failure(
 
 
 def _resolve_completed_smb(
-    dest_dir, smb_root, category, completed_base, dialog, interval
+    dest_dir, ctx, requested_episode=None, on_inventory=None, catalog_job=None
 ):
     """Map a completed job's DestDir onto SMB and find the playable video.
 
@@ -504,10 +532,30 @@ def _resolve_completed_smb(
     no video appears within the resolve budget (both the same caller-facing
     failure, error string 30223).
     """
-    smb_folder = nzbget_smb_target(smb_root, dest_dir, category, completed_base)
+    smb_folder = nzbget_smb_target(
+        ctx.smb_root, dest_dir, ctx.category, ctx.completed_base
+    )
     if not smb_folder:
         return None
-    return resolve_smb_video(smb_folder, dialog=dialog, interval=interval)
+    if requested_episode is None:
+        requested_episode = _requested_episode(ctx.episode_context)
+    if on_inventory is None and ctx.episode_context is not None and catalog_job:
+        from resources.lib.season_pack_recording import inventory_recorder
+
+        on_inventory = inventory_recorder(
+            "nzbget",
+            catalog_job.get("job_id"),
+            catalog_job.get("job_name", ""),
+            catalog_job.get("folder"),
+            ctx.episode_context,
+        )
+    return resolve_smb_video(
+        smb_folder,
+        dialog=ctx.dialog,
+        interval=ctx.interval,
+        requested_episode=requested_episode,
+        on_inventory=on_inventory,
+    )
 
 
 class _SubmitCtx:  # pylint: disable=too-few-public-methods
@@ -533,6 +581,8 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         # NZBGet Smart-Duplicates submission (#372): the picker-computed
         # {"key","pick_score","backups"} dict, threaded from the resolve params.
         self.dupe = None
+        self.episode_context = None
+        self.season_pack_record = None
         # Set on user-cancel so the background backup worker stops submitting
         # more duplicates (#372 round 2).
         self.cancel_event = threading.Event()
@@ -549,19 +599,44 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
     (exact name + size/pubdate gates), so play the already-completed files
     instead of re-submitting — NZBGet's duplicate check (DupeCheck=yes by
     default) dupe-deletes a re-submission of a SUCCESS item, which would fail
-    the resolve. A probe miss (files cleaned up / share moved) falls through to
-    the normal submit flow. Returns ``leave_job`` for the caller's finally.
+    the resolve. A pack-row miss fails that explicit selection without
+    submitting its neighboring online rows. Returns ``leave_job`` for the
+    caller's finally.
     """
+    if ctx.season_pack_record is not None:
+        from resources.lib.season_pack_reuse import reuse_exact_job
+
+        pack_reuse = reuse_exact_job(
+            ctx.season_pack_record,
+            ctx.episode_context,
+            "nzbget",
+            settings_getter=ctx.settings_getter,
+        )
+        if pack_reuse.state == "valid":
+            ctx.on_success(pack_reuse.stream_url)
+            return False
+        if pack_reuse.state == "stale":
+            try:
+                _notify(_addon_name(), _string(30365), 4000)
+            except Exception:  # pylint: disable=broad-except
+                # Kodi rejecting the toast must not interrupt failure handling.
+                pass
+        # A pack row is one explicit selection, never shorthand for an online
+        # provider. Stale and transient validation both fail closed; the user
+        # can choose an ordinary result separately.
+        failure_message = None if pack_reuse.state == "stale" else _string(30223)
+        ctx.on_failure(failure_message)
+        return False
+
     reuse_url = _reuse_completed_job(
         completed_job,
-        ctx.smb_root,
-        ctx.category,
-        ctx.completed_base,
-        ctx.dialog,
-        ctx.interval,
+        ctx,
     )
     if reuse_url:
         ctx.on_success(reuse_url)
+        return False
+    if not nzb_url:
+        ctx.on_failure(_string(30223))
         return False
     return _submit_poll_resolve(ctx, nzb_url, title, meta[0], meta[1])
 
@@ -682,7 +757,13 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     if handled:
         return leave_job
     _play_completed_download(
-        ctx, result["dest_dir"], title, download_pubdate, download_size
+        ctx,
+        result["dest_dir"],
+        title,
+        download_pubdate,
+        download_size,
+        job_id=result.get("nzbid"),
+        job_name=result.get("job_name") or title,
     )
     return leave_job
 
@@ -705,7 +786,15 @@ def _submit_pick(ctx, nzb_url, title, dupe_key):
     )
 
 
-def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_size):
+def _play_completed_download(
+    ctx,
+    dest_dir,
+    title,
+    download_pubdate,
+    download_size,
+    job_id=None,
+    job_name="",
+):
     """Ledger-record the completed download, then resolve+play it over SMB.
 
     Recording happens BEFORE the SMB mapping, which can still fail without
@@ -719,11 +808,12 @@ def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_si
     _record_fleet_pubdates(getattr(ctx, "dupe", None), title)
     video_url = _resolve_completed_smb(
         dest_dir,
-        ctx.smb_root,
-        ctx.category,
-        ctx.completed_base,
-        ctx.dialog,
-        ctx.interval,
+        ctx,
+        catalog_job={
+            "job_id": job_id,
+            "job_name": job_name or title,
+            "folder": dest_dir,
+        },
     )
     if not video_url:
         ctx.on_failure(_string(30223))
@@ -749,7 +839,7 @@ def _record_fleet_pubdates(dupe, title):
             record_download(title, pubdate)
 
 
-def _run_nzbget_backend(
+def _run_nzbget_backend(  # pylint: disable=too-many-arguments
     nzb_url,
     title,
     settings_getter,
@@ -758,6 +848,9 @@ def _run_nzbget_backend(
     download_identity=(None, None),
     completed_job=None,
     dupe=None,
+    *,
+    season_pack_record=None,
+    episode_context=None,
 ):
     """Shared NZBGet flow: reuse completed files, else submit -> poll -> SMB.
 
@@ -766,16 +859,17 @@ def _run_nzbget_backend(
     for the silent cancel exit); this core guarantees a single terminal callback
     and owns the progress dialog. ``download_identity`` is the
     ``(download_pubdate, download_size)`` pair recording the selected result's
-    identity in the ledger for the picker's "DL" tag; ``completed_job`` is the
-    corroborated history match played directly (nothing submitted) when its
-    ``dest_dir`` still holds a playable video over SMB. ``dupe`` is the
+    identity in the ledger for the picker's "DL" tag; ``episode_context``
+    supplies the exact season/episode requested by the router. ``completed_job``
+    is the corroborated history match played directly (nothing submitted) when
+    its ``dest_dir`` still holds a playable video over SMB. ``dupe`` is the
     picker-computed NZBGet Smart-Duplicates submission (#372).
     """
     dialog = None
     leave_job = False
     try:
         url, smb_root, timeout = _read_settings(settings_getter)
-        if not all((url, smb_root, nzb_url)):
+        if not all((url, smb_root)):
             on_failure(_string(30221))
             return
 
@@ -789,6 +883,12 @@ def _run_nzbget_backend(
             on_success,
             on_failure,
             dupe=dupe,
+        )
+        ctx.episode_context = (
+            dict(episode_context) if isinstance(episode_context, dict) else None
+        )
+        ctx.season_pack_record = (
+            dict(season_pack_record) if isinstance(season_pack_record, dict) else None
         )
         leave_job = _reuse_or_submit(
             ctx, nzb_url, title, completed_job, download_identity
@@ -881,6 +981,8 @@ def resolve_and_play_nzbget(
         ),
         completed_job=params.get("_nzbget_completed_job"),
         dupe=params.get("_nzbget_dupe"),
+        season_pack_record=params.get("_season_pack"),
+        episode_context=params.get("_episode_context"),
     )
 
 
@@ -928,4 +1030,6 @@ def play_nzbget(
         ),
         completed_job=resolve_params.get("_nzbget_completed_job"),
         dupe=resolve_params.get("_nzbget_dupe"),
+        season_pack_record=resolve_params.get("_season_pack"),
+        episode_context=resolve_params.get("_episode_context"),
     )

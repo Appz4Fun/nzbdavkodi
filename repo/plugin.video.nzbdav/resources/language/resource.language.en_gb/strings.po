@@ -1417,3 +1417,11 @@ msgstr "How to rank the filtered results and whether to auto-select the top matc
 msgctxt "#30363"
 msgid "Tuning for polling, caching, stream resilience, fallback streams, and the proxy. Change only for a specific reason."
 msgstr "Tuning for polling, caching, stream resilience, fallback streams, and the proxy. Change only for a specific reason."
+
+msgctxt "#30364"
+msgid "Already downloaded season pack - Episodes {}"
+msgstr "Already downloaded season pack - Episodes {}"
+
+msgctxt "#30365"
+msgid "The downloaded season pack is no longer available. Choose another result."
+msgstr "The downloaded season pack is no longer available. Choose another result."

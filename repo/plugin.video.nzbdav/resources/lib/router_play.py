@@ -150,6 +150,112 @@ def _play_identity(params, title, season, episode):
     }
 
 
+def _episode_coordinates(source_params, season, episode):
+    """Resolve canonical season/episode values from route aliases."""
+    if season is None:
+        season = source_params.get("season", "") or source_params.get("ep_season", "")
+    if episode is None:
+        episode = source_params.get("episode", "") or source_params.get(
+            "ep_episode", ""
+        )
+    return season, episode
+
+
+def _is_exact_episode_context(context):
+    """Return whether ``context`` identifies one exact episode."""
+    return (
+        context.get("type") == "episode"
+        and context.get("season") is not None
+        and context.get("episode") is not None
+    )
+
+
+def _attach_episode_context(
+    resolver_params, source_params, title=None, season=None, episode=None
+):
+    """Attach canonical episode identity to internal resolver parameters.
+
+    The public plugin URL remains unchanged.  Movies and episode requests whose
+    season/episode could not be resolved deliberately carry no exact-selection
+    context, preserving the legacy largest/title-hint behavior.
+    """
+    from resources.lib.season_pack import context_from_params
+
+    source_params = source_params if isinstance(source_params, dict) else {}
+    resolver_params.pop("_episode_context", None)
+    season, episode = _episode_coordinates(source_params, season, episode)
+    context = context_from_params(
+        source_params, title=title, season=season, episode=episode
+    )
+    if _is_exact_episode_context(context):
+        resolver_params["_episode_context"] = context
+
+
+def _season_pack_result(context, settings_getter=None):
+    """Return the active backend's matching local-pack picker row, if any."""
+    import resources.lib.router as _router
+    from resources.lib import season_pack
+
+    if not isinstance(context, dict) or context.get("type") != "episode":
+        return None
+    backend = (
+        "nzbget"
+        if _router._nzbget_mode_enabled(settings_getter=settings_getter)
+        else "nzbdav"
+    )
+    record = season_pack.find_for_episode(context, backend)
+    if record is None:
+        return None
+    summary = season_pack.episode_summary(record.get("episodes", []))
+    label = _router._fmt(30364, summary)
+    return season_pack.picker_result(record, label)
+
+
+def _prepend_pack(filtered, pack_result):
+    """Place one synthetic pack row before all ordinary provider rows."""
+    rows = [
+        row
+        for row in list(filtered or [])
+        if not isinstance(row, dict) or not row.get("_season_pack")
+    ]
+    if pack_result is None:
+        return rows
+    return [pack_result] + rows
+
+
+def _provider_rows(results):
+    """Return ordinary, selectable provider rows from a mixed picker list."""
+    return [
+        row
+        for row in results or []
+        if isinstance(row, dict) and not row.get("_season_pack") and row.get("link")
+    ]
+
+
+def _selection_target(selected, results):
+    """Keep pack selections isolated; return ordinary provider pools otherwise.
+
+    A synthetic pack is one exact completed job, never shorthand for the first
+    online result. Its empty URL reaches exact validation unchanged; stale or
+    transient validation fails that selection without provider submission.
+    """
+    providers = _provider_rows(results)
+    if isinstance(selected, dict) and selected.get("_season_pack"):
+        return selected, []
+    return selected, providers
+
+
+def _selection_fallback_loader(selected, results, settings_getter=None):
+    """Build an ordinary result loader; exact pack selections have none."""
+    if isinstance(selected, dict) and selected.get("_season_pack"):
+        return None
+    import resources.lib.router as _router
+
+    return _router._fallback_candidate_loader_for_selection(
+        selected, results, settings_getter=settings_getter
+    )
+
+
 def _extract_search_params(params):
     """Pull the common (search_type, title, year, imdb, tvdb, tmdb_id, season,
     episode) tuple from cleaned route params.
@@ -211,7 +317,36 @@ def _lookup_search_episode_args(params, search_type, title, season, episode, imd
     return title, season, episode
 
 
-def _handle_play_filter_and_select(handle, results, title, year, notify, identity=None):
+def _available_filtered_rows(filtered, all_parsed, title, notify, pack_result):
+    """Return selectable provider rows, an empty local-pack pool, or ``None``."""
+    if filtered:
+        return filtered
+    if all_parsed or pack_result is None:
+        filtered = _filtered_or_prompt(all_parsed, title, notify)
+    if filtered:
+        return filtered
+    return [] if pack_result is not None else None
+
+
+def _prepare_picker_rows(results, title, notify, pack_result):
+    """Filter provider rows and prepend one exact local-pack row."""
+    from resources.lib.filter import filter_results
+
+    filtered, all_parsed = filter_results(results)
+    filtered = _available_filtered_rows(
+        filtered, all_parsed, title, notify, pack_result
+    )
+    if filtered is None:
+        return None
+    provider_row_count = len(filtered)
+    picker_rows = _prepend_pack(filtered, pack_result)
+    total_count = len(results) + len(picker_rows) - provider_row_count
+    return picker_rows, total_count
+
+
+def _handle_play_filter_and_select(
+    handle, results, title, year, notify, identity=None, pack_result=None
+):
     """Filter, optionally auto-select, tag, and run the picker for ``_handle_play``.
 
     Resolves the Kodi handle itself (False on abort / no selection, or via the
@@ -227,16 +362,11 @@ def _handle_play_filter_and_select(handle, results, title, year, notify, identit
         xbmc.LOGDEBUG,
     )
 
-    from resources.lib.filter import filter_results
-
-    total_count = len(results)
-    filtered, all_parsed = filter_results(results)
-
-    if not filtered:
-        filtered = _filtered_or_prompt(all_parsed, title, notify)
-        if not filtered:
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            return
+    prepared = _prepare_picker_rows(results, title, notify, pack_result)
+    if prepared is None:
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+    filtered, total_count = prepared
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
@@ -245,7 +375,8 @@ def _handle_play_filter_and_select(handle, results, title, year, notify, identit
         return
 
     # Tag results already downloaded in the active backend (nzbdav / NZBGet)
-    completed_jobs = _router._tag_available(filtered)
+    providers = _provider_rows(filtered)
+    completed_jobs = _router._tag_available(providers) if providers else None
 
     # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog
@@ -275,7 +406,11 @@ def _ensure_nzbget_completed_hint(selected, settings_getter=None):
     """
     import resources.lib.router as _router
 
-    if not isinstance(selected, dict) or selected.get("_nzbget_completed_job"):
+    if (
+        not isinstance(selected, dict)
+        or selected.get("_season_pack")
+        or selected.get("_nzbget_completed_job")
+    ):
         return
     try:
         if not _router._nzbget_mode_enabled(settings_getter):
@@ -293,17 +428,19 @@ def _handle_play_auto_select(handle, best, filtered, identity=None):
     import resources.lib.router as _router
     from resources.lib.resolver import resolve
 
+    target, provider_rows = _selection_target(best, filtered)
     resolver_params = {
-        "nzburl": best["link"],
-        "title": best["title"],
+        "nzburl": target["link"],
+        "title": target["title"],
         "_fallback_candidates": [],
-        "_fallback_candidate_loader": _router._fallback_candidate_loader_for_selection(
-            best, filtered
-        ),
+        "_fallback_candidate_loader": _selection_fallback_loader(target, provider_rows),
     }
-    _attach_nzbget_dupe(resolver_params, best, filtered, identity)
-    _ensure_nzbget_completed_hint(best)
-    _router._attach_selected_result_metadata(resolver_params, best)
+    _attach_episode_context(resolver_params, identity or {})
+    _attach_nzbget_dupe(resolver_params, target, provider_rows, identity)
+    _ensure_nzbget_completed_hint(target)
+    _router._attach_selected_result_metadata(resolver_params, target)
+    if best.get("_season_pack"):
+        resolver_params["_season_pack"] = best["_season_pack"]
     resolve(handle, resolver_params)
 
 
@@ -598,6 +735,10 @@ def _attach_nzbget_dupe(resolver_params, selected, filtered, identity):
     """
     import resources.lib.router as _router
 
+    if isinstance(selected, dict) and selected.get("_season_pack"):
+        resolver_params.pop("_nzbget_dupe", None)
+        return
+
     resolver_params.pop("_nzbget_dupe", None)
     getter = resolver_params.get("_settings_getter")
     dupe = _nzbget_dupe_submission_for_selection(selected, filtered, identity, getter)
@@ -629,43 +770,43 @@ def _handle_play_resolve_selection(
     import resources.lib.router as _router
     from resources.lib.resolver import resolve
 
+    target, provider_rows = _selection_target(selected, filtered)
     resolver_params = {
-        "nzburl": selected["link"],
-        "title": selected["title"],
+        "nzburl": target["link"],
+        "title": target["title"],
         "_fallback_candidates": [],
-        "_fallback_candidate_loader": _router._fallback_candidate_loader_for_selection(
-            selected, filtered
-        ),
+        "_fallback_candidate_loader": _selection_fallback_loader(target, provider_rows),
     }
-    _attach_nzbget_dupe(resolver_params, selected, filtered, identity)
-    _apply_completed_job_hint(resolver_params, selected, completed_jobs)
-    _router._attach_selected_result_metadata(resolver_params, selected)
+    _attach_episode_context(resolver_params, identity or {})
+    _attach_nzbget_dupe(resolver_params, target, provider_rows, identity)
+    _apply_completed_job_hint(resolver_params, target, completed_jobs)
+    _router._attach_selected_result_metadata(resolver_params, target)
+    if selected.get("_season_pack"):
+        resolver_params["_season_pack"] = selected["_season_pack"]
     resolve(handle, resolver_params)
 
 
-def _handle_search_filter_and_select(handle, params, results, title, year, notify):
+def _handle_search_filter_and_select(
+    handle, params, results, title, year, notify, pack_result=None
+):
     """Filter, optionally auto-select, tag, and run the picker for ``_handle_search``.
 
     Always ends the Kodi directory (succeeded=False) so the route never hangs.
     Extracted verbatim from the tail of ``_handle_search``.
     """
     import resources.lib.router as _router
-    from resources.lib.filter import filter_results
 
-    total_count = len(results)
     xbmc.log(
         "NZB-DAV: Search stage: filtering {} results for '{}'".format(
             len(results), title
         ),
         xbmc.LOGDEBUG,
     )
-    filtered, all_parsed = filter_results(results)
-
-    if not filtered:
-        filtered = _filtered_or_prompt(all_parsed, title, notify)
-        if not filtered:
-            xbmcplugin.endOfDirectory(handle, succeeded=False)
-            return
+    prepared = _prepare_picker_rows(results, title, notify, pack_result)
+    if prepared is None:
+        xbmcplugin.endOfDirectory(handle, succeeded=False)
+        return
+    filtered, total_count = prepared
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
@@ -688,7 +829,8 @@ def _handle_search_tag_and_picker(handle, params, filtered, title, year, total_c
     import resources.lib.router as _router
 
     # Tag results already downloaded in the active backend (nzbdav / NZBGet)
-    completed_jobs = _router._tag_available(filtered)
+    providers = _provider_rows(filtered)
+    completed_jobs = _router._tag_available(providers) if providers else None
 
     # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog
@@ -709,15 +851,20 @@ def _handle_search_auto_select(params, best, filtered):
     import resources.lib.router as _router
     from resources.lib.resolver import resolve_and_play
 
+    target, provider_rows = _selection_target(best, filtered)
     resolver_params = dict(params)
     resolver_params["_fallback_candidates"] = []
-    resolver_params["_fallback_candidate_loader"] = (
-        _router._fallback_candidate_loader_for_selection(best, filtered)
+    resolver_params["_fallback_candidate_loader"] = _selection_fallback_loader(
+        target, provider_rows
     )
-    _attach_nzbget_dupe(resolver_params, best, filtered, _identity_from_params(params))
-    _ensure_nzbget_completed_hint(best)
-    _router._attach_selected_result_metadata(resolver_params, best)
-    resolve_and_play(best["link"], best["title"], params=resolver_params)
+    _attach_nzbget_dupe(
+        resolver_params, target, provider_rows, _identity_from_params(params)
+    )
+    _ensure_nzbget_completed_hint(target)
+    _router._attach_selected_result_metadata(resolver_params, target)
+    if best.get("_season_pack"):
+        resolver_params["_season_pack"] = best["_season_pack"]
+    resolve_and_play(target["link"], target["title"], params=resolver_params)
 
 
 def _handle_search_resolve_selection(params, selected, filtered, completed_jobs):
@@ -725,14 +872,17 @@ def _handle_search_resolve_selection(params, selected, filtered, completed_jobs)
     import resources.lib.router as _router
     from resources.lib.resolver import resolve_and_play
 
+    target, provider_rows = _selection_target(selected, filtered)
     resolver_params = dict(params)
     resolver_params["_fallback_candidates"] = []
-    resolver_params["_fallback_candidate_loader"] = (
-        _router._fallback_candidate_loader_for_selection(selected, filtered)
+    resolver_params["_fallback_candidate_loader"] = _selection_fallback_loader(
+        target, provider_rows
     )
     _attach_nzbget_dupe(
-        resolver_params, selected, filtered, _identity_from_params(params)
+        resolver_params, target, provider_rows, _identity_from_params(params)
     )
-    _apply_completed_job_hint(resolver_params, selected, completed_jobs)
-    _router._attach_selected_result_metadata(resolver_params, selected)
-    resolve_and_play(selected["link"], selected["title"], params=resolver_params)
+    _apply_completed_job_hint(resolver_params, target, completed_jobs)
+    _router._attach_selected_result_metadata(resolver_params, target)
+    if selected.get("_season_pack"):
+        resolver_params["_season_pack"] = selected["_season_pack"]
+    resolve_and_play(target["link"], target["title"], params=resolver_params)

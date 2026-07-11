@@ -57,6 +57,79 @@ def _full_settings():
     )
 
 
+def _season_pack_params():
+    return {
+        "nzburl": "",
+        "title": "Spider-Noir.S01",
+        "_season_pack": {
+            "backend": "nzbget",
+            "job_id": "41",
+            "job_name": "Spider-Noir.S01",
+            "folder": "/downloads/Spider-Noir.S01",
+            "title": "Spider-Noir",
+            "imdb": "",
+            "tvdb": "451234",
+            "tmdb_id": "",
+            "season": 1,
+            "episodes": [1, 2],
+            "last_confirmed": 1,
+        },
+        "_episode_context": {
+            "type": "episode",
+            "title": "Spider-Noir",
+            "imdb": "",
+            "tvdb": "451234",
+            "tmdb_id": "",
+            "season": 1,
+            "episode": 2,
+        },
+    }
+
+
+def test_handle_stale_pack_shows_one_notice_and_resolves_false():
+    from resources.lib import nzbget_resolver, season_pack_reuse
+
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("stale", None, None),
+    ), patch("resources.lib.nzbget_resolver._notify") as notify, patch(
+        "resources.lib.nzbget_resolver.xbmcplugin.setResolvedUrl"
+    ) as resolved, patch.object(
+        nzbget_resolver.nzbget_api, "append_nzb"
+    ) as submit:
+        resolve_and_play_nzbget(7, _season_pack_params(), _full_settings())
+
+    notify.assert_called_once_with(
+        nzbget_resolver._addon_name(), nzbget_resolver._string(30365), 4000
+    )
+    assert resolved.call_count == 1
+    assert resolved.call_args.args[:2] == (7, False)
+    submit.assert_not_called()
+
+
+def test_handleless_stale_pack_shows_one_notice_without_starting_player():
+    from resources.lib import nzbget_resolver, season_pack_reuse
+
+    params = _season_pack_params()
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("stale", None, None),
+    ), patch("resources.lib.nzbget_resolver._notify") as notify, patch(
+        "resources.lib.nzbget_resolver.xbmc.Player"
+    ) as player, patch.object(
+        nzbget_resolver.nzbget_api, "append_nzb"
+    ) as submit:
+        play_nzbget(
+            "", params["title"], params=params, settings_getter=_full_settings()
+        )
+
+    notify.assert_called_once_with(
+        nzbget_resolver._addon_name(), nzbget_resolver._string(30365), 4000
+    )
+    player.return_value.play.assert_not_called()
+    submit.assert_not_called()
+
+
 def test_resolve_smb_video_returns_largest_file_url():
     xbmcvfs = sys.modules["xbmcvfs"]
 
@@ -70,6 +143,400 @@ def test_resolve_smb_video_returns_largest_file_url():
     ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
         url = resolve_smb_video("smb://host/completed/The.Movie", monitor=_Monitor())
     assert url == "smb://host/completed/The.Movie/movie.mkv"
+
+
+def test_resolve_smb_video_selects_requested_episode_over_largest():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    files = ["Spider-Noir.S01E01.mkv", "Spider-Noir.S01E05.mkv"]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 7_000 if "E05" in path else 6_000
+        return stat
+
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], files)
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video(
+            "smb://host/Spider-Noir",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url == "smb://host/Spider-Noir/Spider-Noir.S01E01.mkv"
+    assert seen[0].episodes == (1, 5)
+
+
+def test_smb_inventory_accepts_requested_tuple_for_nested_pack():
+    from resources.lib.nzbget_resolver import _smb_inventory
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    tree = {
+        "smb://host/Spider-Noir": (["Season 01"], []),
+        "smb://host/Spider-Noir/Season 01": (
+            [],
+            ["Spider-Noir.S01E05.mkv", "Spider-Noir.S01E01.mkv"],
+        ),
+    }
+
+    def fake_listdir(path):
+        return tree[path]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 7_000 if "E05" in path else 6_000
+        return stat
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=fake_listdir
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        inventory = _smb_inventory("smb://host/Spider-Noir", requested_episode=(1, 1))
+
+    assert inventory.selected_path.endswith("S01E01.mkv")
+    assert inventory.episodes == (1, 5)
+
+
+def test_smb_candidate_inventory_probes_directory_urls_with_trailing_slash():
+    from resources.lib.nzbget_resolver import _smb_video_candidates_in_tree
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    probed = []
+    tree = {
+        "smb://host/Show": (["nested"], []),
+        "smb://host/Show/nested": ([], ["Show.S01E01.mkv"]),
+    }
+
+    def fake_exists(path):
+        probed.append(path)
+        return path.endswith("/")
+
+    with patch.object(xbmcvfs, "exists", side_effect=fake_exists), patch.object(
+        xbmcvfs, "listdir", side_effect=lambda path: tree[path]
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        rows = _smb_video_candidates_in_tree("smb://host/Show")
+
+    assert rows and rows[0][0].endswith("Show.S01E01.mkv")
+    assert probed == ["smb://host/Show/", "smb://host/Show/nested/"]
+
+
+def test_resolve_smb_video_does_not_play_named_wrong_episode():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["Show.S01E05.mkv"])
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url is None
+    assert len(seen) == 1
+    assert seen[0].has_tagged_files is True
+
+
+def test_resolve_smb_video_waits_for_requested_episode_after_wrong_sibling():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    listings = [
+        ([], ["Show.S01E05.mkv"]),
+        ([], ["Show.S01E05.mkv", "Show.S01E01.mkv"]),
+    ]
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listings
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url == "smb://host/Show/Show.S01E01.mkv"
+    assert len(seen) == 1
+    assert seen[0].selected_path == url
+
+
+def test_resolve_smb_video_waits_for_exact_after_multiple_generic_files():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    listings = [
+        ([], ["video-a.mkv", "video-b.mkv"]),
+        ([], ["video-a.mkv", "video-b.mkv", "Show.S01E01.mkv"]),
+    ]
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listings
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show", monitor=_Monitor(), requested_episode=(1, 1)
+        )
+
+    assert url == "smb://host/Show/Show.S01E01.mkv"
+
+
+def test_resolve_smb_video_explicit_episode_rejects_multiple_generic_videos():
+    """Exact episode playback must not guess among an untagged multi-file job."""
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 9_000 if path.endswith("video-large.mkv") else 4_000
+        return stat
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs,
+        "listdir",
+        return_value=([], ["video-small.mkv", "video-large.mkv"]),
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+        )
+
+    assert url is None
+
+
+def test_resolve_smb_video_requested_episode_allows_one_generic_file():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 9_000
+        return stat
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["video.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video(
+            "smb://host/Show", monitor=_Monitor(), requested_episode=(1, 1)
+        )
+
+    assert url == "smb://host/Show/video.mkv"
+
+
+def test_resolve_smb_video_without_episode_keeps_legacy_largest_selection():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 9_000 if "E05" in path else 5_000
+        return stat
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs,
+        "listdir",
+        return_value=([], ["Show.S01E01.mkv", "Show.S01E05.mkv"]),
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video("smb://host/Show", monitor=_Monitor())
+
+    assert url == "smb://host/Show/Show.S01E05.mkv"
+
+
+def test_resolve_smb_video_retries_transient_list_error_without_empty_callback():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    listdir = MagicMock(
+        side_effect=[OSError("share settling"), ([], ["Show.S01E01.mkv"])]
+    )
+    stat = MagicMock()
+    stat.st_size.return_value = 5_000
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", listdir
+    ), patch.object(xbmcvfs, "Stat", return_value=stat):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url == "smb://host/Show/Show.S01E01.mkv"
+    assert listdir.call_count == 2
+    assert len(seen) == 1
+    assert seen[0].files
+
+
+def test_resolve_smb_video_does_not_report_unreachable_empty_inventory():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=False), patch.object(
+        xbmcvfs, "listdir", return_value=([], [])
+    ):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            on_inventory=seen.append,
+        )
+
+    assert url is None
+    assert not seen
+
+
+def test_resolve_smb_video_reports_reachable_empty_inventory_at_deadline():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], [])
+    ):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            on_inventory=seen.append,
+        )
+
+    assert url is None
+    assert len(seen) == 1
+    assert seen[0].files == ()
+
+
+def test_resolve_smb_video_plays_visible_exact_episode_from_partial_tree():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def listdir(path):
+        if path == "smb://host/Show":
+            return ["unreadable"], ["Show.S01E01.mkv"]
+        raise OSError("child unavailable")
+
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listdir
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url == "smb://host/Show/Show.S01E01.mkv"
+    assert not seen
+
+
+def test_resolve_smb_video_rejects_generic_explicit_fallback_from_partial_tree():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def listdir(path):
+        if path == "smb://host/Show":
+            return ["unreadable"], ["video.mkv"]
+        raise OSError("child unavailable")
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listdir
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            requested_episode=(1, 1),
+        )
+
+    assert url is None
+
+
+def test_smb_inventory_rejects_partial_tree_even_with_visible_exact_episode():
+    from resources.lib.nzbget_resolver import _smb_inventory
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def listdir(path):
+        if path == "smb://host/Show":
+            return ["unreadable"], ["Show.S01E01.mkv"]
+        raise OSError("child unavailable")
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listdir
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        inventory = _smb_inventory("smb://host/Show", requested_episode=(1, 1))
+
+    assert inventory is None
+
+
+def test_resolve_completed_smb_forwards_episode_and_inventory_callback():
+    from resources.lib.nzbget_resolver import _resolve_completed_smb, _SubmitCtx
+
+    callback = MagicMock()
+    ctx = _SubmitCtx("smb://host/completed", "", "/downloads", None, 1, 60)
+    with patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/Show/Show.S01E01.mkv",
+    ) as resolve:
+        result = _resolve_completed_smb(
+            "/downloads/Show",
+            ctx,
+            requested_episode=(1, 1),
+            on_inventory=callback,
+        )
+
+    assert result.endswith("Show.S01E01.mkv")
+    assert resolve.call_args.kwargs["requested_episode"] == (1, 1)
+    assert resolve.call_args.kwargs["on_inventory"] is callback
+
+
+def test_reuse_completed_job_forwards_episode_and_inventory_callback():
+    from resources.lib.nzbget_resolver import _reuse_completed_job, _SubmitCtx
+
+    callback = MagicMock()
+    ctx = _SubmitCtx("smb://host/completed", "", "/downloads", None, 1, 60)
+    with patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/Show/Show.S01E01.mkv",
+    ) as resolve:
+        result = _reuse_completed_job(
+            {"dest_dir": "/downloads/Show"},
+            ctx,
+            requested_episode=(1, 1),
+            on_inventory=callback,
+        )
+
+    assert result.endswith("Show.S01E01.mkv")
+    assert resolve.call_args.kwargs["requested_episode"] == (1, 1)
+    assert resolve.call_args.kwargs["on_inventory"] is callback
+
+
+def test_reuse_completed_job_records_backend_native_dest_dir():
+    from resources.lib.episode_inventory import build_video_inventory
+    from resources.lib.nzbget_resolver import _reuse_completed_job, _SubmitCtx
+
+    context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [("smb://host/Show.S01E01.mkv", 1), ("smb://host/Show.S01E02.mkv", 2)],
+        requested=(1, 1),
+    )
+    completed = {
+        "nzbid": 77,
+        "name": "Show.S01",
+        "dest_dir": "/downloads/tv/Show.S01",
+    }
+    ctx = _SubmitCtx("smb://host/completed", "tv", "/downloads", None, 1, 60)
+    ctx.episode_context = context
+
+    def resolve(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "smb://host/Show.S01E01.mkv"
+
+    with patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video", side_effect=resolve
+    ), patch("resources.lib.season_pack_recording.season_pack.upsert") as upsert:
+        result = _reuse_completed_job(
+            completed,
+            ctx,
+        )
+
+    assert result.endswith("Show.S01E01.mkv")
+    assert upsert.call_args.args[0]["folder"] == completed["dest_dir"]
 
 
 def test_resolve_smb_video_descends_into_subdirectory():
@@ -218,6 +685,8 @@ def test_poll_returns_success_with_dest_dir():
         "success": True,
         "status": "SUCCESS/ALL",
         "dest_dir": "/dl/movies/X",
+        "nzbid": 42,
+        "job_name": "X",
     }
     with patch(
         "resources.lib.nzbget_resolver.nzbget_api.group_status",
@@ -231,6 +700,36 @@ def test_poll_returns_success_with_dest_dir():
         )
     assert result["outcome"] == "success"
     assert result["dest_dir"] == "/dl/movies/X"
+    assert result["nzbid"] == 42
+    assert result["job_name"] == "X"
+
+
+def test_poll_promoted_success_returns_promoted_id_not_original_pick():
+    state = {
+        "current": None,
+        "promotion_deadline": 999,
+        "exclude": 41,
+        "stale_successes": (),
+        "paused_nzbids": (),
+    }
+    completed = {
+        "present": True,
+        "nzbid": 42,
+        "job_name": "same name",
+        "dest_dir": "/dl/tv/promoted",
+    }
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.history_success_by_dupekey",
+        return_value=completed,
+    ):
+        result = _tick_group_follow(state, _Dialog(), None, "dupe-key", None)
+
+    assert result == {
+        "outcome": "success",
+        "nzbid": 42,
+        "job_name": "same name",
+        "dest_dir": "/dl/tv/promoted",
+    }
 
 
 def test_poll_returns_failed_on_history_failure():
@@ -491,6 +990,220 @@ def test_resolve_success_resolves_true_with_smb_url():
         )
     plugin.setResolvedUrl.assert_called_once()
     assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_resolve_episode_threads_exact_request_to_smb_selection():
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/tv/Spider-Noir"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/Spider-Noir/Spider-Noir.S01E01.mkv",
+    ) as resolve_smb:
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/pack.nzb",
+                "title": "Spider-Noir.S01.2160p",
+                "_episode_context": {
+                    "type": "episode",
+                    "title": "Spider-Noir",
+                    "imdb": "tt1234567",
+                    "tvdb": "451234",
+                    "tmdb_id": "987",
+                    "season": 1,
+                    "episode": 1,
+                },
+            },
+            settings_getter=_full_settings(),
+        )
+
+    assert resolve_smb.call_args.kwargs["requested_episode"] == (1, 1)
+
+
+def test_resolve_movie_leaves_smb_selection_without_episode_request():
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ) as resolve_smb:
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/movie.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+        )
+
+    assert resolve_smb.call_args.kwargs.get("requested_episode") is None
+
+
+def test_nzbget_completion_preserves_full_context_until_smb_boundary():
+    from types import SimpleNamespace
+
+    from resources.lib.nzbget_resolver import _play_completed_download
+
+    episode_context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt1234567",
+        "tvdb": "451234",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    ctx = SimpleNamespace(
+        smb_root="smb://host/completed",
+        category="tv",
+        completed_base="/downloads",
+        dialog=None,
+        interval=1,
+        on_failure=MagicMock(),
+        on_success=MagicMock(),
+        dupe=None,
+        episode_context=episode_context,
+    )
+    with patch("resources.lib.nzbget_resolver.record_download"), patch(
+        "resources.lib.nzbget_resolver._resolve_completed_smb",
+        return_value="smb://host/completed/Spider-Noir.S01E01.mkv",
+    ) as resolve_completed:
+        _play_completed_download(ctx, "/downloads/show", "pack", None, None)
+
+    assert resolve_completed.call_args.args[1].episode_context == episode_context
+
+
+def test_nzbget_completion_records_exact_nzbid_and_backend_native_folder():
+    from types import SimpleNamespace
+
+    from resources.lib.episode_inventory import build_video_inventory
+    from resources.lib.nzbget_resolver import _play_completed_download
+
+    context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt123",
+        "tvdb": "456",
+        "tmdb_id": "789",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [
+            ("smb://host/completed/tv/Spider/Spider.S01E01.mkv", 6000),
+            ("smb://host/completed/tv/Spider/Spider.S01E02.mkv", 7000),
+        ],
+        requested=(1, 1),
+    )
+    ctx = SimpleNamespace(
+        smb_root="smb://host/completed",
+        category="tv",
+        completed_base="/downloads",
+        dialog=None,
+        interval=0,
+        on_failure=MagicMock(),
+        on_success=MagicMock(),
+        dupe=None,
+        episode_context=context,
+    )
+
+    def resolve_folder(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "smb://host/completed/tv/Spider/Spider.S01E01.mkv"
+
+    with patch("resources.lib.nzbget_resolver.record_download"), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        side_effect=resolve_folder,
+    ), patch("resources.lib.season_pack_recording.season_pack.upsert") as upsert:
+        _play_completed_download(
+            ctx,
+            "/downloads/tv/Spider",
+            "Spider-Noir.S01.2160p",
+            None,
+            None,
+            job_id=42,
+            job_name="same name",
+        )
+
+    record = upsert.call_args.args[0]
+    assert (record["backend"], record["job_id"], record["job_name"]) == (
+        "nzbget",
+        "42",
+        "same name",
+    )
+    assert record["folder"] == "/downloads/tv/Spider"
+    ctx.on_success.assert_called_once()
+
+
+def test_submit_flow_records_promoted_result_id_instead_of_original_pick():
+    import threading
+    from types import SimpleNamespace
+
+    from resources.lib.nzbget_resolver import _submit_poll_resolve
+
+    ctx = SimpleNamespace(
+        settings_getter=None,
+        dupe=None,
+        dialog=_Dialog(),
+        timeout=60,
+        interval=0,
+        cancel_event=threading.Event(),
+        submitted_nzbids=[],
+        on_failure=MagicMock(),
+        episode_context={"type": "episode", "title": "Show", "season": 1},
+    )
+    with patch(
+        "resources.lib.nzbget_resolver._submit_pick", return_value=(41, None)
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={
+            "outcome": "success",
+            "dest_dir": "/downloads/tv/promoted",
+            "nzbid": 42,
+            "job_name": "promoted release",
+        },
+    ), patch(
+        "resources.lib.nzbget_resolver._play_completed_download"
+    ) as play_completed:
+        _submit_poll_resolve(ctx, "http://i/pick.nzb", "same name", None, None)
+
+    assert play_completed.call_args.kwargs == {
+        "job_id": 42,
+        "job_name": "promoted release",
+    }
+    assert play_completed.call_args.args[1] == "/downloads/tv/promoted"
+
+
+def test_smb_boundary_converts_full_context_to_requested_episode():
+    from resources.lib.nzbget_resolver import _resolve_completed_smb, _SubmitCtx
+
+    context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "season": 1,
+        "episode": 1,
+    }
+    ctx = _SubmitCtx("smb://host/completed", "tv", "/downloads", None, 1, 60)
+    ctx.episode_context = context
+    with patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/Spider-Noir.S01E01.mkv",
+    ) as resolve_smb:
+        _resolve_completed_smb(
+            "/downloads/show",
+            ctx,
+        )
+
+    assert resolve_smb.call_args.kwargs["requested_episode"] == (1, 1)
 
 
 def test_resolve_success_applies_resume_offset_to_listitem():
@@ -1418,7 +2131,12 @@ def test_poll_follows_promoted_backup_to_success():
         _SUC, return_value={"present": False}
     ):
         result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
-    assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/B",
+        "nzbid": 9,
+        "job_name": "",
+    }
 
 
 def test_poll_plays_already_succeeded_group_member():
@@ -1436,7 +2154,12 @@ def test_poll_plays_already_succeeded_group_member():
         _SUC, return_value={"present": True, "nzbid": 2, "dest_dir": "/dl/done"}
     ):
         result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
-    assert result == {"outcome": "success", "dest_dir": "/dl/done"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/done",
+        "nzbid": 2,
+        "job_name": "",
+    }
 
 
 def test_poll_reports_failed_when_group_exhausted():
@@ -2130,7 +2853,12 @@ def test_group_follow_tracks_owned_promoted_backup():
             dupe_key="k",
             fleet={"owned_nzbids": lambda: (1, 9)},
         )
-    assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/B",
+        "nzbid": 9,
+        "job_name": "",
+    }
 
 
 def test_backup_nzbids_publish_into_shared_list_as_appends_land():
@@ -2366,7 +3094,12 @@ def test_poll_rescues_copy_vetoed_pick_and_plays_force_resubmit():
             dupe_key="k",
             fleet={"rescue": _rescue_stub(7, counter)},
         )
-    assert result == {"outcome": "success", "dest_dir": "/dl/R"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/R",
+        "nzbid": 7,
+        "job_name": "",
+    }
     assert counter["n"] == 1  # rescue fired exactly once
 
 
@@ -2624,7 +3357,12 @@ def test_poll_prefers_live_owned_backup_over_rescue():
                 "owned_nzbids": lambda: (1, 9),
             },
         )
-    assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/B",
+        "nzbid": 9,
+        "job_name": "",
+    }
     assert counter["n"] == 0  # adopted the owned backup; rescue never called
 
 
@@ -2651,7 +3389,12 @@ def test_poll_no_dupe_key_rescues_copy_vetoed_plain_submit():
             dupe_key="",
             fleet={"rescue": _rescue_stub(7, counter)},
         )
-    assert result == {"outcome": "success", "dest_dir": "/dl/R"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/R",
+        "nzbid": 7,
+        "job_name": "",
+    }
     assert counter["n"] == 1
 
 

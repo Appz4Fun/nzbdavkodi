@@ -160,6 +160,8 @@ def _submit_fallback_candidates(
     settings_getter=None,
     dead=None,
     primary_nzb_url=None,
+    *,
+    episode_context=None,
 ):
     """Submit duplicate fallback candidates as standby nzbdav jobs."""
     candidate_jobs = _collect_fallback_candidate_jobs(
@@ -175,6 +177,9 @@ def _submit_fallback_candidates(
     fallback_jobs = []
 
     def _record(job):
+        if isinstance(episode_context, dict):
+            job = dict(job)
+            job["episode_context"] = dict(episode_context)
         fallback_jobs.append(job)
         if on_job is not None:
             on_job(dict(job))
@@ -485,14 +490,17 @@ def _load_and_submit_fallback_candidates(state, submit_inputs):
             candidate_lookup_disabled, submit_inputs["settings_getter"]
         )
         return
+    kwargs = {
+        "stop_event": state["stop"],
+        "on_job": submit_inputs["on_job"],
+        "settings_getter": submit_inputs["settings_getter"],
+        "dead": submit_inputs["dead"],
+        "primary_nzb_url": submit_inputs["primary_nzb_url"],
+    }
+    if submit_inputs["episode_context"] is not None:
+        kwargs["episode_context"] = submit_inputs["episode_context"]
     _resolver._submit_fallback_candidates(
-        active_candidates,
-        _resolver.xbmc.Monitor(),
-        stop_event=state["stop"],
-        on_job=submit_inputs["on_job"],
-        settings_getter=submit_inputs["settings_getter"],
-        dead=submit_inputs["dead"],
-        primary_nzb_url=submit_inputs["primary_nzb_url"],
+        active_candidates, _resolver.xbmc.Monitor(), **kwargs
     )
 
 
@@ -504,6 +512,7 @@ def _start_fallback_submit_worker(
     wait_for_playback=False,
     dead=None,
     primary_nzb_url=None,
+    episode_context=None,
 ):
     """Start background fallback submits and return shared state.
 
@@ -557,6 +566,9 @@ def _start_fallback_submit_worker(
         "settings_getter": settings_getter,
         "dead": dead,
         "primary_nzb_url": primary_nzb_url,
+        "episode_context": (
+            dict(episode_context) if isinstance(episode_context, dict) else None
+        ),
         "on_job": _append_job,
     }
 

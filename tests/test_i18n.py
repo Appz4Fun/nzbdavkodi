@@ -140,6 +140,27 @@ def test_indexer_manager_strings_have_fallbacks():
     assert string(30196) == "Refresh NZBHydra2 Caps"
 
 
+def test_season_pack_picker_strings_have_fallbacks_and_po_entries():
+    import os
+
+    assert fmt(30364, "1-8") == ("Already downloaded season pack - Episodes 1-8")
+    assert string(30365) == (
+        "The downloaded season pack is no longer available. Choose another result."
+    )
+    po_path = os.path.join(
+        "repo",
+        "plugin.video.nzbdav",
+        "resources",
+        "language",
+        "resource.language.en_gb",
+        "strings.po",
+    )
+    with open(po_path, encoding="utf-8") as handle:
+        content = handle.read()
+    assert '"#30364"' in content
+    assert '"#30365"' in content
+
+
 def test_fmt_returns_id_and_args_for_missing_template():
     """When the resolved template is the ``#<id>`` sentinel, fmt() must
     surface both the missing id AND the args the caller passed —

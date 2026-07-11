@@ -301,15 +301,16 @@ def build_prepare_fallback_payload(fallback_jobs):
         nzo_id = job.get("nzo_id") if isinstance(job, dict) else None
         if not nzo_id:
             continue
-        payload.append(
-            {
-                "title": job.get("title", ""),
-                "nzb_url": job.get("nzb_url", ""),
-                "job_name": job.get("job_name", ""),
-                "nzo_id": nzo_id,
-                "stream_url": job.get("stream_url") or "",
-                "stream_headers": job.get("stream_headers") or {},
-                "content_length": job.get("content_length") or 0,
-            }
-        )
+        entry = {
+            "title": job.get("title", ""),
+            "nzb_url": job.get("nzb_url", ""),
+            "job_name": job.get("job_name", ""),
+            "nzo_id": nzo_id,
+            "stream_url": job.get("stream_url") or "",
+            "stream_headers": job.get("stream_headers") or {},
+            "content_length": job.get("content_length") or 0,
+        }
+        if isinstance(job.get("episode_context"), dict):
+            entry["episode_context"] = dict(job["episode_context"])
+        payload.append(entry)
     return payload

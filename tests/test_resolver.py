@@ -439,6 +439,16 @@ def test_existing_completed_stream_ignores_partial_history_row(
     mock_find_video.assert_not_called()
 
 
+def test_existing_completed_stream_rejects_context_with_legacy_options():
+    from resources.lib.resolver_completed import CompletedStreamContext
+
+    context = CompletedStreamContext(completed_job_lookup_done=True)
+    with pytest.raises(TypeError, match="context.*options"):
+        _existing_completed_stream(
+            "movie.mkv", context=context, completed_job_lookup_done=False
+        )
+
+
 def _probe_response(content_length=None, code=206, body=b"\x00"):
     """Mock urllib response for the completed-stream body probe (HEAD/GET)."""
     resp = MagicMock()
@@ -513,6 +523,485 @@ def test_completed_job_stream_threads_title_as_episode_hint(mock_find_stream):
         _completed_job_stream("Show.S02E05.1080p.WEB-DL", job)
 
     assert mock_find_stream.call_args.kwargs["title_hint"] == "Show.S02E05.1080p.WEB-DL"
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_threads_explicit_episode_request(mock_find_stream):
+    mock_find_stream.return_value = (
+        "/content/uncategorized/Show/Show.S01E01.mkv",
+        "http://webdav/Show.S01E01.mkv",
+        {},
+    )
+    job = {
+        "status": "Completed",
+        "name": "Show.S01.2160p.WEB-DL",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/Show",
+    }
+
+    with patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ):
+        _completed_job_stream("Show.S01.2160p.WEB-DL", job, requested_episode=(1, 1))
+
+    assert mock_find_stream.call_args.kwargs["requested_episode"] == (1, 1)
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_preserves_full_episode_context(mock_find_stream):
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    mock_find_stream.return_value = (
+        "/content/Show/Show.S01E01.mkv",
+        "http://webdav/Show.S01E01.mkv",
+        {},
+    )
+    job = {
+        "status": "Completed",
+        "name": "Show.S01.2160p.WEB-DL",
+        "storage": "/mnt/data/completed-symlinks/tv/Show",
+    }
+
+    with patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ):
+        _completed_job_stream(
+            "Show.S01.2160p.WEB-DL", job, episode_context=episode_context
+        )
+
+    assert mock_find_stream.call_args.kwargs["episode_context"] == episode_context
+
+
+@patch("resources.lib.resolver_completed._delegated_find_video_stream_for_folder")
+def test_webdav_boundary_converts_full_context_to_requested_episode(mock_delegated):
+    from resources.lib.resolver import _find_video_stream_for_folder
+
+    mock_delegated.return_value = (
+        "/content/Show/Show.S01E01.mkv",
+        "http://webdav/Show.S01E01.mkv",
+        {},
+    )
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+
+    _find_video_stream_for_folder("/content/Show/", episode_context=episode_context)
+
+    assert mock_delegated.call_args.kwargs["requested_episode"] == (1, 1)
+
+
+def test_resolve_and_play_episode_threads_request_through_poll_context():
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    params = {
+        "_episode_context": episode_context,
+        "_completed_job_lookup_done": True,
+    }
+    with patch("resources.lib.resolver._nzbget_enabled", return_value=False), patch(
+        "resources.lib.resolver._picker_completed_stream", return_value=None
+    ) as picker, patch(
+        "resources.lib.resolver._resolve_and_play_submit_and_poll",
+        return_value=(None, None, None),
+    ) as submit_poll, patch(
+        "resources.lib.resolver._stop_fallback_submit_worker"
+    ):
+        resolve_and_play("http://i/pack.nzb", "Show.S01.2160p", params=params)
+
+    assert picker.call_args.kwargs["episode_context"] == episode_context
+    poll_ctx = submit_poll.call_args.args[-1]
+    assert poll_ctx.episode_context == episode_context
+
+
+def test_resolve_side_effects_threads_full_context_into_fallback_worker():
+    from resources.lib.resolver_entry import _ResolveSideEffects
+
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    effects = _ResolveSideEffects(
+        {"_episode_context": episode_context},
+        [],
+        None,
+        "http://i/primary.nzb",
+        MagicMock(),
+    )
+
+    with patch("resources.lib.resolver._start_playback_state_cleanup"), patch(
+        "resources.lib.resolver._get_fallback_submit_delay_seconds", return_value=0
+    ), patch(
+        "resources.lib.resolver._start_fallback_submit_worker", return_value={}
+    ) as start:
+        effects.start_fallback_after_primary("nzo-primary")
+
+    assert start.call_args.kwargs["episode_context"] == episode_context
+
+
+@patch("resources.lib.resolver._handle_history_result")
+@patch("resources.lib.resolver._handle_job_status", return_value=(False, None))
+@patch("resources.lib.resolver._poll_once", return_value=({}, {}, None))
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo-1")
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_keeps_episode_request_for_completed_fallback(
+    mock_xbmc,
+    _mock_existing,
+    _mock_submit,
+    _mock_poll,
+    _mock_status,
+    mock_history,
+):
+    """Every completed history candidate is resolved for the same episode."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_history.return_value = (True, None, None, 0)
+
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    _poll_until_ready(
+        "http://i/pack.nzb",
+        "Show.S01.2160p",
+        _make_dialog(),
+        1,
+        60,
+        poll_ctx=PollContext(episode_context=episode_context),
+    )
+
+    assert mock_history.call_args.kwargs["episode_context"] == episode_context
+
+
+def test_completed_history_records_pack_under_exact_history_nzo_id():
+    from resources.lib.episode_inventory import build_video_inventory
+
+    episode_context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt123",
+        "tvdb": "456",
+        "tmdb_id": "789",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [
+            ("/content/tv/exact/Spider-Noir.S01E01.mkv", 6000),
+            ("/content/tv/exact/Spider-Noir.S01E02.mkv", 7000),
+        ],
+        requested=(1, 1),
+    )
+    history = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/tv/exact",
+        "name": "Spider-Noir.S01.2160p",
+        "nzo_id": "SABnzbd_nzo_exact",
+    }
+
+    def discover(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return (
+            "/content/tv/exact/Spider-Noir.S01E01.mkv",
+            "http://webdav/content/tv/exact/Spider-Noir.S01E01.mkv",
+            {},
+        )
+
+    with patch(
+        "resources.lib.resolver._find_completed_video_stream_with_rechecks",
+        side_effect=discover,
+    ), patch(
+        "resources.lib.resolver._discovered_video_is_stub", return_value=False
+    ), patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ), patch(
+        "resources.lib.season_pack_recording.season_pack.upsert"
+    ) as upsert:
+        result = _handle_history_result(
+            history,
+            "Spider-Noir.S01.2160p",
+            0,
+            5,
+            episode_context=episode_context,
+        )
+
+    assert result[:3] == (
+        True,
+        "http://webdav/content/tv/exact/Spider-Noir.S01E01.mkv",
+        {},
+    )
+    record = upsert.call_args.args[0]
+    assert (record["backend"], record["job_id"], record["job_name"]) == (
+        "nzbdav",
+        "SABnzbd_nzo_exact",
+        "Spider-Noir.S01.2160p",
+    )
+    assert record["folder"] == history["storage"]
+
+
+def test_completed_history_catalog_write_failure_does_not_block_playback():
+    from resources.lib.episode_inventory import build_video_inventory
+
+    context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [("/p/Show.S01E01.mkv", 1), ("/p/Show.S01E02.mkv", 2)],
+        requested=(1, 1),
+    )
+
+    def discover(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "/p/Show.S01E01.mkv", "http://webdav/p/Show.S01E01.mkv", {}
+
+    with patch(
+        "resources.lib.resolver._find_completed_video_stream_with_rechecks",
+        side_effect=discover,
+    ), patch(
+        "resources.lib.resolver._discovered_video_is_stub", return_value=False
+    ), patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ), patch(
+        "resources.lib.season_pack_recording.season_pack.upsert",
+        side_effect=OSError("disk full"),
+    ):
+        result = _handle_history_result(
+            {
+                "status": "Completed",
+                "storage": "/mnt/nzbdav/completed-symlinks/tv/pack",
+                "name": "Show.S01",
+                "nzo_id": "exact",
+            },
+            "Show.S01",
+            0,
+            5,
+            episode_context=context,
+        )
+
+    assert result[1] == "http://webdav/p/Show.S01E01.mkv"
+
+
+def test_completed_history_does_not_record_pack_until_body_is_available():
+    from resources.lib.episode_inventory import build_video_inventory
+
+    context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [("/p/Show.S01E01.mkv", 1), ("/p/Show.S01E02.mkv", 2)],
+        requested=(1, 1),
+    )
+
+    def discover(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "/p/Show.S01E01.mkv", "http://webdav/p/Show.S01E01.mkv", {}
+
+    with patch(
+        "resources.lib.resolver._find_completed_video_stream_with_rechecks",
+        side_effect=discover,
+    ), patch(
+        "resources.lib.resolver._discovered_video_is_stub", return_value=False
+    ), patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=False
+    ), patch(
+        "resources.lib.season_pack_recording.season_pack.upsert"
+    ) as upsert:
+        result = _handle_history_result(
+            {
+                "status": "Completed",
+                "storage": "/mnt/nzbdav/completed-symlinks/tv/pack",
+                "name": "Show.S01",
+                "nzo_id": "exact",
+            },
+            "Show.S01",
+            0,
+            5,
+            episode_context=context,
+        )
+
+    assert result[1] is None
+    upsert.assert_not_called()
+
+
+def test_real_nzbdav_remapped_poll_history_id_reaches_pack_recorder():
+    import json
+
+    from resources.lib.episode_inventory import build_video_inventory
+
+    context = {
+        "type": "episode",
+        "title": "Show",
+        "tvdb": "123",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [("/p/Show.S01E01.mkv", 1), ("/p/Show.S01E02.mkv", 2)],
+        requested=(1, 1),
+    )
+    empty_api_body = json.dumps({"history": {"slots": []}})
+    remapped_api_body = json.dumps(
+        {
+            "history": {
+                "slots": [
+                    {
+                        "status": "Completed",
+                        "storage": "/mnt/nzbdav/completed-symlinks/tv/exact",
+                        "name": "Show.S01",
+                        "nzo_id": "SABnzbd_nzo_history_remapped",
+                        "completed": 1000,
+                    }
+                ]
+            }
+        }
+    )
+
+    def discover(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "/p/Show.S01E01.mkv", "http://webdav/p/Show.S01E01.mkv", {}
+
+    def history_response(url, **_kwargs):
+        return remapped_api_body if "search=Show" in url else empty_api_body
+
+    with patch("resources.lib.resolver.get_job_status", return_value=None), patch(
+        "resources.lib.nzbdav_api._get_settings",
+        return_value=("http://nzbdav:3000", "key"),
+    ), patch("resources.lib.nzbdav_api._http_get", side_effect=history_response), patch(
+        "resources.lib.resolver._find_completed_video_stream_with_rechecks",
+        side_effect=discover,
+    ), patch(
+        "resources.lib.resolver._discovered_video_is_stub", return_value=False
+    ), patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ), patch(
+        "resources.lib.season_pack_recording.season_pack.upsert"
+    ) as upsert:
+        _job, history, error = _poll_once(
+            "SABnzbd_nzo_submitted",
+            "Show.S01",
+            MagicMock(),
+            submit_started_wall=1000,
+        )
+        result = _handle_history_result(
+            history, "Show.S01", 0, 5, episode_context=context
+        )
+
+    assert error is None
+    assert result[1] == "http://webdav/p/Show.S01E01.mkv"
+    assert upsert.call_args.args[0]["job_id"] == "SABnzbd_nzo_history_remapped"
+
+
+def test_existing_completed_body_rejection_does_not_record_discovered_inventory():
+    from resources.lib.episode_inventory import build_video_inventory
+
+    context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [("/p/Show.S01E01.mkv", 1), ("/p/Show.S01E02.mkv", 2)],
+        requested=(1, 1),
+    )
+
+    def discover(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "/p/Show.S01E01.mkv", "http://webdav/p/Show.S01E01.mkv", {}
+
+    with patch(
+        "resources.lib.resolver._find_video_stream_for_folder",
+        side_effect=discover,
+    ), patch(
+        "resources.lib.resolver._discovered_video_is_stub", return_value=False
+    ), patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=False
+    ), patch(
+        "resources.lib.season_pack_recording.season_pack.upsert"
+    ) as upsert:
+        stream = _completed_job_stream(
+            "Show.S01",
+            {
+                "status": "Completed",
+                "storage": "/mnt/nzbdav/completed-symlinks/tv/pack",
+                "name": "Show.S01",
+                "nzo_id": "exact",
+            },
+            episode_context=context,
+        )
+
+    assert stream is None
+    upsert.assert_not_called()
+
+
+def test_existing_completed_records_backend_native_storage_after_validation():
+    from resources.lib.episode_inventory import build_video_inventory
+
+    context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [("/p/Show.S01E01.mkv", 1), ("/p/Show.S01E02.mkv", 2)],
+        requested=(1, 1),
+    )
+    completed = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/tv/pack",
+        "name": "Show.S01",
+        "nzo_id": "exact",
+    }
+
+    def discover(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "/p/Show.S01E01.mkv", "http://webdav/p/Show.S01E01.mkv", {}
+
+    with patch(
+        "resources.lib.resolver._find_video_stream_for_folder",
+        side_effect=discover,
+    ), patch(
+        "resources.lib.resolver._discovered_video_is_stub", return_value=False
+    ), patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ), patch(
+        "resources.lib.season_pack_recording.season_pack.upsert"
+    ) as upsert:
+        stream = _completed_job_stream("Show.S01", completed, episode_context=context)
+
+    assert stream is not None
+    assert upsert.call_args.args[0]["folder"] == completed["storage"]
 
 
 @patch("resources.lib.resolver._find_video_stream_for_folder")
@@ -4781,6 +5270,32 @@ def test_submit_fallback_candidates_batches_existing_job_probes(
 
 @patch("resources.lib.resolver.find_queued_by_names", return_value={})
 @patch("resources.lib.resolver.find_completed_by_names", return_value={})
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo-fallback", None))
+def test_fallback_job_records_preserve_full_episode_context(
+    _mock_submit, _mock_completed, _mock_queued
+):
+    from resources.lib.resolver import _submit_fallback_candidates
+
+    episode_context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt1234567",
+        "tvdb": "451234",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    jobs = _submit_fallback_candidates(
+        [{"title": "Spider-Noir.S01", "link": "http://i/fallback.nzb"}],
+        _make_monitor(),
+        episode_context=episode_context,
+    )
+
+    assert jobs[0]["episode_context"] == episode_context
+
+
+@patch("resources.lib.resolver.find_queued_by_names", return_value={})
+@patch("resources.lib.resolver.find_completed_by_names", return_value={})
 @patch("resources.lib.resolver.submit_nzb")
 def test_submit_fallback_candidates_passes_settings_getter_to_nzbdav_calls(
     mock_submit,
@@ -7759,6 +8274,21 @@ def test_poll_until_ready_no_cleanup_on_completed_no_video(
 # ---------------------------------------------------------------------------
 
 
+def test_handle_history_result_rejects_context_with_legacy_options():
+    from resources.lib.resolver_history import HistoryContext
+
+    context = HistoryContext(max_no_video_retries=5)
+    with pytest.raises(TypeError, match="context.*options"):
+        _handle_history_result(
+            {},
+            "movie.mkv",
+            0,
+            5,
+            context=context,
+            download_size=1,
+        )
+
+
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=False)
 @patch("resources.lib.resolver._find_completed_video_stream_with_rechecks")
 def test_handle_history_result_rejects_completed_when_body_unavailable(
@@ -9450,6 +9980,7 @@ def test_poll_once_by_name_terminal_threads_completed_timestamp():
     assert history_status is not None
     assert history_status.get("status") == "Failed"
     assert history_status.get("completed") == completed_ts
+    assert history_status.get("nzo_id") == "nzo-new"
 
 
 def test_late_accepted_submit_is_cancelled_after_user_abort():

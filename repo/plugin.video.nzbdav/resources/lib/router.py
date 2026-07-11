@@ -107,6 +107,7 @@ from resources.lib.router_fallback import (  # noqa: F401
 )
 from resources.lib.router_play import (  # noqa: F401
     _apply_completed_job_hint,
+    _attach_episode_context,
     _attach_nzbget_dupe,
     _ensure_nzbget_completed_hint,
     _extract_search_params,
@@ -121,9 +122,14 @@ from resources.lib.router_play import (  # noqa: F401
     _identity_from_params,
     _lookup_search_episode_args,
     _play_identity,
+    _prepend_pack,
+    _provider_rows,
     _query_and_cache_providers,
     _resolve_play_episode_args,
     _search_with_cache,
+    _season_pack_result,
+    _selection_fallback_loader,
+    _selection_target,
 )
 from resources.lib.router_poster import (  # noqa: F401
     _fetch_imdb_suggestion_poster,
@@ -635,16 +641,19 @@ def _handle_play(handle, params):
         params, search_type, title, season, episode, imdb
     )
 
+    identity = _play_identity(params, title, season, episode)
+    pack_result = _season_pack_result(identity)
+
     cache_kwargs = dict(
         year=year, imdb=imdb, season=season, episode=episode, tvdb=tvdb, tmdb_id=tmdb_id
     )
     results, search_error = _search_with_cache(search_type, title, cache_kwargs)
-    if search_error:
+    if search_error and pack_result is None:
         _show_error_dialog(search_error)
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
-    if not results:
+    if not results and pack_result is None:
         xbmc.log(
             "NZB-DAV: Search stage: no results found for '{}'".format(title),
             xbmc.LOGINFO,
@@ -653,8 +662,15 @@ def _handle_play(handle, params):
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
-    identity = _play_identity(params, title, season, episode)
-    _handle_play_filter_and_select(handle, results, title, year, notify, identity)
+    _handle_play_filter_and_select(
+        handle,
+        results or [],
+        title,
+        year,
+        notify,
+        identity,
+        pack_result=pack_result,
+    )
 
 
 def _handle_search(handle, params):
@@ -683,17 +699,19 @@ def _handle_search(handle, params):
     title, season, episode = _lookup_search_episode_args(
         params, search_type, title, season, episode, imdb
     )
+    _attach_episode_context(params, params, title=title, season=season, episode=episode)
+    pack_result = _season_pack_result(params.get("_episode_context"))
 
     cache_kwargs = dict(
         year=year, imdb=imdb, season=season, episode=episode, tvdb=tvdb, tmdb_id=tmdb_id
     )
     results, search_error = _search_with_cache(search_type, title, cache_kwargs)
-    if search_error:
+    if search_error and pack_result is None:
         _show_error_dialog(search_error)
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
-    if not results:
+    if not results and pack_result is None:
         xbmc.log(
             "NZB-DAV: Search stage: no results found for '{}'".format(title),
             xbmc.LOGINFO,
@@ -702,7 +720,15 @@ def _handle_search(handle, params):
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
-    _handle_search_filter_and_select(handle, params, results, title, year, notify)
+    _handle_search_filter_and_select(
+        handle,
+        params,
+        results or [],
+        title,
+        year,
+        notify,
+        pack_result=pack_result,
+    )
 
 
 def _handle_script_play(params):
@@ -726,6 +752,10 @@ def _handle_script_play(params):
     title, season, episode = _script_play_resolve_episode_args(
         params, search_type, title, season, episode, imdb
     )
+    _attach_episode_context(params, params, title=title, season=season, episode=episode)
+    pack_result = _season_pack_result(
+        params.get("_episode_context"), settings_getter=_get_script_setting
+    )
 
     _script_play_stage(
         "skipping cache for '{}' ({})".format(
@@ -740,7 +770,13 @@ def _handle_script_play(params):
         year=year, imdb=imdb, season=season, episode=episode, tvdb=tvdb, tmdb_id=tmdb_id
     )
     prepared = _script_play_search_filter_tag(
-        params, search_type, title, year, search_kwargs, notify
+        params,
+        search_type,
+        title,
+        year,
+        search_kwargs,
+        notify,
+        pack_result=pack_result,
     )
     if prepared is None:
         return

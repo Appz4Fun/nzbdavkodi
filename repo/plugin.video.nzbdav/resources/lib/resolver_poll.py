@@ -274,6 +274,7 @@ def _by_name_terminal_history(
         "status": by_name.get("status", ""),
         "storage": by_name.get("storage", ""),
         "name": by_name.get("name", ""),
+        "nzo_id": by_name.get("nzo_id", ""),
         "fail_message": by_name.get("fail_message", ""),
         # Thread the validated terminal timestamp through so the synthesized
         # row carries the same ``completed`` contract as a real history slot

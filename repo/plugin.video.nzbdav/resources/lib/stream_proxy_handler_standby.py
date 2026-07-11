@@ -194,7 +194,12 @@ class _FallbackStandbyMixin:  # pylint: disable=too-few-public-methods
     def _resolve_standby_video_path(source, nzo_id):
         """Resolve a completed standby nzo_id to a WebDAV video path, if ready."""
         from resources.lib.nzbdav_api import get_job_history
-        from resources.lib.webdav import TitleHints, find_video_file
+        from resources.lib.season_pack import requested_episode
+        from resources.lib.webdav import (
+            TitleHints,
+            find_video_file,
+            find_video_stream_for_folder,
+        )
 
         history = get_job_history(nzo_id)
         history_status = history.get("status") if isinstance(history, dict) else ""
@@ -208,8 +213,17 @@ class _FallbackStandbyMixin:  # pylint: disable=too-few-public-methods
         storage = history.get("storage", "")
         if not storage:
             return None
+        webdav_folder = _sp._storage_to_webdav_path(storage)
+        episode = requested_episode(source.get("episode_context"))
+        if episode is not None:
+            video_path, _stream_url, _stream_headers = find_video_stream_for_folder(
+                webdav_folder,
+                title_hint=source.get("title") or None,
+                requested_episode=episode,
+            )
+            return video_path
         return find_video_file(
-            _sp._storage_to_webdav_path(storage),
+            webdav_folder,
             hints=TitleHints(title_hint=source.get("title") or None),
         )
 

@@ -31,6 +31,8 @@ class PollContext(NamedTuple):
     download_pubdate: object = None
     download_size: object = None
     dead: object = None
+    requested_episode: object = None
+    episode_context: object = None
 
 
 def _record_download_soft(title, download_pubdate, download_size):
@@ -141,8 +143,7 @@ def _poll_until_ready(
     # so a picker-probe rejection (recorded before this call) is honored too.
     if poll_ctx.rejected_completed_ids is None:
         poll_ctx = poll_ctx._replace(rejected_completed_ids=set())
-    existing_stream = _resolver._existing_completed_stream(
-        title,
+    existing_kwargs = dict(
         on_existing_completed=poll_ctx.on_existing_completed,
         completed_job_hint=poll_ctx.completed_job_hint,
         completed_job_lookup_done=poll_ctx.completed_job_lookup_done,
@@ -150,6 +151,11 @@ def _poll_until_ready(
         rejected_completed_ids=poll_ctx.rejected_completed_ids,
         download_size=poll_ctx.download_size,
     )
+    if poll_ctx.episode_context is not None:
+        existing_kwargs["episode_context"] = poll_ctx.episode_context
+    elif poll_ctx.requested_episode is not None:
+        existing_kwargs["requested_episode"] = poll_ctx.requested_episode
+    existing_stream = _resolver._existing_completed_stream(title, **existing_kwargs)
     if existing_stream is not None:
         return existing_stream
 
@@ -207,16 +213,19 @@ def _poll_until_ready(
             _mark_dead_on_terminal_job_status(job_status, nzo_id, _mark_dead)
             return None, None
 
+        history_kwargs = {
+            "monitor": monitor,
+            "settings_getter": poll_ctx.settings_getter,
+            "modal_failures": poll_ctx.settings_getter is None,
+            "download_size": poll_ctx.download_size,
+        }
+        if poll_ctx.episode_context is not None:
+            history_kwargs["episode_context"] = poll_ctx.episode_context
+        elif poll_ctx.requested_episode is not None:
+            history_kwargs["requested_episode"] = poll_ctx.requested_episode
         should_stop, stream_url, stream_headers, no_video_retries = (
             _resolver._handle_history_result(
-                history,
-                title,
-                no_video_retries,
-                max_no_video_retries,
-                monitor=monitor,
-                settings_getter=poll_ctx.settings_getter,
-                modal_failures=poll_ctx.settings_getter is None,
-                download_size=poll_ctx.download_size,
+                history, title, no_video_retries, max_no_video_retries, **history_kwargs
             )
         )
         if stream_url:

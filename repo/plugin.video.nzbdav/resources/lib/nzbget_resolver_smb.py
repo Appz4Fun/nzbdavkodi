@@ -21,6 +21,7 @@ import time
 import xbmcvfs
 
 import resources.lib.nzbget_resolver as _core  # noqa: F401  pylint: disable=unused-import
+from resources.lib.episode_inventory import build_video_inventory
 
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
@@ -181,19 +182,78 @@ def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
     instead of failing with "No video file found on SMB share". Returns
     ``(None, -1)`` when nothing playable is found.
     """
+    inventory = _core._smb_inventory(folder, depth=depth)
+    if inventory is None or inventory.selected_path is None:
+        return None, -1
+    return inventory.selected_path, inventory.selected_size
+
+
+def _smb_video_scan_in_tree(folder, depth=_SMB_MAX_DEPTH):
+    """Return ``(visible video rows, complete)`` for one SMB tree scan."""
     try:
+        # Kodi Omega treats SMB directory exists probes as directories only
+        # when their URL ends in a slash. Keep listdir and child URLs stable.
+        if not xbmcvfs.exists(folder.rstrip("/") + "/"):
+            return [], False
         dirs, files = xbmcvfs.listdir(folder)
     except Exception:  # pylint: disable=broad-except
-        return None, -1
-    best, best_size = _core._largest_video_in_dir(folder, files)
+        return [], False
+
+    rows = []
+    complete = True
+    for name in sorted(files, key=str.casefold):
+        if _core._is_video_name(name):
+            path = "{}/{}".format(folder, name)
+            rows.append((path, _core._smb_file_size(path)))
     if depth > 0:
-        for sub in dirs:
-            url, size = _core._largest_video_in_tree(
-                "{}/{}".format(folder, sub), depth - 1
+        for subdir in sorted(dirs, key=str.casefold):
+            child_rows, child_complete = _smb_video_scan_in_tree(
+                "{}/{}".format(folder, subdir), depth - 1
             )
-            if url is not None and size > best_size:
-                best, best_size = url, size
-    return best, best_size
+            rows.extend(child_rows)
+            if not child_complete:
+                complete = False
+    return rows, complete
+
+
+def _smb_video_candidates_in_tree(folder, depth=_SMB_MAX_DEPTH):
+    """Return complete playable rows, or ``None`` for an incomplete tree."""
+    rows, complete = _smb_video_scan_in_tree(folder, depth=depth)
+    return rows if complete else None
+
+
+def _smb_inventory(folder, requested_episode=None, depth=_SMB_MAX_DEPTH):
+    """Build an episode-aware inventory for one reachable SMB folder tree."""
+    rows, complete = _smb_video_scan_in_tree(folder, depth=depth)
+    if not complete:
+        return None
+    return build_video_inventory(rows, requested=requested_episode)
+
+
+def _partial_smb_selection_is_safe(inventory, requested_episode):
+    """Whether visible partial rows prove a safe playable selection."""
+    if inventory.selected_path is None:
+        return False
+    if requested_episode is None:
+        return True
+    for video_file in inventory.files:
+        if video_file.path != inventory.selected_path:
+            continue
+        return not video_file.auxiliary and requested_episode in video_file.episode_tags
+    return False
+
+
+def _report_smb_inventory(callback, inventory):
+    """Invoke an optional inventory callback without breaking playback."""
+    if callback is None:
+        return
+    try:
+        callback(inventory)
+    except Exception as error:  # pylint: disable=broad-except
+        _core.xbmc.log(
+            "NZB-DAV: SMB inventory callback failed: {}".format(error),
+            _core.xbmc.LOGDEBUG,
+        )
 
 
 def _drive_resolve_dialog(dialog, now, deadline, budget):
@@ -220,8 +280,10 @@ def resolve_smb_video(
     dialog=None,
     interval=_SMB_LIST_RETRY_INTERVAL,
     budget=_SMB_RESOLVE_BUDGET,
+    requested_episode=None,
+    on_inventory=None,
 ):
-    """List an SMB folder and return the largest video file URL, or None.
+    """List an SMB folder and return its requested playable video, or None.
 
     Searches the folder tree (top level plus nested subdirectories, see
     ``_largest_video_in_tree``) and keeps retrying until a video appears or
@@ -231,17 +293,31 @@ def resolve_smb_video(
     attempts via ``Monitor.waitForAbort`` so it stays cancelable and honors
     Kodi shutdown. When a ``dialog`` (DialogProgress) is supplied, it shows a
     progress bar over the wait and its Cancel button aborts the search.
-    Returns None if no video file appears within the budget.
+    With episode context, an exact tagged episode beats larger pack members;
+    named wrong episodes and multiple untagged videos fail closed, while one
+    untagged video retains the ordinary single-file fallback. Returns None if
+    no playable selection appears within the budget.
     """
     if monitor is None:
         monitor = _core.xbmc.Monitor()
     deadline = time.monotonic() + budget
+    last_complete_inventory = None
     while True:
-        url, _size = _core._largest_video_in_tree(smb_folder)
-        if url is not None:
-            return url
+        rows, complete = _smb_video_scan_in_tree(smb_folder)
+        inventory = build_video_inventory(rows, requested=requested_episode)
+        if complete:
+            last_complete_inventory = inventory
+        if complete and inventory.selected_path:
+            _core._report_smb_inventory(on_inventory, inventory)
+            return inventory.selected_path
+        if not complete and _partial_smb_selection_is_safe(
+            inventory, requested_episode
+        ):
+            return inventory.selected_path
         now = time.monotonic()
         if now >= deadline:
+            if last_complete_inventory is not None:
+                _core._report_smb_inventory(on_inventory, last_complete_inventory)
             return None
         if _core._drive_resolve_dialog(dialog, now, deadline, budget):
             return None

@@ -39,6 +39,20 @@ def test_get_settings_strips_and_defaults():
     assert category == "movies"
 
 
+def test_history_status_preserves_exact_nzbid_and_job_name():
+    row = {
+        "NZBID": 42,
+        "Name": "Spider-Noir.S01.2160p",
+        "Status": "SUCCESS/ALL",
+        "FinalDir": "/downloads/tv/Spider-Noir",
+    }
+    with patch("resources.lib.nzbget_api._rpc_call", return_value=([row], None)):
+        result = history_status(42)
+
+    assert result["nzbid"] == 42
+    assert result["job_name"] == "Spider-Noir.S01.2160p"
+
+
 def test_rpc_url_appends_jsonrpc():
     assert _rpc_url("http://box:6789") == "http://box:6789/jsonrpc"
 
