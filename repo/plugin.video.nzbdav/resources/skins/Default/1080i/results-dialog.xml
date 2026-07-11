@@ -179,6 +179,7 @@
           <left>40</left><top>4</top><width>1140</width><height>30</height>
           <font>font13</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Label]</label><aligny>center</aligny>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>1190</left><top>4</top><width>120</width><height>30</height>
