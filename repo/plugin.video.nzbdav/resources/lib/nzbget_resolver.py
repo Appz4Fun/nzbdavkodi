@@ -600,6 +600,7 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         # {"key","pick_score","backups"} dict, threaded from the resolve params.
         self.dupe = None
         self.episode_context = None
+        self.season_pack_record = None
         # Set on user-cancel so the background backup worker stops submitting
         # more duplicates (#372 round 2).
         self.cancel_event = threading.Event()
@@ -619,6 +620,26 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
     the resolve. A probe miss (files cleaned up / share moved) falls through to
     the normal submit flow. Returns ``leave_job`` for the caller's finally.
     """
+    if ctx.season_pack_record is not None:
+        from resources.lib.season_pack_reuse import reuse_exact_job
+
+        pack_reuse = reuse_exact_job(
+            ctx.season_pack_record,
+            ctx.episode_context,
+            "nzbget",
+            settings_getter=ctx.settings_getter,
+        )
+        if pack_reuse.state == "valid":
+            ctx.on_success(pack_reuse.stream_url)
+            return False
+        if not nzb_url:
+            ctx.on_failure(_string(30223))
+            return False
+        # The exact pack was conclusively stale (or temporarily unavailable).
+        # Continue with the selected provider URL, but never fall back to an
+        # unvalidated name-based completed hint that could be a different job.
+        return _submit_poll_resolve(ctx, nzb_url, title, meta[0], meta[1])
+
     reuse_url = _reuse_completed_job(
         completed_job,
         ctx.smb_root,
@@ -630,6 +651,9 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
     )
     if reuse_url:
         ctx.on_success(reuse_url)
+        return False
+    if not nzb_url:
+        ctx.on_failure(_string(30223))
         return False
     return _submit_poll_resolve(ctx, nzb_url, title, meta[0], meta[1])
 
@@ -847,6 +871,7 @@ def _run_nzbget_backend(  # pylint: disable=too-many-arguments
     completed_job=None,
     dupe=None,
     *,
+    season_pack_record=None,
     episode_context=None,
 ):
     """Shared NZBGet flow: reuse completed files, else submit -> poll -> SMB.
@@ -866,7 +891,7 @@ def _run_nzbget_backend(  # pylint: disable=too-many-arguments
     leave_job = False
     try:
         url, smb_root, timeout = _read_settings(settings_getter)
-        if not all((url, smb_root, nzb_url)):
+        if not all((url, smb_root)):
             on_failure(_string(30221))
             return
 
@@ -883,6 +908,9 @@ def _run_nzbget_backend(  # pylint: disable=too-many-arguments
         )
         ctx.episode_context = (
             dict(episode_context) if isinstance(episode_context, dict) else None
+        )
+        ctx.season_pack_record = (
+            dict(season_pack_record) if isinstance(season_pack_record, dict) else None
         )
         leave_job = _reuse_or_submit(
             ctx, nzb_url, title, completed_job, download_identity
@@ -975,6 +1003,7 @@ def resolve_and_play_nzbget(
         ),
         completed_job=params.get("_nzbget_completed_job"),
         dupe=params.get("_nzbget_dupe"),
+        season_pack_record=params.get("_season_pack"),
         episode_context=params.get("_episode_context"),
     )
 
@@ -1023,5 +1052,6 @@ def play_nzbget(
         ),
         completed_job=resolve_params.get("_nzbget_completed_job"),
         dupe=resolve_params.get("_nzbget_dupe"),
+        season_pack_record=resolve_params.get("_season_pack"),
         episode_context=resolve_params.get("_episode_context"),
     )

@@ -80,6 +80,32 @@ class _ResolveSideEffects:
             )
         return self.fallback_state
 
+    def disable_fallbacks(self):
+        """Prevent provider submissions when an existing pack is playable."""
+        self._candidates = []
+        self._loader = None
+
+
+def _season_pack_stream(record, episode_context, settings_getter=None):
+    """Return a validated nzbdav pack stream tuple, or ``None``.
+
+    A stale or transient pack falls through to a provider URL when one exists;
+    a synthetic pack row with no URL ends as an ordinary resolver failure.
+    """
+    if not isinstance(record, dict):
+        return None
+    from resources.lib.season_pack_reuse import reuse_exact_job
+
+    result = reuse_exact_job(
+        record,
+        episode_context,
+        "nzbdav",
+        settings_getter=settings_getter,
+    )
+    if result.state != "valid":
+        return None
+    return result.stream_url, result.stream_headers
+
 
 def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effects):
     """Acquire the stream for the handle-based ``resolve`` path.
@@ -87,6 +113,23 @@ def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effe
     Returns ``(stream_url, stream_headers, dialog)``: the completed fast-path
     (``dialog`` is ``None``) or the submit+poll result. Extracted verbatim from
     ``resolve``."""
+    pack_stream = _season_pack_stream(
+        params.get("_season_pack"), effects.episode_context
+    )
+    if pack_stream is not None:
+        effects.disable_fallbacks()
+        return pack_stream[0], pack_stream[1], None
+    if not nzb_url:
+        return None, None, None
+    if params.get("_season_pack"):
+        selected_indexer = params.get("_selected_indexer", "")
+        return _resolver._resolve_submit_and_poll(
+            nzb_url,
+            title,
+            params,
+            True,
+            effects.poll_context(selected_indexer, rejected_completed_ids),
+        )
     selected_indexer = params.get("_selected_indexer", "")
     picker_completed_lookup_done = _resolver._picker_completed_lookup_done(params)
     picker_kwargs = {
@@ -139,6 +182,25 @@ def _resolve_and_play_acquire_stream(
     Returns ``(stream_url, stream_headers, dialog)``: the completed fast-path
     (``dialog`` is ``None``) or the submit+poll result, with the resolve-stage
     logging woven in verbatim. Extracted verbatim from ``resolve_and_play``."""
+    pack_stream = _season_pack_stream(
+        resolve_params.get("_season_pack"),
+        effects.episode_context,
+        settings_getter=settings_getter,
+    )
+    if pack_stream is not None:
+        effects.disable_fallbacks()
+        return pack_stream[0], pack_stream[1], None
+    if not nzb_url:
+        return None, None, None
+    if resolve_params.get("_season_pack"):
+        selected_indexer = resolve_params.get("_selected_indexer", "")
+        return _resolver._resolve_and_play_submit_and_poll(
+            nzb_url,
+            title,
+            resolve_params,
+            True,
+            effects.poll_context(selected_indexer, set()),
+        )
     selected_indexer = resolve_params.get("_selected_indexer", "")
     picker_completed_lookup_done = _resolver._picker_completed_lookup_done(
         resolve_params
@@ -188,7 +250,7 @@ def resolve(handle, params):
     title = _resolver.unquote(params.get("title", ""))
     effects = None
 
-    if not nzb_url:
+    if not nzb_url and not params.get("_season_pack"):
         _resolver._reject_resolve_handle(
             handle, notify_message=_resolver._string(30096)
         )

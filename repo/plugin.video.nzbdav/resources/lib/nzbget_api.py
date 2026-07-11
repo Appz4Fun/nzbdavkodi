@@ -14,6 +14,7 @@ import json
 import xbmc
 import xbmcaddon
 
+from resources.lib.exact_job import ExactJobLookup
 from resources.lib.http_util import http_get as _http_get
 from resources.lib.http_util import http_post_json as _http_post_json
 from resources.lib.http_util import redact_text as _redact_text
@@ -273,6 +274,42 @@ def history_status(nzbid, settings_getter=None):
                 "job_name": str(item.get("Name") or ""),
             }
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
+
+
+def lookup_completed_job_exact(nzbid, settings_getter=None):
+    """Tri-state lookup of one exact NZBGet SUCCESS history identifier."""
+    try:
+        history, error = _rpc_call("history", [False], settings_getter=settings_getter)
+    except Exception as exc:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: NZBGet exact history lookup failed: {}".format(
+                _redact_text(str(exc))
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return ExactJobLookup.transient()
+    if error is not None or not isinstance(history, list):
+        return ExactJobLookup.transient()
+    for item in history:
+        if not isinstance(item, dict) or not _same_nzbid(item.get("NZBID"), nzbid):
+            continue
+        status = str(item.get("Status") or "")
+        if not status.startswith("SUCCESS"):
+            return ExactJobLookup.stale()
+        return ExactJobLookup.valid(
+            {
+                "nzbid": item.get("NZBID"),
+                "name": str(item.get("Name") or ""),
+                "status": status,
+                "dest_dir": _dest_dir(item),
+            }
+        )
+    return ExactJobLookup.stale()
+
+
+def completed_by_id(nzbid, settings_getter=None):
+    """Return the shared exact-job lookup contract for one NZBGet ID."""
+    return lookup_completed_job_exact(nzbid, settings_getter=settings_getter)
 
 
 class _CompletedHistory(dict):

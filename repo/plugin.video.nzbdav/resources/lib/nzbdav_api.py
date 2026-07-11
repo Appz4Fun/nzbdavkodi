@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import xbmc
 import xbmcaddon
 
+from resources.lib.exact_job import ExactJobLookup
 from resources.lib.http_util import http_get as _http_get
 from resources.lib.http_util import redact_text as _redact_text
 from resources.lib.nzbdav_api_parsing import (
@@ -454,6 +455,52 @@ def get_job_history(nzo_id, settings_getter=None):
                 "fail_message": slot.get("fail_message", ""),
             }
     return None
+
+
+def lookup_completed_job_exact(nzo_id, settings_getter=None):
+    """Tri-state lookup of one exact nzbdav completed-history identifier.
+
+    Unlike :func:`get_job_history`, this keeps a successful empty lookup apart
+    from a network, auth, JSON, or response-shape failure. That distinction is
+    required before deleting a persistent season-pack record.
+    """
+    try:
+        base_url, api_key = _get_settings(settings_getter=settings_getter)
+        params = {
+            "mode": "history",
+            "nzo_ids": nzo_id,
+            "apikey": api_key,
+            "output": "json",
+        }
+        url = "{}/api?{}".format(base_url, urlencode(params))
+        decoded = json.loads(_http_get(url, timeout=_API_READ_TIMEOUT))
+    except Exception as error:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: exact history lookup failed for nzo_id={}: {}".format(
+                nzo_id, _redact_text(str(error))
+            ),
+            xbmc.LOGDEBUG,
+        )
+        return ExactJobLookup.transient()
+
+    if not isinstance(decoded, dict):
+        return ExactJobLookup.transient()
+    history = decoded.get("history")
+    if not isinstance(history, dict) or not isinstance(history.get("slots"), list):
+        return ExactJobLookup.transient()
+    target = str(nzo_id)
+    for slot in history["slots"]:
+        if not isinstance(slot, dict) or str(slot.get("nzo_id")) != target:
+            continue
+        if slot.get("status") != "Completed":
+            return ExactJobLookup.stale()
+        return ExactJobLookup.valid(_completed_job_from_slot(slot))
+    return ExactJobLookup.stale()
+
+
+def completed_by_id(nzo_id, settings_getter=None):
+    """Return the shared exact-job lookup contract for one nzbdav ID."""
+    return lookup_completed_job_exact(nzo_id, settings_getter=settings_getter)
 
 
 def find_completed_by_name(name, settings_getter=None):

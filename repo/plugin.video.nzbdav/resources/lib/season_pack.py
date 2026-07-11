@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import time
+from typing import NamedTuple
 
 import xbmc
 import xbmcvfs
@@ -230,6 +231,43 @@ def find_exact(backend, job_id):
     if not matches:
         return None
     return max(matches, key=lambda row: row.get("last_confirmed", 0.0))
+
+
+class PackValidation(NamedTuple):
+    """Exact backend-history validation for one catalog record."""
+
+    job: object
+    outcome: str
+
+
+def validate_job(record, settings_getter=None):
+    """Validate an exact catalog job ID and backend-native folder.
+
+    Only a conclusive successful history lookup can remove a stale record;
+    transient API/auth/network/parse failures preserve it for a later retry.
+    """
+    if not isinstance(record, dict):
+        return PackValidation(None, "transient")
+    backend = record.get("backend")
+    if backend == "nzbget":
+        from resources.lib.nzbget_api import completed_by_id
+
+        lookup = completed_by_id(record.get("job_id"), settings_getter=settings_getter)
+        folder_key = "dest_dir"
+    elif backend == "nzbdav":
+        from resources.lib.nzbdav_api import completed_by_id
+
+        lookup = completed_by_id(record.get("job_id"), settings_getter=settings_getter)
+        folder_key = "storage"
+    else:
+        return PackValidation(None, "transient")
+    if not lookup.lookup_done:
+        return PackValidation(None, "transient")
+    job_folder = lookup.job.get(folder_key) if lookup.job is not None else None
+    if lookup.job is None or str(job_folder or "") != str(record.get("folder") or ""):
+        remove(backend, record.get("job_id"))
+        return PackValidation(None, "stale")
+    return PackValidation(lookup.job, "valid")
 
 
 def _content_matches(record, context):
