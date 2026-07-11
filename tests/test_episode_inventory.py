@@ -128,6 +128,34 @@ def test_auxiliary_extras_directory_does_not_create_pack_episode():
     assert inventory.pack_season is None
 
 
+def test_nested_auxiliary_ancestor_does_not_create_pack_episode():
+    inventory = build_video_inventory(
+        [
+            ("/pack/EXTRAS/1080p/Show.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
+def test_show_folder_exception_does_not_mask_different_auxiliary_ancestor():
+    inventory = build_video_inventory(
+        [
+            ("/pack/FEATURETTE/Extras/Extras.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
 def test_leading_auxiliary_marker_does_not_create_pack_episode():
     inventory = build_video_inventory(
         [
@@ -139,6 +167,20 @@ def test_leading_auxiliary_marker_does_not_create_pack_episode():
 
     assert inventory.selected_path == "/pack/Show.S01E02.mkv"
     assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
+def test_leading_auxiliary_marker_supports_multi_episode_notation():
+    inventory = build_video_inventory(
+        [
+            ("/pack/sample.S01E01E02.mkv", 100),
+            ("/pack/Show.S01E03.mkv", 200),
+        ],
+        requested=(1, 3),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E03.mkv"
+    assert inventory.episodes == (3,)
     assert inventory.pack_season is None
 
 

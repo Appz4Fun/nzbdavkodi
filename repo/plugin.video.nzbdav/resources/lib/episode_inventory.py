@@ -17,7 +17,8 @@ _AUXILIARY_TOKEN_RE = re.compile(
     r"(?:samples?|trailers?|featurettes?|extras?)", re.IGNORECASE
 )
 _LEADING_EPISODE_RE = re.compile(
-    r"(?:s\d{1,3}[. _-]*e\d{1,4}|\d{1,2}[xх]\d{1,3})(?:[. _-]|$)",
+    r"(?:s\d{1,3}[. _-]*e\d{1,4}(?:[. _-]*e\d{1,4})*|"
+    r"\d{1,2}[xх]\d{1,3})(?:[. _-]|$)",
     re.IGNORECASE,
 )
 
@@ -46,14 +47,17 @@ def _coerce_size(value):
 
 
 def _is_auxiliary(name, parent):
-    """Classify conservative filename and nearest-directory auxiliary markers."""
-    parent_name = os.path.basename(parent.rstrip("/")) if parent else ""
-    leading_name = re.split(r"[. _-]+", name, maxsplit=1)[0]
-    parent_is_auxiliary = bool(_AUXILIARY_TOKEN_RE.fullmatch(parent_name))
-    show_folder_exception = (
-        parent_is_auxiliary and leading_name.casefold() == parent_name.casefold()
+    """Classify conservative filename and directory auxiliary markers."""
+    parent_names = tuple(item for item in re.split(r"[/\\]+", parent) if item)
+    auxiliary_parents = tuple(
+        item for item in parent_names if _AUXILIARY_TOKEN_RE.fullmatch(item)
     )
-    if parent_is_auxiliary and not show_folder_exception:
+    leading_name = re.split(r"[. _-]+", name, maxsplit=1)[0]
+    different_auxiliary_parent = any(
+        leading_name.casefold() != item.casefold() for item in auxiliary_parents
+    )
+    show_folder_exception = bool(auxiliary_parents) and not different_auxiliary_parent
+    if different_auxiliary_parent:
         return True
 
     stem = os.path.splitext(name)[0]
