@@ -86,6 +86,20 @@ def _stream_body_available(url, headers):
     return _completed_stream_body_available(url, headers)
 
 
+def _inventory_selected_exact(inventory, requested):
+    """Whether the selected non-aux file explicitly carries the episode tag."""
+    selected_path = getattr(inventory, "selected_path", None)
+    if not selected_path:
+        return False
+    for video_file in getattr(inventory, "files", ()) or ():
+        if getattr(video_file, "path", None) != selected_path:
+            continue
+        return not getattr(video_file, "auxiliary", True) and requested in (
+            getattr(video_file, "episode_tags", ()) or ()
+        )
+    return False
+
+
 def _reuse_nzbget(record, requested, episode_context, settings_getter):
     validation = season_pack.validate_job(record, settings_getter=settings_getter)
     if validation.outcome == "transient":
@@ -104,7 +118,7 @@ def _reuse_nzbget(record, requested, episode_context, settings_getter):
         return ReuseResult("transient", None, None)
     if inventory is None:
         return ReuseResult("transient", None, None)
-    if not inventory.files or not inventory.selected_path:
+    if not inventory.files or not _inventory_selected_exact(inventory, requested):
         return _stale(record)
     _refresh_inventory(record, episode_context, inventory)
     return ReuseResult("valid", inventory.selected_path, {})
@@ -127,7 +141,7 @@ def _reuse_nzbdav(record, requested, episode_context, settings_getter):
         return ReuseResult("transient", None, None)
     if inventory is None:
         return ReuseResult("transient", None, None)
-    if not inventory.files or not inventory.selected_path:
+    if not inventory.files or not _inventory_selected_exact(inventory, requested):
         return _stale(record)
     try:
         stream_url, stream_headers = webdav.get_webdav_stream_url_for_path(

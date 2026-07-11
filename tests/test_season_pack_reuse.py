@@ -40,7 +40,9 @@ def _record(backend="nzbget", job_id="41", folder="/downloads/show"):
 class _Inventory:  # pylint: disable=too-few-public-methods
     def __init__(self, path=None, files=None, episodes=(1, 2), pack_season=1):
         self.selected_path = path
-        self.files = list(files if files is not None else ([path] if path else []))
+        paths = list(files if files is not None else ([path] if path else []))
+        built = build_video_inventory([(item, 1) for item in paths])
+        self.files = built.files
         self.episodes = episodes
         self.pack_season = pack_season
 
@@ -228,6 +230,47 @@ def test_nzbget_reachable_empty_or_missing_episode_removes_exact_record():
         remove.assert_called_once_with("nzbget", "41")
 
 
+def test_nzbget_cached_pack_reuse_rejects_generic_untagged_video():
+    record = _record()
+    inventory = build_video_inventory(
+        [("smb://box/show/video.mkv", 100)], requested=(1, 2)
+    )
+    assert inventory.selected_path.endswith("video.mkv")
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/downloads/show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse._nzbget_folder_for_record",
+        return_value="smb://box/show",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory", return_value=inventory
+    ), patch(
+        "resources.lib.season_pack_reuse.season_pack.remove"
+    ) as remove, patch(
+        "resources.lib.nzbget_api.append_nzb"
+    ) as submit:
+        result = season_pack_reuse.reuse_exact_job(record, _context(2), "nzbget")
+
+    assert result.state == "stale"
+    remove.assert_called_once_with("nzbget", "41")
+    submit.assert_not_called()
+
+
+def test_cached_pack_reuse_accepts_exact_tag_from_multi_episode_file():
+    inventory = build_video_inventory(
+        [
+            ("/show/Spider-Noir.S01E01E02.mkv", 200),
+            ("/show/Spider-Noir.S01E03.mkv", 100),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path.endswith("S01E01E02.mkv")
+    assert season_pack_reuse._inventory_selected_exact(inventory, (1, 2)) is True
+
+
 def test_nzbdav_valid_exact_job_requires_playable_body():
     record = _record("nzbdav", "nzo-1", "/data/completed/show")
     inventory = _Inventory("/completed/show/Spider-Noir.S01E01.mkv")
@@ -405,6 +448,38 @@ def test_nzbdav_reachable_empty_or_missing_requested_episode_removes_record():
             result = season_pack_reuse.reuse_exact_job(record, _context(), "nzbdav")
         assert result.state == "stale"
         remove.assert_called_once_with("nzbdav", "nzo-1")
+
+
+def test_nzbdav_cached_pack_reuse_rejects_generic_untagged_video():
+    record = _record("nzbdav", "nzo-1", "/data/completed/show")
+    inventory = build_video_inventory(
+        [("/completed/show/video.mkv", 100)], requested=(1, 2)
+    )
+    assert inventory.selected_path.endswith("video.mkv")
+    with patch(
+        "resources.lib.nzbdav_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzo_id": "nzo-1", "storage": "/data/completed/show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse._webdav_folder_for_record",
+        return_value="/completed/show",
+    ), patch(
+        "resources.lib.season_pack_reuse.webdav.folder_video_inventory",
+        return_value=inventory,
+    ), patch(
+        "resources.lib.season_pack_reuse.webdav.get_webdav_stream_url_for_path"
+    ) as stream_url, patch(
+        "resources.lib.season_pack_reuse.season_pack.remove"
+    ) as remove, patch(
+        "resources.lib.nzbdav_api.submit_nzb"
+    ) as submit:
+        result = season_pack_reuse.reuse_exact_job(record, _context(2), "nzbdav")
+
+    assert result.state == "stale"
+    remove.assert_called_once_with("nzbdav", "nzo-1")
+    stream_url.assert_not_called()
+    submit.assert_not_called()
 
 
 def test_active_backend_isolation_rejects_record_without_deleting_it():
