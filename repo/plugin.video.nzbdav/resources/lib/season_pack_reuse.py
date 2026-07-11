@@ -26,12 +26,20 @@ def _stale(record):
 def _refresh_inventory(record, episode_context, inventory):
     from resources.lib.season_pack_recording import record_completed_inventory
 
+    merged_context = dict(episode_context or {})
+    for field in ("title", "imdb", "tvdb", "tmdb_id"):
+        if not str(merged_context.get(field) or "").strip() and record.get(field):
+            merged_context[field] = record[field]
+    if not merged_context.get("type"):
+        merged_context["type"] = "episode"
+    if merged_context.get("season") in (None, ""):
+        merged_context["season"] = record.get("season")
     record_completed_inventory(
         record.get("backend"),
         record.get("job_id"),
         record.get("job_name"),
         record.get("folder"),
-        episode_context,
+        merged_context,
         inventory,
     )
 

@@ -85,6 +85,19 @@ class _ResolveSideEffects:
         self._candidates = []
         self._loader = None
 
+    def prefetch_fallbacks(self):
+        """Start deferred provider discovery after pack reuse falls through."""
+        self._loader = _resolver._prefetch_fallback_candidate_loader(self._loader)
+
+
+def _entry_fallback_candidate_loader(params):
+    """Return a deferred loader for pack rows, prefetched for ordinary rows."""
+    params = params if isinstance(params, dict) else {}
+    loader = params.get("_fallback_candidate_loader")
+    if params.get("_season_pack"):
+        return loader
+    return _resolver._prefetch_fallback_candidate_loader(loader)
+
 
 def _season_pack_stream(record, episode_context, settings_getter=None):
     """Return a validated nzbdav pack stream tuple, or ``None``.
@@ -122,6 +135,7 @@ def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effe
     if not nzb_url:
         return None, None, None
     if params.get("_season_pack"):
+        effects.prefetch_fallbacks()
         selected_indexer = params.get("_selected_indexer", "")
         return _resolver._resolve_submit_and_poll(
             nzb_url,
@@ -159,9 +173,7 @@ def _resolve_and_play_make_effects(params, resolve_params, nzb_url, settings_get
     Prefetches the fallback candidate loader and emits the deferred-lookup
     resolve stages verbatim. Extracted from ``resolve_and_play``."""
     fallback_candidates = resolve_params.get("_fallback_candidates", [])
-    fallback_candidate_loader = _resolver._prefetch_fallback_candidate_loader(
-        resolve_params.get("_fallback_candidate_loader")
-    )
+    fallback_candidate_loader = _entry_fallback_candidate_loader(resolve_params)
     _resolver._resolve_stage("fallback lookup deferred")
     _resolver._resolve_stage("service config lookup deferred")
     return _ResolveSideEffects(
@@ -193,6 +205,7 @@ def _resolve_and_play_acquire_stream(
     if not nzb_url:
         return None, None, None
     if resolve_params.get("_season_pack"):
+        effects.prefetch_fallbacks()
         selected_indexer = resolve_params.get("_selected_indexer", "")
         return _resolver._resolve_and_play_submit_and_poll(
             nzb_url,
@@ -267,9 +280,7 @@ def resolve(handle, params):
     dialog = None
     try:
         fallback_candidates = params.get("_fallback_candidates", [])
-        fallback_candidate_loader = _resolver._prefetch_fallback_candidate_loader(
-            params.get("_fallback_candidate_loader")
-        )
+        fallback_candidate_loader = _entry_fallback_candidate_loader(params)
         # One rejected-id set per resolve attempt, shared so a Completed row
         # the picker body probe rejects is honored by the submit/poll paths.
         rejected_completed_ids = set()

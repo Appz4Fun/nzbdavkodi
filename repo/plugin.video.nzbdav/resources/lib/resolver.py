@@ -300,6 +300,7 @@ from resources.lib.resolver_completed import (  # noqa: E402,F401
     _submit_error_with_indexer,
 )
 from resources.lib.resolver_entry import (  # noqa: E402,F401
+    _entry_fallback_candidate_loader,
     _resolve_acquire_stream,
     _resolve_and_play_acquire_stream,
     _resolve_and_play_make_effects,

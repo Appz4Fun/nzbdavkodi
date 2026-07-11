@@ -111,6 +111,42 @@ def test_nzbget_successful_rescan_refreshes_exact_catalog_episode_inventory(
     assert refreshed["folder"] == "/downloads/show"
 
 
+def test_inventory_refresh_preserves_identity_missing_from_current_context(
+    tmp_path, monkeypatch
+):
+    record = _record()
+    monkeypatch.setattr(
+        season_pack_reuse.season_pack, "_catalog_dir", lambda: str(tmp_path)
+    )
+    assert season_pack_reuse.season_pack.upsert(record)
+    inventory = build_video_inventory(
+        [
+            ("/show/Spider-Noir.S01E01.mkv", 100),
+            ("/show/Spider-Noir.S01E02.mkv", 100),
+            ("/show/Spider-Noir.S01E03.mkv", 100),
+        ],
+        requested=(1, 3),
+    )
+    partial_context = {
+        "type": "episode",
+        "title": "",
+        "season": 1,
+        "episode": 3,
+    }
+
+    season_pack_reuse._refresh_inventory(record, partial_context, inventory)
+
+    refreshed = season_pack_reuse.season_pack.find_exact("nzbget", "41")
+    assert refreshed["title"] == "Spider-Noir"
+    assert refreshed["imdb"] == "tt123"
+    assert refreshed["tvdb"] == "456"
+    assert refreshed["tmdb_id"] == "789"
+    assert (
+        season_pack_reuse.season_pack.find_for_episode(_context(3), "nzbget")
+        is not None
+    )
+
+
 def test_nzbget_duplicate_name_different_id_is_never_substituted():
     record = _record(job_id="41")
     with patch(
@@ -465,6 +501,59 @@ def test_nzbdav_pack_reuse_disables_delayed_fallback_provider_submissions():
 
     assert start.call_args.args[0] == []
     assert start.call_args.kwargs["candidate_loader"] is None
+
+
+def test_pack_entry_paths_do_not_prefetch_provider_loader_until_fallthrough():
+    from resources.lib import resolver
+
+    raw_loader = MagicMock()
+    params = {
+        "_season_pack": _record("nzbdav", "nzo-1", "/data/completed/show"),
+        "_fallback_candidate_loader": raw_loader,
+    }
+    with patch(
+        "resources.lib.resolver._prefetch_fallback_candidate_loader"
+    ) as prefetch:
+        handle_loader = resolver._entry_fallback_candidate_loader(params)
+        effects = resolver._resolve_and_play_make_effects(
+            params, params, "", settings_getter=None
+        )
+
+    assert handle_loader is raw_loader
+    assert effects._loader is raw_loader
+    prefetch.assert_not_called()
+    raw_loader.assert_not_called()
+
+
+def test_stale_pack_fallthrough_prefetches_provider_loader_before_submit():
+    from resources.lib import resolver
+
+    raw_loader = MagicMock()
+    wrapped_loader = MagicMock()
+    params = {
+        "_season_pack": _record("nzbdav", "nzo-1", "/data/completed/show"),
+        "_fallback_candidate_loader": raw_loader,
+        "_episode_context": _context(),
+    }
+    effects = resolver._ResolveSideEffects(
+        params, [], raw_loader, "http://provider/episode.nzb", MagicMock()
+    )
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("stale", None, None),
+    ), patch(
+        "resources.lib.resolver._prefetch_fallback_candidate_loader",
+        return_value=wrapped_loader,
+    ) as prefetch, patch(
+        "resources.lib.resolver._resolve_submit_and_poll",
+        return_value=(None, None, None),
+    ):
+        resolver._resolve_acquire_stream(
+            "http://provider/episode.nzb", "Spider-Noir", params, set(), effects
+        )
+
+    prefetch.assert_called_once_with(raw_loader)
+    assert effects._loader is wrapped_loader
 
 
 def test_handle_resolve_pack_failure_still_sets_resolved_url_false():
