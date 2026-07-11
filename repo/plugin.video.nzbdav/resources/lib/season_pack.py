@@ -4,6 +4,7 @@
 """Persistent, job-isolated catalog of completed season-pack inventories."""
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -65,9 +66,12 @@ def _number(value):
 
 def _timestamp(value, default=0.0):
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
+        timestamp = float(value)
+    except (OverflowError, TypeError, ValueError):
+        timestamp = float(default)
+    if math.isfinite(timestamp):
+        return timestamp
+    return 0.0
 
 
 def _normalize_title(value):
@@ -97,14 +101,9 @@ def _normalize_record(record, default_timestamp=0.0):
     folder = _text(record.get("folder"))
     season = _number(record.get("season"))
     episodes = _normalize_episodes(record.get("episodes"))
-    if (
-        backend not in ("nzbget", "nzbdav")
-        or not job_id
-        or not folder
-        or season is None
-        or season < 0
-        or not episodes
-    ):
+    if backend not in ("nzbget", "nzbdav") or not job_id or not folder:
+        return None
+    if season is None or season < 0 or not episodes:
         return None
     normalized = {
         "backend": backend,

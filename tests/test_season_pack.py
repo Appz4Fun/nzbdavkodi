@@ -162,6 +162,43 @@ def test_find_returns_newest_confirmed_matching_job(tmp_path, monkeypatch):
     assert season_pack.find_for_episode(_context(), "nzbget")["job_id"] == "new"
 
 
+def test_oversized_json_timestamp_defaults_without_breaking_load(tmp_path, monkeypatch):
+    _use_catalog(tmp_path, monkeypatch)
+    payload = {"version": 1, "records": [_record(last_confirmed=10**400)]}
+    (tmp_path / season_pack._CATALOG_FILENAME).write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    assert season_pack.load_records()[0]["last_confirmed"] == 0.0
+
+
+def test_nonfinite_timestamps_default_and_cannot_win_newest_match(
+    tmp_path, monkeypatch
+):
+    _use_catalog(tmp_path, monkeypatch)
+    payload = {
+        "version": 1,
+        "records": [
+            _record("nan", "/downloads/nan", last_confirmed=float("nan")),
+            _record("positive", "/downloads/positive", last_confirmed=float("inf")),
+            _record("negative", "/downloads/negative", last_confirmed=float("-inf")),
+            _record("newest", "/downloads/newest", last_confirmed=50),
+        ],
+    }
+    (tmp_path / season_pack._CATALOG_FILENAME).write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    loaded = season_pack.load_records()
+    assert {row["job_id"]: row["last_confirmed"] for row in loaded} == {
+        "nan": 0.0,
+        "positive": 0.0,
+        "negative": 0.0,
+        "newest": 50.0,
+    }
+    assert season_pack.find_for_episode(_context(), "nzbget")["job_id"] == "newest"
+
+
 def test_save_bounds_catalog_to_newest_100_records(tmp_path, monkeypatch):
     _use_catalog(tmp_path, monkeypatch)
     rows = [
