@@ -72,6 +72,220 @@ def test_resolve_smb_video_returns_largest_file_url():
     assert url == "smb://host/completed/The.Movie/movie.mkv"
 
 
+def test_resolve_smb_video_selects_requested_episode_over_largest():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    files = ["Spider-Noir.S01E01.mkv", "Spider-Noir.S01E05.mkv"]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 7_000 if "E05" in path else 6_000
+        return stat
+
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], files)
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video(
+            "smb://host/Spider-Noir",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url == "smb://host/Spider-Noir/Spider-Noir.S01E01.mkv"
+    assert seen[0].episodes == (1, 5)
+
+
+def test_smb_inventory_accepts_requested_tuple_for_nested_pack():
+    from resources.lib.nzbget_resolver import _smb_inventory
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    tree = {
+        "smb://host/Spider-Noir": (["Season 01"], []),
+        "smb://host/Spider-Noir/Season 01": (
+            [],
+            ["Spider-Noir.S01E05.mkv", "Spider-Noir.S01E01.mkv"],
+        ),
+    }
+
+    def fake_listdir(path):
+        return tree[path]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 7_000 if "E05" in path else 6_000
+        return stat
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=fake_listdir
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        inventory = _smb_inventory("smb://host/Spider-Noir", requested=(1, 1))
+
+    assert inventory.selected_path.endswith("S01E01.mkv")
+    assert inventory.episodes == (1, 5)
+
+
+def test_resolve_smb_video_does_not_play_named_wrong_episode():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["Show.S01E05.mkv"])
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url is None
+    assert len(seen) == 1
+    assert seen[0].has_tagged_files is True
+
+
+def test_resolve_smb_video_requested_episode_uses_largest_generic_file():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 9_000 if path.endswith("video-b.mkv") else 5_000
+        return stat
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["video-a.mkv", "video-b.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video(
+            "smb://host/Show", monitor=_Monitor(), requested_episode=(1, 1)
+        )
+
+    assert url == "smb://host/Show/video-b.mkv"
+
+
+def test_resolve_smb_video_without_episode_keeps_legacy_largest_selection():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def fake_stat(path):
+        stat = MagicMock()
+        stat.st_size.return_value = 9_000 if "E05" in path else 5_000
+        return stat
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs,
+        "listdir",
+        return_value=([], ["Show.S01E01.mkv", "Show.S01E05.mkv"]),
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video("smb://host/Show", monitor=_Monitor())
+
+    assert url == "smb://host/Show/Show.S01E05.mkv"
+
+
+def test_resolve_smb_video_retries_transient_list_error_without_empty_callback():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    listdir = MagicMock(
+        side_effect=[OSError("share settling"), ([], ["Show.S01E01.mkv"])]
+    )
+    stat = MagicMock()
+    stat.st_size.return_value = 5_000
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", listdir
+    ), patch.object(xbmcvfs, "Stat", return_value=stat):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url == "smb://host/Show/Show.S01E01.mkv"
+    assert listdir.call_count == 2
+    assert len(seen) == 1
+    assert seen[0].files
+
+
+def test_resolve_smb_video_does_not_report_unreachable_empty_inventory():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=False), patch.object(
+        xbmcvfs, "listdir", return_value=([], [])
+    ):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            on_inventory=seen.append,
+        )
+
+    assert url is None
+    assert not seen
+
+
+def test_resolve_smb_video_reports_reachable_empty_inventory_at_deadline():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], [])
+    ):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            on_inventory=seen.append,
+        )
+
+    assert url is None
+    assert len(seen) == 1
+    assert seen[0].files == ()
+
+
+def test_resolve_completed_smb_forwards_episode_and_inventory_callback():
+    from resources.lib.nzbget_resolver import _resolve_completed_smb
+
+    callback = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/Show/Show.S01E01.mkv",
+    ) as resolve:
+        result = _resolve_completed_smb(
+            "/downloads/Show",
+            "smb://host/completed",
+            "",
+            "/downloads",
+            None,
+            1,
+            requested_episode=(1, 1),
+            on_inventory=callback,
+        )
+
+    assert result.endswith("Show.S01E01.mkv")
+    assert resolve.call_args.kwargs["requested_episode"] == (1, 1)
+    assert resolve.call_args.kwargs["on_inventory"] is callback
+
+
+def test_reuse_completed_job_forwards_episode_and_inventory_callback():
+    from resources.lib.nzbget_resolver import _reuse_completed_job
+
+    callback = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/Show/Show.S01E01.mkv",
+    ) as resolve:
+        result = _reuse_completed_job(
+            {"dest_dir": "/downloads/Show"},
+            "smb://host/completed",
+            "",
+            "/downloads",
+            None,
+            1,
+            requested_episode=(1, 1),
+            on_inventory=callback,
+        )
+
+    assert result.endswith("Show.S01E01.mkv")
+    assert resolve.call_args.kwargs["requested_episode"] == (1, 1)
+    assert resolve.call_args.kwargs["on_inventory"] is callback
+
+
 def test_resolve_smb_video_descends_into_subdirectory():
     # Common archive layout: the release folder holds only a nested
     # subdirectory, and the video lives inside it. The resolver must descend

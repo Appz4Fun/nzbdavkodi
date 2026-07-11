@@ -63,9 +63,12 @@ from resources.lib.nzbget_resolver_smb import (  # noqa: E402,F401
     _is_video_name,
     _largest_video_in_dir,
     _largest_video_in_tree,
+    _report_smb_inventory,
     _smb_exact_mapping,
     _smb_fallback_mapping,
     _smb_file_size,
+    _smb_inventory,
+    _smb_video_candidates_in_tree,
     nzbget_smb_target,
     pick_largest_video,
     resolve_smb_video,
@@ -431,7 +434,14 @@ def _resolve_failure(handle, message=None):
 
 
 def _reuse_completed_job(
-    completed_job, smb_root, category, completed_base, dialog, interval
+    completed_job,
+    smb_root,
+    category,
+    completed_base,
+    dialog,
+    interval,
+    requested_episode=None,
+    on_inventory=None,
 ):
     """Probe an already-completed history match's SMB folder.
 
@@ -451,6 +461,8 @@ def _reuse_completed_job(
         dialog=dialog,
         interval=interval,
         budget=_SMB_REUSE_PROBE_BUDGET,
+        requested_episode=requested_episode,
+        on_inventory=on_inventory,
     )
 
 
@@ -496,7 +508,14 @@ def _handle_poll_failure(
 
 
 def _resolve_completed_smb(
-    dest_dir, smb_root, category, completed_base, dialog, interval
+    dest_dir,
+    smb_root,
+    category,
+    completed_base,
+    dialog,
+    interval,
+    requested_episode=None,
+    on_inventory=None,
 ):
     """Map a completed job's DestDir onto SMB and find the playable video.
 
@@ -507,7 +526,13 @@ def _resolve_completed_smb(
     smb_folder = nzbget_smb_target(smb_root, dest_dir, category, completed_base)
     if not smb_folder:
         return None
-    return resolve_smb_video(smb_folder, dialog=dialog, interval=interval)
+    return resolve_smb_video(
+        smb_folder,
+        dialog=dialog,
+        interval=interval,
+        requested_episode=requested_episode,
+        on_inventory=on_inventory,
+    )
 
 
 class _SubmitCtx:  # pylint: disable=too-few-public-methods
