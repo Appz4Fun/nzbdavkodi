@@ -78,6 +78,31 @@ def test_build_result_item_prefers_internal_display_title():
     cls.assert_called_once_with(label="Already downloaded season pack - Episodes 1-8")
 
 
+def test_pack_result_does_not_invent_sdr_or_mkv_metadata():
+    item = MagicMock()
+    result = _make_result(
+        _meta={},
+        _season_pack={"backend": "nzbdav", "job_id": "nzo-1"},
+    )
+
+    with patch("resources.lib.results_dialog.xbmcgui.ListItem", return_value=item):
+        _build_result_item(result, 0)
+
+    item.setProperty.assert_any_call("hdr", "")
+    item.setProperty.assert_any_call("container", "")
+
+
+def test_ordinary_result_keeps_sdr_and_mkv_defaults():
+    item = MagicMock()
+    result = _make_result(_meta={})
+
+    with patch("resources.lib.results_dialog.xbmcgui.ListItem", return_value=item):
+        _build_result_item(result, 0)
+
+    item.setProperty.assert_any_call("hdr", "[COLOR FF6B7280]SDR[/COLOR]")
+    item.setProperty.assert_any_call("container", "[COLOR FF34D399]MKV[/COLOR]")
+
+
 # ---------------------------------------------------------------------------
 # show_results_dialog
 # ---------------------------------------------------------------------------

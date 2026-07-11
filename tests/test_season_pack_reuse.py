@@ -547,13 +547,121 @@ def test_stale_pack_fallthrough_prefetches_provider_loader_before_submit():
     ) as prefetch, patch(
         "resources.lib.resolver._resolve_submit_and_poll",
         return_value=(None, None, None),
-    ):
+    ) as submit, patch(
+        "resources.lib.resolver._notify", side_effect=RuntimeError("no UI")
+    ) as notify:
         resolver._resolve_acquire_stream(
             "http://provider/episode.nzb", "Spider-Noir", params, set(), effects
         )
 
     prefetch.assert_called_once_with(raw_loader)
     assert effects._loader is wrapped_loader
+    submit.assert_called_once()
+    notify.assert_called_once_with(
+        resolver._addon_name(), resolver._string(30365), 4000
+    )
+
+
+def test_transient_pack_fallthrough_does_not_claim_pack_is_gone():
+    from resources.lib import resolver
+
+    params = {
+        "_season_pack": _record("nzbdav", "nzo-1", "/data/completed/show"),
+        "_episode_context": _context(),
+    }
+    effects = resolver._ResolveSideEffects(
+        params, [], None, "http://provider/episode.nzb", MagicMock()
+    )
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("transient", None, None),
+    ), patch(
+        "resources.lib.resolver._resolve_submit_and_poll",
+        return_value=(None, None, None),
+    ), patch(
+        "resources.lib.resolver._notify"
+    ) as notify:
+        resolver._resolve_acquire_stream(
+            "http://provider/episode.nzb", "Spider-Noir", params, set(), effects
+        )
+
+    notify.assert_not_called()
+
+
+def test_stale_pack_without_provider_does_not_show_fallthrough_notice():
+    from resources.lib import resolver
+
+    params = {
+        "_season_pack": _record("nzbdav", "nzo-1", "/data/completed/show"),
+        "_episode_context": _context(),
+    }
+    effects = resolver._ResolveSideEffects(params, [], None, "", MagicMock())
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("stale", None, None),
+    ), patch("resources.lib.resolver._notify") as notify:
+        result = resolver._resolve_acquire_stream(
+            "", "Spider-Noir", params, set(), effects
+        )
+
+    assert result == (None, None, None)
+    notify.assert_not_called()
+
+
+def test_nzbget_stale_pack_notifies_before_provider_fallthrough():
+    from resources.lib import nzbget_resolver
+
+    ctx = MagicMock()
+    ctx.season_pack_record = _record("nzbget")
+    ctx.episode_context = _context()
+    ctx.settings_getter = None
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("stale", None, None),
+    ), patch.object(
+        nzbget_resolver, "_submit_poll_resolve", return_value=True
+    ) as submit, patch.object(
+        nzbget_resolver, "_notify", side_effect=RuntimeError("no UI")
+    ) as notify:
+        result = nzbget_resolver._reuse_or_submit(
+            ctx,
+            "http://provider/episode.nzb",
+            "Spider-Noir.S01E02",
+            None,
+            (None, None),
+        )
+
+    assert result is True
+    notify.assert_called_once_with(
+        nzbget_resolver._addon_name(), nzbget_resolver._string(30365), 4000
+    )
+    submit.assert_called_once()
+
+
+def test_nzbget_transient_pack_fallthrough_does_not_show_stale_notice():
+    from resources.lib import nzbget_resolver
+
+    ctx = MagicMock()
+    ctx.season_pack_record = _record("nzbget")
+    ctx.episode_context = _context()
+    ctx.settings_getter = None
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("transient", None, None),
+    ), patch.object(
+        nzbget_resolver, "_submit_poll_resolve", return_value=True
+    ), patch.object(
+        nzbget_resolver, "_notify"
+    ) as notify:
+        nzbget_resolver._reuse_or_submit(
+            ctx,
+            "http://provider/episode.nzb",
+            "Spider-Noir.S01E02",
+            None,
+            (None, None),
+        )
+
+    notify.assert_not_called()
 
 
 def test_handle_resolve_pack_failure_still_sets_resolved_url_false():

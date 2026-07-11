@@ -635,6 +635,12 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
         if not nzb_url:
             ctx.on_failure(_string(30223))
             return False
+        if pack_reuse.state == "stale":
+            try:
+                _notify(_addon_name(), _string(30365), 4000)
+            except Exception:  # pylint: disable=broad-except
+                # The provider submit remains usable if Kodi rejects the toast.
+                pass
         # The exact pack was conclusively stale (or temporarily unavailable).
         # Continue with the selected provider URL, but never fall back to an
         # unvalidated name-based completed hint that could be a different job.

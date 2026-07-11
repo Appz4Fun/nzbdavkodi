@@ -99,8 +99,8 @@ def _entry_fallback_candidate_loader(params):
     return _resolver._prefetch_fallback_candidate_loader(loader)
 
 
-def _season_pack_stream(record, episode_context, settings_getter=None):
-    """Return a validated nzbdav pack stream tuple, or ``None``.
+def _season_pack_reuse(record, episode_context, settings_getter=None):
+    """Return the exact nzbdav pack reuse result, or ``None``.
 
     A stale or transient pack falls through to a provider URL when one exists;
     a synthetic pack row with no URL ends as an ordinary resolver failure.
@@ -109,15 +109,27 @@ def _season_pack_stream(record, episode_context, settings_getter=None):
         return None
     from resources.lib.season_pack_reuse import reuse_exact_job
 
-    result = reuse_exact_job(
+    return reuse_exact_job(
         record,
         episode_context,
         "nzbdav",
         settings_getter=settings_getter,
     )
-    if result.state != "valid":
+
+
+def _pack_stream_or_notice(result, provider_url):
+    """Return a valid pack stream and announce only conclusive fallthrough."""
+    if result is None:
         return None
-    return result.stream_url, result.stream_headers
+    if result.state == "valid":
+        return result.stream_url, result.stream_headers
+    if result.state == "stale" and provider_url:
+        try:
+            _resolver._notify(_resolver._addon_name(), _resolver._string(30365), 4000)
+        except Exception:  # pylint: disable=broad-except
+            # A best-effort UI notice must never block the provider fallback.
+            pass
+    return None
 
 
 def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effects):
@@ -126,8 +138,9 @@ def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effe
     Returns ``(stream_url, stream_headers, dialog)``: the completed fast-path
     (``dialog`` is ``None``) or the submit+poll result. Extracted verbatim from
     ``resolve``."""
-    pack_stream = _season_pack_stream(
-        params.get("_season_pack"), effects.episode_context
+    pack_stream = _pack_stream_or_notice(
+        _season_pack_reuse(params.get("_season_pack"), effects.episode_context),
+        nzb_url,
     )
     if pack_stream is not None:
         effects.disable_fallbacks()
@@ -194,10 +207,13 @@ def _resolve_and_play_acquire_stream(
     Returns ``(stream_url, stream_headers, dialog)``: the completed fast-path
     (``dialog`` is ``None``) or the submit+poll result, with the resolve-stage
     logging woven in verbatim. Extracted verbatim from ``resolve_and_play``."""
-    pack_stream = _season_pack_stream(
-        resolve_params.get("_season_pack"),
-        effects.episode_context,
-        settings_getter=settings_getter,
+    pack_stream = _pack_stream_or_notice(
+        _season_pack_reuse(
+            resolve_params.get("_season_pack"),
+            effects.episode_context,
+            settings_getter=settings_getter,
+        ),
+        nzb_url,
     )
     if pack_stream is not None:
         effects.disable_fallbacks()

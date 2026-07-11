@@ -63,6 +63,7 @@ def _available_text():
 def _build_result_item(result, row_index):
     """Build a styled ListItem for a single search result row."""
     meta = result.get("_meta", {})
+    is_pack = bool(result.get("_season_pack"))
     label = result.get("_display_title") or result.get("title", "")
     li = xbmcgui.ListItem(label=label)
 
@@ -72,8 +73,10 @@ def _build_result_item(result, row_index):
     hdr_list = meta.get("hdr", [])
     if hdr_list:
         li.setProperty("hdr", _c(" ".join(hdr_list), "FFFBBF24"))
-    else:
+    elif not is_pack:
         li.setProperty("hdr", _c("SDR", "FF6B7280"))
+    else:
+        li.setProperty("hdr", "")
 
     li.setProperty("codec", _c(meta.get("codec", ""), "FF94A3B8"))
 
@@ -87,7 +90,8 @@ def _build_result_item(result, row_index):
 
     # Container (MKV, MP4, etc.) — default to MKV since most scene releases
     # are MKV and only MP4 releases tag the title.
-    container = (meta.get("container", "") or "MKV").upper()
+    default_container = "" if is_pack else "MKV"
+    container = (meta.get("container", "") or default_container).upper()
     # MKV green; everything else (incl. MP4, which is fully supported via the
     # stream proxy) gets neutral grey rather than error-red, so a supported
     # container is not flagged as a false negative.
