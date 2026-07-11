@@ -146,6 +146,34 @@ def test_schema_default_reader_supports_old_and_new_settings_format():
     )
 
 
+def test_schema_setting_default_parses_real_file_via_safe_fromstring(tmp_path):
+    from resources.lib import fallback_streams
+
+    schema_file = tmp_path / "settings.xml"
+    schema_file.write_text(
+        """
+        <settings version="1">
+          <section id="plugin.video.nzbdav">
+            <category id="connection">
+              <group id="webdav">
+                <setting id="webdav_url" type="string">
+                  <default>http://example-schema:9999</default>
+                </setting>
+              </group>
+            </category>
+          </section>
+        </settings>
+        """,
+        encoding="utf-8",
+    )
+
+    with patch("xbmcvfs.translatePath", return_value=str(schema_file)):
+        assert (
+            fallback_streams._schema_setting_default("webdav_url")
+            == "http://example-schema:9999"
+        )
+
+
 def test_configured_stream_bases_tolerates_trailing_space_in_url():
     """A stray trailing space in nzbdav_url must not empty the probe-base
     allow-list. _split_http_url rejects whitespace in the netloc (an SSRF/
