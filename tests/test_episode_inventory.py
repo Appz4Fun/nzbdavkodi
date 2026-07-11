@@ -275,6 +275,40 @@ def test_tagless_featurette_descriptive_prefix_does_not_win_fallback():
     assert inventory.selected_size == 100
 
 
+def _tagless_nonleading_auxiliary_inventory(marker):
+    return build_video_inventory(
+        [
+            ("/pack/video.mkv", 100),
+            ("/pack/Show.{}.mkv".format(marker), 900),
+        ],
+        requested=(1, 1),
+    )
+
+
+def test_tagless_nonleading_sample_does_not_win_fallback():
+    inventory = _tagless_nonleading_auxiliary_inventory("Sample")
+
+    assert inventory.selected_path == "/pack/video.mkv"
+
+
+def test_tagless_nonleading_trailer_does_not_win_fallback():
+    inventory = _tagless_nonleading_auxiliary_inventory("Trailer")
+
+    assert inventory.selected_path == "/pack/video.mkv"
+
+
+def test_tagless_nonleading_featurette_does_not_win_fallback():
+    inventory = _tagless_nonleading_auxiliary_inventory("Featurette")
+
+    assert inventory.selected_path == "/pack/video.mkv"
+
+
+def test_tagless_nonleading_extras_does_not_win_fallback():
+    inventory = _tagless_nonleading_auxiliary_inventory("Extras")
+
+    assert inventory.selected_path == "/pack/video.mkv"
+
+
 def test_single_leading_trailer_marker_remains_auxiliary():
     inventory = build_video_inventory(
         [
