@@ -128,6 +128,7 @@ from resources.lib.router_play import (  # noqa: F401
     _resolve_play_episode_args,
     _search_with_cache,
     _season_pack_result,
+    _selection_fallback_loader,
     _selection_target,
 )
 from resources.lib.router_poster import (  # noqa: F401

@@ -503,7 +503,7 @@ def test_nzbdav_pack_reuse_disables_delayed_fallback_provider_submissions():
     assert start.call_args.kwargs["candidate_loader"] is None
 
 
-def test_pack_entry_paths_do_not_prefetch_provider_loader_until_fallthrough():
+def test_pack_entry_paths_drop_provider_loader_entirely():
     from resources.lib import resolver
 
     raw_loader = MagicMock()
@@ -519,96 +519,74 @@ def test_pack_entry_paths_do_not_prefetch_provider_loader_until_fallthrough():
             params, params, "", settings_getter=None
         )
 
-    assert handle_loader is raw_loader
-    assert effects._loader is raw_loader
+    assert handle_loader is None
+    assert effects._loader is None
     prefetch.assert_not_called()
     raw_loader.assert_not_called()
 
 
-def test_stale_pack_fallthrough_prefetches_provider_loader_before_submit():
+def test_stale_nzbdav_pack_notifies_and_fails_without_provider_submit():
     from resources.lib import resolver
 
     raw_loader = MagicMock()
-    wrapped_loader = MagicMock()
     params = {
         "_season_pack": _record("nzbdav", "nzo-1", "/data/completed/show"),
         "_fallback_candidate_loader": raw_loader,
         "_episode_context": _context(),
     }
+    provider_url = "http://provider/episode.nzb"
     effects = resolver._ResolveSideEffects(
-        params, [], raw_loader, "http://provider/episode.nzb", MagicMock()
+        params, [], raw_loader, provider_url, MagicMock()
     )
     with patch(
         "resources.lib.season_pack_reuse.reuse_exact_job",
         return_value=season_pack_reuse.ReuseResult("stale", None, None),
     ), patch(
-        "resources.lib.resolver._prefetch_fallback_candidate_loader",
-        return_value=wrapped_loader,
-    ) as prefetch, patch(
         "resources.lib.resolver._resolve_submit_and_poll",
         return_value=(None, None, None),
     ) as submit, patch(
         "resources.lib.resolver._notify", side_effect=RuntimeError("no UI")
     ) as notify:
-        resolver._resolve_acquire_stream(
-            "http://provider/episode.nzb", "Spider-Noir", params, set(), effects
+        result = resolver._resolve_acquire_stream(
+            provider_url, "Spider-Noir", params, set(), effects
         )
 
-    prefetch.assert_called_once_with(raw_loader)
-    assert effects._loader is wrapped_loader
-    submit.assert_called_once()
+    assert result == (None, None, None)
+    submit.assert_not_called()
+    raw_loader.assert_not_called()
     notify.assert_called_once_with(
         resolver._addon_name(), resolver._string(30365), 4000
     )
 
 
-def test_transient_pack_fallthrough_does_not_claim_pack_is_gone():
+def test_transient_nzbdav_pack_fails_closed_without_notice_or_submit():
     from resources.lib import resolver
 
     params = {
         "_season_pack": _record("nzbdav", "nzo-1", "/data/completed/show"),
         "_episode_context": _context(),
     }
-    effects = resolver._ResolveSideEffects(
-        params, [], None, "http://provider/episode.nzb", MagicMock()
-    )
+    provider_url = "http://provider/episode.nzb"
+    effects = resolver._ResolveSideEffects(params, [], None, provider_url, MagicMock())
     with patch(
         "resources.lib.season_pack_reuse.reuse_exact_job",
         return_value=season_pack_reuse.ReuseResult("transient", None, None),
     ), patch(
         "resources.lib.resolver._resolve_submit_and_poll",
         return_value=(None, None, None),
-    ), patch(
+    ) as submit, patch(
         "resources.lib.resolver._notify"
     ) as notify:
-        resolver._resolve_acquire_stream(
-            "http://provider/episode.nzb", "Spider-Noir", params, set(), effects
-        )
-
-    notify.assert_not_called()
-
-
-def test_stale_pack_without_provider_does_not_show_fallthrough_notice():
-    from resources.lib import resolver
-
-    params = {
-        "_season_pack": _record("nzbdav", "nzo-1", "/data/completed/show"),
-        "_episode_context": _context(),
-    }
-    effects = resolver._ResolveSideEffects(params, [], None, "", MagicMock())
-    with patch(
-        "resources.lib.season_pack_reuse.reuse_exact_job",
-        return_value=season_pack_reuse.ReuseResult("stale", None, None),
-    ), patch("resources.lib.resolver._notify") as notify:
         result = resolver._resolve_acquire_stream(
-            "", "Spider-Noir", params, set(), effects
+            provider_url, "Spider-Noir", params, set(), effects
         )
 
     assert result == (None, None, None)
+    submit.assert_not_called()
     notify.assert_not_called()
 
 
-def test_nzbget_stale_pack_notifies_before_provider_fallthrough():
+def test_nzbget_stale_pack_notifies_and_fails_without_provider_submit():
     from resources.lib import nzbget_resolver
 
     ctx = MagicMock()
@@ -626,19 +604,20 @@ def test_nzbget_stale_pack_notifies_before_provider_fallthrough():
         result = nzbget_resolver._reuse_or_submit(
             ctx,
             "http://provider/episode.nzb",
-            "Spider-Noir.S01E02",
+            "Spider-Noir.S01",
             None,
             (None, None),
         )
 
-    assert result is True
+    assert result is False
     notify.assert_called_once_with(
         nzbget_resolver._addon_name(), nzbget_resolver._string(30365), 4000
     )
-    submit.assert_called_once()
+    ctx.on_failure.assert_called_once_with(nzbget_resolver._string(30223))
+    submit.assert_not_called()
 
 
-def test_nzbget_transient_pack_fallthrough_does_not_show_stale_notice():
+def test_nzbget_transient_pack_fails_closed_without_notice_or_submit():
     from resources.lib import nzbget_resolver
 
     ctx = MagicMock()
@@ -650,17 +629,20 @@ def test_nzbget_transient_pack_fallthrough_does_not_show_stale_notice():
         return_value=season_pack_reuse.ReuseResult("transient", None, None),
     ), patch.object(
         nzbget_resolver, "_submit_poll_resolve", return_value=True
-    ), patch.object(
+    ) as submit, patch.object(
         nzbget_resolver, "_notify"
     ) as notify:
-        nzbget_resolver._reuse_or_submit(
+        result = nzbget_resolver._reuse_or_submit(
             ctx,
             "http://provider/episode.nzb",
-            "Spider-Noir.S01E02",
+            "Spider-Noir.S01",
             None,
             (None, None),
         )
 
+    assert result is False
+    ctx.on_failure.assert_called_once_with(nzbget_resolver._string(30223))
+    submit.assert_not_called()
     notify.assert_not_called()
 
 

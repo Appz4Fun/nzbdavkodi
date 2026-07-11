@@ -144,7 +144,9 @@ def test_season_pack_picker_strings_have_fallbacks_and_po_entries():
     import os
 
     assert fmt(30364, "1-8") == ("Already downloaded season pack - Episodes 1-8")
-    assert "no longer available" in string(30365)
+    assert string(30365) == (
+        "The downloaded season pack is no longer available. Choose another result."
+    )
     po_path = os.path.join(
         "repo",
         "plugin.video.nzbdav",

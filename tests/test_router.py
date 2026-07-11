@@ -1762,7 +1762,7 @@ def test_handle_play_pack_survives_provider_error(
 
 
 @patch("resources.lib.resolver.resolve")
-def test_pack_selection_uses_first_provider_only_as_stale_fallthrough(mock_resolve):
+def test_pack_selection_keeps_empty_url_and_ignores_provider_rows(mock_resolve):
     from resources.lib.router_play import _handle_play_resolve_selection
 
     record = {"backend": "nzbdav", "job_id": "nzo-1"}
@@ -1781,13 +1781,17 @@ def test_pack_selection_uses_first_provider_only_as_stale_fallthrough(mock_resol
         "season": "1",
         "episode": "2",
     }
-    with patch("resources.lib.router._fallback_candidate_loader_for_selection"):
+    with patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection"
+    ) as fallback:
         _handle_play_resolve_selection(7, pack, [pack, provider], None, identity)
 
     params = mock_resolve.call_args.args[1]
-    assert params["nzburl"] == provider["link"]
-    assert params["title"] == provider["title"]
+    assert params["nzburl"] == ""
+    assert params["title"] == pack["title"]
     assert params["_season_pack"] == record
+    assert params["_fallback_candidate_loader"] is None
+    fallback.assert_not_called()
 
 
 @patch("xbmcaddon.Addon")
@@ -1881,8 +1885,40 @@ def test_handle_play_auto_select_prefers_downloaded_pack_row(
 
     params = mock_resolve.call_args.args[1]
     assert params["_season_pack"]["job_id"] == "nzo-1"
-    # This provider URL is dormant unless exact pack validation falls through.
-    assert params["nzburl"] == provider["link"]
+    assert params["nzburl"] == ""
+    assert params["_fallback_candidate_loader"] is None
+
+
+@patch("resources.lib.resolver.resolve_and_play")
+def test_runscript_pack_selection_never_substitutes_online_provider(mock_resolve):
+    from resources.lib.router_scriptplay import _script_play_resolve_selected
+
+    record = {"backend": "nzbdav", "job_id": "nzo-1"}
+    pack = {
+        "title": "Spider-Noir.S01",
+        "link": "",
+        "_season_pack": record,
+    }
+    provider = {
+        "title": "Spider-Noir.S01E02.2160p",
+        "link": "http://indexer/episode.nzb",
+    }
+    params = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "season": "1",
+        "episode": "2",
+    }
+    with patch(
+        "resources.lib.router._fallback_candidate_loader_for_selection"
+    ) as fallback:
+        _script_play_resolve_selected(params, pack, [pack, provider], None)
+
+    assert mock_resolve.call_args.args == ("", pack["title"])
+    resolver_params = mock_resolve.call_args.kwargs["params"]
+    assert resolver_params["_season_pack"] == record
+    assert resolver_params["_fallback_candidate_loader"] is None
+    fallback.assert_not_called()
 
 
 @patch("resources.lib.router._get_script_setting", side_effect=_stub_setting("false"))

@@ -617,8 +617,9 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
     (exact name + size/pubdate gates), so play the already-completed files
     instead of re-submitting — NZBGet's duplicate check (DupeCheck=yes by
     default) dupe-deletes a re-submission of a SUCCESS item, which would fail
-    the resolve. A probe miss (files cleaned up / share moved) falls through to
-    the normal submit flow. Returns ``leave_job`` for the caller's finally.
+    the resolve. A pack-row miss fails that explicit selection without
+    submitting its neighboring online rows. Returns ``leave_job`` for the
+    caller's finally.
     """
     if ctx.season_pack_record is not None:
         from resources.lib.season_pack_reuse import reuse_exact_job
@@ -632,19 +633,17 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
         if pack_reuse.state == "valid":
             ctx.on_success(pack_reuse.stream_url)
             return False
-        if not nzb_url:
-            ctx.on_failure(_string(30223))
-            return False
         if pack_reuse.state == "stale":
             try:
                 _notify(_addon_name(), _string(30365), 4000)
             except Exception:  # pylint: disable=broad-except
-                # The provider submit remains usable if Kodi rejects the toast.
+                # Kodi rejecting the toast must not interrupt failure handling.
                 pass
-        # The exact pack was conclusively stale (or temporarily unavailable).
-        # Continue with the selected provider URL, but never fall back to an
-        # unvalidated name-based completed hint that could be a different job.
-        return _submit_poll_resolve(ctx, nzb_url, title, meta[0], meta[1])
+        # A pack row is one explicit selection, never shorthand for an online
+        # provider. Stale and transient validation both fail closed; the user
+        # can choose an ordinary result separately.
+        ctx.on_failure(_string(30223))
+        return False
 
     reuse_url = _reuse_completed_job(
         completed_job,

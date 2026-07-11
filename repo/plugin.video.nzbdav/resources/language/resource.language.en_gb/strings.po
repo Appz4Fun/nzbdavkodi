@@ -1423,5 +1423,5 @@ msgid "Already downloaded season pack - Episodes {}"
 msgstr "Already downloaded season pack - Episodes {}"
 
 msgctxt "#30365"
-msgid "The downloaded season pack is no longer available. Trying an online result."
-msgstr "The downloaded season pack is no longer available. Trying an online result."
+msgid "The downloaded season pack is no longer available. Choose another result."
+msgstr "The downloaded season pack is no longer available. Choose another result."

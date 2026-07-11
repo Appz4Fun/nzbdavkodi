@@ -222,17 +222,27 @@ def _provider_rows(results):
 
 
 def _selection_target(selected, results):
-    """Return the provider target used only if a selected pack is stale.
+    """Keep pack selections isolated; return ordinary provider pools otherwise.
 
-    The resolver validates ``_season_pack`` before touching this target. A
-    valid pack therefore submits nothing; a stale pack can continue with the
-    best already-filtered provider without forcing the user through a second
-    picker.
+    A synthetic pack is one exact completed job, never shorthand for the first
+    online result. Its empty URL reaches exact validation unchanged; stale or
+    transient validation fails that selection without provider submission.
     """
     providers = _provider_rows(results)
-    if not isinstance(selected, dict) or not selected.get("_season_pack"):
-        return selected, providers
-    return (providers[0] if providers else selected), providers
+    if isinstance(selected, dict) and selected.get("_season_pack"):
+        return selected, []
+    return selected, providers
+
+
+def _selection_fallback_loader(selected, results, settings_getter=None):
+    """Build an ordinary result loader; exact pack selections have none."""
+    if isinstance(selected, dict) and selected.get("_season_pack"):
+        return None
+    import resources.lib.router as _router
+
+    return _router._fallback_candidate_loader_for_selection(
+        selected, results, settings_getter=settings_getter
+    )
 
 
 def _extract_search_params(params):
@@ -392,9 +402,7 @@ def _handle_play_auto_select(handle, best, filtered, identity=None):
         "nzburl": target["link"],
         "title": target["title"],
         "_fallback_candidates": [],
-        "_fallback_candidate_loader": _router._fallback_candidate_loader_for_selection(
-            target, provider_rows
-        ),
+        "_fallback_candidate_loader": _selection_fallback_loader(target, provider_rows),
     }
     _attach_episode_context(resolver_params, identity or {})
     _attach_nzbget_dupe(resolver_params, target, provider_rows, identity)
@@ -736,9 +744,7 @@ def _handle_play_resolve_selection(
         "nzburl": target["link"],
         "title": target["title"],
         "_fallback_candidates": [],
-        "_fallback_candidate_loader": _router._fallback_candidate_loader_for_selection(
-            target, provider_rows
-        ),
+        "_fallback_candidate_loader": _selection_fallback_loader(target, provider_rows),
     }
     _attach_episode_context(resolver_params, identity or {})
     _attach_nzbget_dupe(resolver_params, target, provider_rows, identity)
@@ -823,8 +829,8 @@ def _handle_search_auto_select(params, best, filtered):
     target, provider_rows = _selection_target(best, filtered)
     resolver_params = dict(params)
     resolver_params["_fallback_candidates"] = []
-    resolver_params["_fallback_candidate_loader"] = (
-        _router._fallback_candidate_loader_for_selection(target, provider_rows)
+    resolver_params["_fallback_candidate_loader"] = _selection_fallback_loader(
+        target, provider_rows
     )
     _attach_nzbget_dupe(
         resolver_params, target, provider_rows, _identity_from_params(params)
@@ -844,8 +850,8 @@ def _handle_search_resolve_selection(params, selected, filtered, completed_jobs)
     target, provider_rows = _selection_target(selected, filtered)
     resolver_params = dict(params)
     resolver_params["_fallback_candidates"] = []
-    resolver_params["_fallback_candidate_loader"] = (
-        _router._fallback_candidate_loader_for_selection(target, provider_rows)
+    resolver_params["_fallback_candidate_loader"] = _selection_fallback_loader(
+        target, provider_rows
     )
     _attach_nzbget_dupe(
         resolver_params, target, provider_rows, _identity_from_params(params)

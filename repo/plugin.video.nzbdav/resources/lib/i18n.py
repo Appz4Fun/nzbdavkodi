@@ -118,9 +118,7 @@ _FALLBACK_STRINGS = {
     30226: "SMB share reachable",
     30227: "SMB share not reachable",
     30364: "Already downloaded season pack - Episodes {}",
-    30365: (
-        "The downloaded season pack is no longer available. " "Trying an online result."
-    ),
+    30365: "The downloaded season pack is no longer available. Choose another result.",
 }
 
 

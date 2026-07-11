@@ -85,25 +85,21 @@ class _ResolveSideEffects:
         self._candidates = []
         self._loader = None
 
-    def prefetch_fallbacks(self):
-        """Start deferred provider discovery after pack reuse falls through."""
-        self._loader = _resolver._prefetch_fallback_candidate_loader(self._loader)
-
 
 def _entry_fallback_candidate_loader(params):
-    """Return a deferred loader for pack rows, prefetched for ordinary rows."""
+    """Return no loader for pack rows; prefetch ordinary result loaders."""
     params = params if isinstance(params, dict) else {}
     loader = params.get("_fallback_candidate_loader")
     if params.get("_season_pack"):
-        return loader
+        return None
     return _resolver._prefetch_fallback_candidate_loader(loader)
 
 
 def _season_pack_reuse(record, episode_context, settings_getter=None):
     """Return the exact nzbdav pack reuse result, or ``None``.
 
-    A stale or transient pack falls through to a provider URL when one exists;
-    a synthetic pack row with no URL ends as an ordinary resolver failure.
+    Stale or transient validation fails this explicit selection. Ordinary
+    provider rows remain separate choices in the picker.
     """
     if not isinstance(record, dict):
         return None
@@ -117,13 +113,13 @@ def _season_pack_reuse(record, episode_context, settings_getter=None):
     )
 
 
-def _pack_stream_or_notice(result, provider_url):
-    """Return a valid pack stream and announce only conclusive fallthrough."""
+def _pack_stream_or_notice(result):
+    """Return a valid pack stream and announce conclusive stale selections."""
     if result is None:
         return None
     if result.state == "valid":
         return result.stream_url, result.stream_headers
-    if result.state == "stale" and provider_url:
+    if result.state == "stale":
         try:
             _resolver._notify(_resolver._addon_name(), _resolver._string(30365), 4000)
         except Exception:  # pylint: disable=broad-except
@@ -140,23 +136,14 @@ def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effe
     ``resolve``."""
     pack_stream = _pack_stream_or_notice(
         _season_pack_reuse(params.get("_season_pack"), effects.episode_context),
-        nzb_url,
     )
     if pack_stream is not None:
         effects.disable_fallbacks()
         return pack_stream[0], pack_stream[1], None
+    if params.get("_season_pack"):
+        return None, None, None
     if not nzb_url:
         return None, None, None
-    if params.get("_season_pack"):
-        effects.prefetch_fallbacks()
-        selected_indexer = params.get("_selected_indexer", "")
-        return _resolver._resolve_submit_and_poll(
-            nzb_url,
-            title,
-            params,
-            True,
-            effects.poll_context(selected_indexer, rejected_completed_ids),
-        )
     selected_indexer = params.get("_selected_indexer", "")
     picker_completed_lookup_done = _resolver._picker_completed_lookup_done(params)
     picker_kwargs = {
@@ -213,23 +200,14 @@ def _resolve_and_play_acquire_stream(
             effects.episode_context,
             settings_getter=settings_getter,
         ),
-        nzb_url,
     )
     if pack_stream is not None:
         effects.disable_fallbacks()
         return pack_stream[0], pack_stream[1], None
+    if resolve_params.get("_season_pack"):
+        return None, None, None
     if not nzb_url:
         return None, None, None
-    if resolve_params.get("_season_pack"):
-        effects.prefetch_fallbacks()
-        selected_indexer = resolve_params.get("_selected_indexer", "")
-        return _resolver._resolve_and_play_submit_and_poll(
-            nzb_url,
-            title,
-            resolve_params,
-            True,
-            effects.poll_context(selected_indexer, set()),
-        )
     selected_indexer = resolve_params.get("_selected_indexer", "")
     picker_completed_lookup_done = _resolver._picker_completed_lookup_done(
         resolve_params
