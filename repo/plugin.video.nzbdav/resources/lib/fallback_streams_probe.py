@@ -17,12 +17,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit, urlunsplit
 from urllib.request import Request
 
-try:
-    from defusedxml import ElementTree as ET
-except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
-    # nosemgrep
-    from xml.etree import ElementTree as ET
-
 import resources.lib.fallback_streams as _fs
 
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
@@ -272,13 +266,17 @@ def _schema_setting_default(setting_id):
     candidate_paths.append(
         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "settings.xml"))
     )
+
+    from resources.lib.xml_safety import ParseError, safe_fromstring
+
     for path in candidate_paths:
         try:
-            # nosemgrep
-            root = ET.parse(path).getroot()
-        except (OSError, ET.ParseError):
+            with open(path, "rb") as fh:
+                xml_bytes = fh.read()
+            root = safe_fromstring(xml_bytes)
+        except (OSError, ParseError, ValueError):
             continue
-        default = _fs._setting_default_from_root(root, setting_id)
+        default = _setting_default_from_root(root, setting_id)
         if default is not None:
             return default
     return ""
