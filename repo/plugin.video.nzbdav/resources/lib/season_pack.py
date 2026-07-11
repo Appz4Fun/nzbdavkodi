@@ -181,11 +181,13 @@ def _discard_temp(fd, tmp_path):
         try:
             os.close(fd)
         except OSError:
+            # Cleanup is best-effort after the catalog write has already failed.
             pass
     if tmp_path:
         try:
             os.remove(tmp_path)
         except OSError:
+            # A missing or busy temp file must not hide the original write failure.
             pass
 
 
@@ -219,6 +221,7 @@ def _save_records_unlocked(records, path=None):
                 xbmc.LOGWARNING,
             )
         except (AttributeError, RuntimeError):
+            # Catalog persistence stays fail-soft when Kodi logging is unavailable.
             pass
         return False
 
@@ -245,18 +248,42 @@ def _directory_lock_owner(lock_dir):
 
 
 def _remove_stale_directory_lock(lock_dir):
-    """Remove only a sufficiently old fallback lock owned by a dead process."""
+    """Remove a sufficiently old fallback lock with no live valid owner."""
+    owner_path = os.path.join(lock_dir, "owner.json")
     try:
-        age = time.time() - os.path.getmtime(lock_dir)
+        newest_mtime = os.path.getmtime(lock_dir)
+        try:
+            newest_mtime = max(newest_mtime, os.path.getmtime(owner_path))
+        except FileNotFoundError:
+            pass
+        age = time.time() - newest_mtime
     except OSError:
         return
     owner = _directory_lock_owner(lock_dir)
-    if age < _STALE_LOCK_SECONDS or owner is None or _pid_is_alive(owner[0]):
+    if age < _STALE_LOCK_SECONDS or (owner is not None and _pid_is_alive(owner[0])):
         return
+
+    if owner is None:
+        try:
+            os.rmdir(lock_dir)
+            return
+        except OSError:
+            # A concurrent owner write or malformed owner file needs revalidation.
+            pass
+
+    # Recheck both freshness and ownership immediately before removing owner.json.
+    # This preserves a creator that completed its owner write during our first read.
     try:
-        os.remove(os.path.join(lock_dir, "owner.json"))
+        newest_mtime = max(os.path.getmtime(lock_dir), os.path.getmtime(owner_path))
+        owner = _directory_lock_owner(lock_dir)
+        if time.time() - newest_mtime < _STALE_LOCK_SECONDS:
+            return
+        if owner is not None and _pid_is_alive(owner[0]):
+            return
+        os.remove(owner_path)
         os.rmdir(lock_dir)
     except OSError:
+        # Another process may have repaired or removed the lock; cleanup is best-effort.
         pass
 
 
@@ -281,10 +308,14 @@ def _acquire_directory_lock(lock_path, deadline):
                 try:
                     os.remove(os.path.join(lock_dir, "owner.json"))
                 except OSError:
+                    # Rollback is best-effort after this process failed to
+                    # publish ownership.
                     pass
                 try:
                     os.rmdir(lock_dir)
                 except OSError:
+                    # Preserve any lock state that another process created
+                    # during rollback.
                     pass
             return None
         if time.monotonic() >= deadline:
@@ -317,6 +348,7 @@ def _release_process_lock(lock):
         try:
             fcntl.flock(resource.fileno(), fcntl.LOCK_UN)
         except OSError:
+            # Closing the handle below still releases the OS lock after unlock failure.
             pass
         resource.close()
         return

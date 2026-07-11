@@ -62,6 +62,7 @@ def record_completed_inventory(
                 xbmc.LOGDEBUG,
             )
         except (AttributeError, RuntimeError):
+            # Recording remains non-fatal when Kodi logging is unavailable.
             pass
         return False
 

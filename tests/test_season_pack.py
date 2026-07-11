@@ -126,7 +126,9 @@ def test_remove_deletes_only_exact_backend_job_key(tmp_path, monkeypatch):
     season_pack.upsert(_record("42", "/downloads/b"))
     season_pack.upsert(_record("41", "/webdav/a", backend="nzbdav"))
 
-    assert season_pack.remove("nzbget", 41) is True
+    removed = season_pack.remove("nzbget", 41)
+
+    assert removed is True
 
     assert {(row["backend"], row["job_id"]) for row in season_pack.load_records()} == {
         ("nzbget", "42"),
@@ -329,21 +331,95 @@ def test_directory_lock_partial_owner_write_cleans_only_new_lock_and_can_retry(
     assert not os.path.exists(lock_path + ".d")
 
 
-def test_directory_lock_preserves_old_malformed_foreign_owner(tmp_path, monkeypatch):
+def test_directory_lock_reclaims_old_ownerless_lock_and_acquires(tmp_path, monkeypatch):
     monkeypatch.setattr(season_pack, "fcntl", None)
-    monkeypatch.setattr(season_pack, "_STALE_LOCK_SECONDS", 0)
+    lock_path = str(tmp_path / "catalog.lock")
+    lock_dir = lock_path + ".d"
+    os.mkdir(lock_dir)
+    stale = time.time() - season_pack._STALE_LOCK_SECONDS - 1
+    os.utime(lock_dir, (stale, stale))
+
+    lock = season_pack._acquire_directory_lock(
+        lock_path, time.monotonic() + season_pack._LOCK_TIMEOUT
+    )
+
+    assert lock is not None
+    season_pack._release_process_lock(lock)
+    assert not os.path.exists(lock_dir)
+
+
+def test_directory_lock_reclaims_old_malformed_owner_and_acquires(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(season_pack, "fcntl", None)
     lock_path = str(tmp_path / "catalog.lock")
     lock_dir = lock_path + ".d"
     os.mkdir(lock_dir)
     owner_path = os.path.join(lock_dir, "owner.json")
     with open(owner_path, "w", encoding="utf-8") as handle:
         handle.write("{malformed")
-    os.utime(lock_dir, (1, 1))
+    stale = time.time() - season_pack._STALE_LOCK_SECONDS - 1
+    os.utime(owner_path, (stale, stale))
+    os.utime(lock_dir, (stale, stale))
 
-    assert season_pack._acquire_directory_lock(lock_path, time.monotonic()) is None
+    lock = season_pack._acquire_directory_lock(
+        lock_path, time.monotonic() + season_pack._LOCK_TIMEOUT
+    )
+
+    assert lock is not None
+    season_pack._release_process_lock(lock)
+    assert not os.path.exists(lock_dir)
+
+
+def test_directory_lock_preserves_fresh_missing_and_malformed_owners(tmp_path):
+    for suffix, payload in (("missing", None), ("malformed", "{malformed")):
+        lock_dir = str(tmp_path / suffix)
+        os.mkdir(lock_dir)
+        owner_path = os.path.join(lock_dir, "owner.json")
+        if payload is not None:
+            with open(owner_path, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+
+        season_pack._remove_stale_directory_lock(lock_dir)
+
+        assert os.path.isdir(lock_dir)
+        if payload is not None:
+            with open(owner_path, "r", encoding="utf-8") as handle:
+                assert handle.read() == payload
+
+
+def test_directory_lock_preserves_old_valid_live_owner(tmp_path, monkeypatch):
+    lock_dir = str(tmp_path / "live-owner")
+    os.mkdir(lock_dir)
+    owner_path = os.path.join(lock_dir, "owner.json")
+    with open(owner_path, "w", encoding="utf-8") as handle:
+        json.dump({"pid": 123, "token": "live"}, handle)
+    stale = time.time() - season_pack._STALE_LOCK_SECONDS - 1
+    os.utime(owner_path, (stale, stale))
+    os.utime(lock_dir, (stale, stale))
+    monkeypatch.setattr(season_pack, "_pid_is_alive", lambda _pid: True)
+
+    season_pack._remove_stale_directory_lock(lock_dir)
+
     assert os.path.isdir(lock_dir)
     with open(owner_path, "r", encoding="utf-8") as handle:
-        assert handle.read() == "{malformed"
+        assert json.load(handle) == {"pid": 123, "token": "live"}
+
+
+def test_directory_lock_reclaims_old_valid_dead_owner(tmp_path, monkeypatch):
+    lock_dir = str(tmp_path / "dead-owner")
+    os.mkdir(lock_dir)
+    owner_path = os.path.join(lock_dir, "owner.json")
+    with open(owner_path, "w", encoding="utf-8") as handle:
+        json.dump({"pid": 123, "token": "dead"}, handle)
+    stale = time.time() - season_pack._STALE_LOCK_SECONDS - 1
+    os.utime(owner_path, (stale, stale))
+    os.utime(lock_dir, (stale, stale))
+    monkeypatch.setattr(season_pack, "_pid_is_alive", lambda _pid: False)
+
+    season_pack._remove_stale_directory_lock(lock_dir)
+
+    assert not os.path.exists(lock_dir)
 
 
 def test_context_from_params_safely_converts_numeric_fields_and_overrides():

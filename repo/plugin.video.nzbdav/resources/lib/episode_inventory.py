@@ -45,15 +45,34 @@ def _coerce_size(value):
         return 0
 
 
+def _auxiliary_parent_markers(parent):
+    return tuple(
+        item
+        for item in re.split(r"[/\\]+", parent)
+        if item and _AUXILIARY_TOKEN_RE.fullmatch(item)
+    )
+
+
+def _has_different_auxiliary_parent(name, auxiliary_parents):
+    leading_name = re.split(r"[. _-]+", name, maxsplit=1)[0]
+    return any(leading_name.casefold() != item.casefold() for item in auxiliary_parents)
+
+
+def _marker_position_is_auxiliary(stem, match):
+    if match.start() == 0:
+        return False
+    if match.group(1).casefold() in _UNAMBIGUOUS_AUXILIARY_MARKERS:
+        return True
+    if match.end() == len(stem):
+        return True
+    return bool(_resolve_file_episode_tags(stem[: match.start()], ""))
+
+
 def _is_auxiliary(name, parent):
     """Classify conservative filename and directory auxiliary markers."""
-    parent_names = tuple(item for item in re.split(r"[/\\]+", parent) if item)
-    auxiliary_parents = tuple(
-        item for item in parent_names if _AUXILIARY_TOKEN_RE.fullmatch(item)
-    )
-    leading_name = re.split(r"[. _-]+", name, maxsplit=1)[0]
-    different_auxiliary_parent = any(
-        leading_name.casefold() != item.casefold() for item in auxiliary_parents
+    auxiliary_parents = _auxiliary_parent_markers(parent)
+    different_auxiliary_parent = _has_different_auxiliary_parent(
+        name, auxiliary_parents
     )
     show_folder_exception = bool(auxiliary_parents) and not different_auxiliary_parent
     if different_auxiliary_parent:
@@ -71,13 +90,7 @@ def _is_auxiliary(name, parent):
         return True
 
     for match in _AUXILIARY_RE.finditer(stem):
-        if match.start() == 0:
-            continue
-        if match.group(1).casefold() in _UNAMBIGUOUS_AUXILIARY_MARKERS:
-            return True
-        if match.end() == len(stem):
-            return True
-        if _resolve_file_episode_tags(stem[: match.start()], ""):
+        if _marker_position_is_auxiliary(stem, match):
             return True
     return False
 
@@ -165,6 +178,26 @@ def _classify_leading_auxiliary(files):
     )
 
 
+def _pack_episode_summary(tagged):
+    seasons = {season for item in tagged for season, _episode in item.episode_tags}
+    if len(seasons) != 1:
+        return None, ()
+    pack_season = next(iter(seasons))
+    episodes = tuple(
+        sorted(
+            {
+                episode
+                for item in tagged
+                for season, episode in item.episode_tags
+                if season == pack_season
+            }
+        )
+    )
+    if len(episodes) < 2:
+        pack_season = None
+    return pack_season, episodes
+
+
 def build_video_inventory(rows, requested=None):
     """Build an inventory and select an exact requested episode when possible."""
     files = _classify_leading_auxiliary(
@@ -186,22 +219,7 @@ def build_video_inventory(rows, requested=None):
     else:
         selected = _largest(files)
 
-    seasons = {season for item in tagged for season, _episode in item.episode_tags}
-    pack_season = next(iter(seasons)) if len(seasons) == 1 else None
-    episodes = ()
-    if pack_season is not None:
-        episodes = tuple(
-            sorted(
-                {
-                    episode
-                    for item in tagged
-                    for season, episode in item.episode_tags
-                    if season == pack_season
-                }
-            )
-        )
-        if len(episodes) < 2:
-            pack_season = None
+    pack_season, episodes = _pack_episode_summary(tagged)
 
     return VideoInventory(
         selected_path=selected.path if selected else None,

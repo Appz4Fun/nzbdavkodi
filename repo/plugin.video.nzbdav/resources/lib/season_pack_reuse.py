@@ -220,12 +220,20 @@ def _inventory_selected_exact(inventory, requested):
     return False
 
 
-def _reuse_nzbget(record, requested, episode_context, settings_getter):
+def _job_validation_failure(record, settings_getter):
+    """Return a terminal preflight result, or None for a valid exact job."""
     validation = season_pack.validate_job(record, settings_getter=settings_getter)
     if validation.outcome == "transient":
         return ReuseResult("transient", None, None)
     if validation.outcome != "valid":
         return ReuseResult("stale", None, None)
+    return None
+
+
+def _reuse_nzbget(record, requested, episode_context, settings_getter):
+    validation_failure = _job_validation_failure(record, settings_getter)
+    if validation_failure is not None:
+        return validation_failure
     try:
         smb_folder = _nzbget_folder_for_record(record, settings_getter)
     except Exception:  # pylint: disable=broad-except
@@ -245,11 +253,9 @@ def _reuse_nzbget(record, requested, episode_context, settings_getter):
 
 
 def _reuse_nzbdav(record, requested, episode_context, settings_getter):
-    validation = season_pack.validate_job(record, settings_getter=settings_getter)
-    if validation.outcome == "transient":
-        return ReuseResult("transient", None, None)
-    if validation.outcome != "valid":
-        return ReuseResult("stale", None, None)
+    validation_failure = _job_validation_failure(record, settings_getter)
+    if validation_failure is not None:
+        return validation_failure
     try:
         webdav_folder = _webdav_folder_for_record(record)
         inventory = webdav.folder_video_inventory(

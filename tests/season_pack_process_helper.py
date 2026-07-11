@@ -21,6 +21,7 @@ def racing_upsert(catalog_dir, record, barrier, results):
             try:
                 barrier.wait(timeout=0.5)
             except BrokenBarrierError:
+                # A timed-out peer still leaves this worker free to exercise upsert.
                 pass
         return rows
 
