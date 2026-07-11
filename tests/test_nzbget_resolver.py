@@ -119,10 +119,33 @@ def test_smb_inventory_accepts_requested_tuple_for_nested_pack():
     with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
         xbmcvfs, "listdir", side_effect=fake_listdir
     ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
-        inventory = _smb_inventory("smb://host/Spider-Noir", requested=(1, 1))
+        inventory = _smb_inventory("smb://host/Spider-Noir", requested_episode=(1, 1))
 
     assert inventory.selected_path.endswith("S01E01.mkv")
     assert inventory.episodes == (1, 5)
+
+
+def test_smb_candidate_inventory_probes_directory_urls_with_trailing_slash():
+    from resources.lib.nzbget_resolver import _smb_video_candidates_in_tree
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    probed = []
+    tree = {
+        "smb://host/Show": (["nested"], []),
+        "smb://host/Show/nested": ([], ["Show.S01E01.mkv"]),
+    }
+
+    def fake_exists(path):
+        probed.append(path)
+        return path.endswith("/")
+
+    with patch.object(xbmcvfs, "exists", side_effect=fake_exists), patch.object(
+        xbmcvfs, "listdir", side_effect=lambda path: tree[path]
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        rows = _smb_video_candidates_in_tree("smb://host/Show")
+
+    assert rows and rows[0][0].endswith("Show.S01E01.mkv")
+    assert probed == ["smb://host/Show/", "smb://host/Show/nested/"]
 
 
 def test_resolve_smb_video_does_not_play_named_wrong_episode():

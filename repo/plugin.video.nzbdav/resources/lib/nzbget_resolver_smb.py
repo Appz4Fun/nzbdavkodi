@@ -196,7 +196,9 @@ def _smb_video_candidates_in_tree(folder, depth=_SMB_MAX_DEPTH):
     reachable but currently contained no playable files.
     """
     try:
-        if not xbmcvfs.exists(folder):
+        # Kodi Omega treats SMB directory exists probes as directories only
+        # when their URL ends in a slash. Keep listdir and child URLs stable.
+        if not xbmcvfs.exists(folder.rstrip("/") + "/"):
             return None
         dirs, files = xbmcvfs.listdir(folder)
     except Exception:  # pylint: disable=broad-except
@@ -218,12 +220,12 @@ def _smb_video_candidates_in_tree(folder, depth=_SMB_MAX_DEPTH):
     return rows
 
 
-def _smb_inventory(folder, requested=None, depth=_SMB_MAX_DEPTH):
+def _smb_inventory(folder, requested_episode=None, depth=_SMB_MAX_DEPTH):
     """Build an episode-aware inventory for one reachable SMB folder tree."""
     rows = _core._smb_video_candidates_in_tree(folder, depth=depth)
     if rows is None:
         return None
-    return build_video_inventory(rows, requested=requested)
+    return build_video_inventory(rows, requested=requested_episode)
 
 
 def _report_smb_inventory(callback, inventory):
@@ -286,7 +288,9 @@ def resolve_smb_video(
     deadline = time.monotonic() + budget
     last_complete_inventory = None
     while True:
-        inventory = _core._smb_inventory(smb_folder, requested=requested_episode)
+        inventory = _core._smb_inventory(
+            smb_folder, requested_episode=requested_episode
+        )
         if inventory is not None:
             last_complete_inventory = inventory
         if inventory is not None and inventory.files:
