@@ -174,6 +174,7 @@ def test_nzbget_reuse_rejects_job_folder_equal_to_completed_base():
         (r"C:\downloads\..\other\Show", r"C:\downloads"),
         (r"C:downloads\Show", r"C:\downloads"),
         (r"C:\downloads\Show", r"\\server\share\downloads"),
+        ("/srv/Downloads/Show", "/srv/downloads"),
     ],
 )
 def test_nzbget_reuse_rejects_unprovable_or_traversing_exact_mapping(
@@ -214,16 +215,22 @@ def test_nzbget_reuse_rejects_unprovable_or_traversing_exact_mapping(
             "smb://box/completed/shows/Show",
         ),
         (
-            r"C:\downloads\shows\Show",
-            r"C:\downloads",
+            r"C:\Downloads\shows\Show",
+            r"c:\downloads",
             "smb://box/completed",
             "smb://box/completed/shows/Show",
         ),
         (
-            "/srv/downloads/shows/Show",
-            "/srv/downloads",
-            "smb://box/completed/shows",
-            "smb://box/completed/shows/Show",
+            r"\\SERVER\Share\Downloads\Show",
+            r"\\server\share\downloads",
+            "smb://box/completed",
+            "smb://box/completed/Show",
+        ),
+        (
+            "/srv/base/downloads/Show",
+            "/srv/base",
+            "smb://box/downloads",
+            "smb://box/downloads/downloads/Show",
         ),
     ],
 )
@@ -240,6 +247,50 @@ def test_nzbget_cached_mapping_accepts_canonical_posix_and_windows_children(
         return_value=completed_base,
     ):
         assert season_pack_reuse._nzbget_folder_for_record(record, getter) == expected
+
+
+@pytest.mark.parametrize(
+    "smb_root",
+    [
+        "smb://box",
+        "smb:///completed",
+        "smb://box/share//nested",
+        "smb://box/share/./nested",
+        "smb://box/share/../nested",
+        "smb://user@box/share",
+        "smb://box:445/share",
+        "smb://box/share?option=1",
+        "smb://box/share#fragment",
+    ],
+)
+def test_nzbget_cached_mapping_rejects_structurally_ambiguous_smb_roots(smb_root):
+    assert (
+        season_pack_reuse._exact_cached_smb_mapping(
+            smb_root,
+            "/srv/base/Show",
+            "/srv/base",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("smb_root", "expected"),
+    [
+        ("smb://box/share", "smb://box/share/Show"),
+        ("smb://192.168.1.20/share", "smb://192.168.1.20/share/Show"),
+        ("smb://box/share/nested", "smb://box/share/nested/Show"),
+    ],
+)
+def test_nzbget_cached_mapping_accepts_structurally_valid_smb_roots(smb_root, expected):
+    assert (
+        season_pack_reuse._exact_cached_smb_mapping(
+            smb_root,
+            "/srv/base/Show",
+            "/srv/base",
+        )
+        == expected
+    )
 
 
 def test_nzbget_successful_rescan_refreshes_exact_catalog_episode_inventory(

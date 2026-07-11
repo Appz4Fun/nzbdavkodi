@@ -105,7 +105,16 @@ def _safe_smb_root(value):
     root = str(value or "").strip().replace("\\", "/").rstrip("/")
     if not root.lower().startswith("smb://"):
         return None
-    if any(part in (".", "..") for part in root[6:].split("/")):
+    location = root[6:]
+    if any(marker in location for marker in ("?", "#", "@")):
+        return None
+    parts = location.split("/")
+    if len(parts) < 2 or any(not part for part in parts):
+        return None
+    host = parts[0]
+    if ":" in host or any(character.isspace() for character in host):
+        return None
+    if any(part in (".", "..") for part in parts[1:]):
         return None
     return root
 
@@ -121,15 +130,14 @@ def _exact_cached_smb_mapping(smb_root, native_folder, completed_base):
     _base_path, base_root, base_segments = base
     if target_root != base_root or len(target_segments) <= len(base_segments):
         return None
-    target_prefix = tuple(
-        part.casefold() for part in target_segments[: len(base_segments)]
-    )
-    base_key = tuple(part.casefold() for part in base_segments)
+    target_prefix = target_segments[: len(base_segments)]
+    base_key = base_segments
+    if target_root[0] != "posix":
+        target_prefix = tuple(part.casefold() for part in target_prefix)
+        base_key = tuple(part.casefold() for part in base_key)
     if target_prefix != base_key:
         return None
     relative = list(target_segments[len(base_segments) :])
-    if relative and smb_root.casefold().endswith("/" + relative[0].casefold()):
-        relative.pop(0)
     if not relative:
         return None
     return "{}/{}".format(smb_root, "/".join(relative))
