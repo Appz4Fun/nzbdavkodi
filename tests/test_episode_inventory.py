@@ -99,6 +99,19 @@ def test_trailer_park_boys_mixed_seasons_selects_exact_episode():
     assert inventory.pack_season is None
 
 
+def test_bounded_extras_title_token_remains_main_pack_content():
+    inventory = build_video_inventory(
+        [
+            ("/p/My.Extras.Show.S01E01.mkv", 100),
+            ("/p/My.Extras.Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/p/My.Extras.Show.S01E01.mkv"
+    assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
+
+
 def test_extras_in_show_title_remains_main_pack_content():
     inventory = build_video_inventory(
         [

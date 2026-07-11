@@ -67,7 +67,14 @@ def _is_auxiliary(name, parent):
     ):
         return True
 
-    return any(match.start() > 0 for match in _AUXILIARY_RE.finditer(name))
+    for match in _AUXILIARY_RE.finditer(stem):
+        if match.start() == 0:
+            continue
+        if match.end() == len(stem):
+            return True
+        if _resolve_file_episode_tags(stem[: match.start()], ""):
+            return True
+    return False
 
 
 def _video_file(path, size):
