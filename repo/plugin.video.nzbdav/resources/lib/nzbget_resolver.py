@@ -113,9 +113,10 @@ def poll_nzbget_job(
     """Wait for an NZBGet job (or its duplicate group) to reach a terminal state.
 
     Returns a dict with "outcome" in {"success","failed","canceled",
-    "timeout","aborted"} and, on success, "dest_dir". Drives the progress
-    dialog: download % from listgroups, then a post-processing message once the
-    job leaves the active queue.
+    "timeout","aborted"} and, on success, the exact terminal ``nzbid`` plus
+    ``job_name`` and ``dest_dir``. Drives the progress dialog: download % from
+    listgroups, then a post-processing message once the job leaves the active
+    queue.
 
     When ``dupe_key`` is set (#372 round 2) the poll follows NZBGet's automatic
     failover: if the tracked member fails, a promoted backup (a new active NZBID
@@ -236,7 +237,12 @@ def _tick_tracked_member_terminal(state, hist, current, dupe_key, fleet):
     group-follow. Same return contract as ``_tick_tracked_member``.
     """
     if hist["success"]:
-        return {"outcome": "success", "dest_dir": hist["dest_dir"]}
+        return {
+            "outcome": "success",
+            "dest_dir": hist["dest_dir"],
+            "nzbid": hist.get("nzbid", current),
+            "job_name": hist.get("job_name", ""),
+        }
     if not dupe_key:
         # Plain submit: a DELETED/COPY veto (content already in history, never
         # queued) is recoverable by a one-shot FORCE re-submit (#372 r6);
@@ -278,7 +284,12 @@ def _tick_group_follow(state, dialog, settings_getter, dupe_key, fleet):
         settings_getter=settings_getter,
     )
     if succeeded["present"]:
-        return {"outcome": "success", "dest_dir": succeeded["dest_dir"]}
+        return {
+            "outcome": "success",
+            "dest_dir": succeeded["dest_dir"],
+            "nzbid": succeeded.get("nzbid"),
+            "job_name": succeeded.get("job_name", ""),
+        }
     promoted = nzbget_api.active_group_by_dupekey(
         dupe_key, exclude_nzbid=state["exclude"], settings_getter=settings_getter
     )
@@ -461,6 +472,16 @@ def _reuse_completed_job(  # pylint: disable=too-many-arguments
         return None
     if requested_episode is None:
         requested_episode = _requested_episode(episode_context)
+    if on_inventory is None and episode_context is not None:
+        from resources.lib.season_pack_recording import inventory_recorder
+
+        on_inventory = inventory_recorder(
+            "nzbget",
+            completed_job.get("nzbid"),
+            completed_job.get("name", ""),
+            reuse_folder,
+            episode_context,
+        )
     return resolve_smb_video(
         reuse_folder,
         dialog=dialog,
@@ -523,6 +544,7 @@ def _resolve_completed_smb(  # pylint: disable=too-many-arguments
     on_inventory=None,
     *,
     episode_context=None,
+    catalog_job=None,
 ):
     """Map a completed job's DestDir onto SMB and find the playable video.
 
@@ -535,6 +557,16 @@ def _resolve_completed_smb(  # pylint: disable=too-many-arguments
         return None
     if requested_episode is None:
         requested_episode = _requested_episode(episode_context)
+    if on_inventory is None and episode_context is not None and catalog_job:
+        from resources.lib.season_pack_recording import inventory_recorder
+
+        on_inventory = inventory_recorder(
+            "nzbget",
+            catalog_job.get("job_id"),
+            catalog_job.get("job_name", ""),
+            smb_folder,
+            episode_context,
+        )
     return resolve_smb_video(
         smb_folder,
         dialog=dialog,
@@ -718,7 +750,13 @@ def _submit_poll_resolve(ctx, nzb_url, title, download_pubdate, download_size):
     if handled:
         return leave_job
     _play_completed_download(
-        ctx, result["dest_dir"], title, download_pubdate, download_size
+        ctx,
+        result["dest_dir"],
+        title,
+        download_pubdate,
+        download_size,
+        job_id=result.get("nzbid"),
+        job_name=result.get("job_name") or title,
     )
     return leave_job
 
@@ -741,7 +779,15 @@ def _submit_pick(ctx, nzb_url, title, dupe_key):
     )
 
 
-def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_size):
+def _play_completed_download(
+    ctx,
+    dest_dir,
+    title,
+    download_pubdate,
+    download_size,
+    job_id=None,
+    job_name="",
+):
     """Ledger-record the completed download, then resolve+play it over SMB.
 
     Recording happens BEFORE the SMB mapping, which can still fail without
@@ -761,6 +807,7 @@ def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_si
         ctx.dialog,
         ctx.interval,
         episode_context=getattr(ctx, "episode_context", None),
+        catalog_job={"job_id": job_id, "job_name": job_name or title},
     )
     if not video_url:
         ctx.on_failure(_string(30223))

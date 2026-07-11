@@ -100,6 +100,7 @@ def _delegated_find_video_stream_for_folder(
     title_hint,
     min_video_size,
     requested_episode=None,
+    on_inventory=None,
 ):
     """Return the webdav one-shot discovery tuple, or None when not delegable.
 
@@ -126,6 +127,8 @@ def _delegated_find_video_stream_for_folder(
             kwargs.update(_resolver._settings_getter_kwargs(settings_getter))
             if requested_episode is not None:
                 kwargs["requested_episode"] = requested_episode
+            if on_inventory is not None:
+                kwargs["on_inventory"] = on_inventory
             video_path, stream_url, stream_headers = (
                 _resolver.find_video_stream_for_folder(webdav_folder, **kwargs)
             )
@@ -148,6 +151,7 @@ def _find_video_stream_for_folder(
     min_video_size=0,
     requested_episode=None,
     episode_context=None,
+    on_inventory=None,
 ):
     """Return video path, URL, and headers for a completed WebDAV folder.
 
@@ -173,6 +177,7 @@ def _find_video_stream_for_folder(
         title_hint,
         min_video_size,
         requested_episode=requested_episode,
+        on_inventory=on_inventory,
     )
     if delegated is not None:
         return delegated
@@ -282,6 +287,15 @@ def _completed_job_stream(
     }
     if episode_context is not None:
         discovery_kwargs["episode_context"] = episode_context
+        from resources.lib.season_pack_recording import inventory_recorder
+
+        discovery_kwargs["on_inventory"] = inventory_recorder(
+            "nzbdav",
+            completed_job.get("nzo_id"),
+            completed_job.get("name") or title,
+            webdav_folder,
+            episode_context,
+        )
     elif requested_episode is not None:
         discovery_kwargs["requested_episode"] = requested_episode
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(

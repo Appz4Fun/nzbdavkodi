@@ -455,6 +455,8 @@ def test_poll_returns_success_with_dest_dir():
         "success": True,
         "status": "SUCCESS/ALL",
         "dest_dir": "/dl/movies/X",
+        "nzbid": 42,
+        "job_name": "X",
     }
     with patch(
         "resources.lib.nzbget_resolver.nzbget_api.group_status",
@@ -468,6 +470,36 @@ def test_poll_returns_success_with_dest_dir():
         )
     assert result["outcome"] == "success"
     assert result["dest_dir"] == "/dl/movies/X"
+    assert result["nzbid"] == 42
+    assert result["job_name"] == "X"
+
+
+def test_poll_promoted_success_returns_promoted_id_not_original_pick():
+    state = {
+        "current": None,
+        "promotion_deadline": 999,
+        "exclude": 41,
+        "stale_successes": (),
+        "paused_nzbids": (),
+    }
+    completed = {
+        "present": True,
+        "nzbid": 42,
+        "job_name": "same name",
+        "dest_dir": "/dl/tv/promoted",
+    }
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.history_success_by_dupekey",
+        return_value=completed,
+    ):
+        result = _tick_group_follow(state, _Dialog(), None, "dupe-key", None)
+
+    assert result == {
+        "outcome": "success",
+        "nzbid": 42,
+        "job_name": "same name",
+        "dest_dir": "/dl/tv/promoted",
+    }
 
 
 def test_poll_returns_failed_on_history_failure():
@@ -818,6 +850,107 @@ def test_nzbget_completion_preserves_full_context_until_smb_boundary():
         _play_completed_download(ctx, "/downloads/show", "pack", None, None)
 
     assert resolve_completed.call_args.kwargs["episode_context"] == episode_context
+
+
+def test_nzbget_completion_records_exact_nzbid_and_mapped_smb_folder():
+    from types import SimpleNamespace
+
+    from resources.lib.episode_inventory import build_video_inventory
+    from resources.lib.nzbget_resolver import _play_completed_download
+
+    context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt123",
+        "tvdb": "456",
+        "tmdb_id": "789",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [
+            ("smb://host/completed/tv/Spider/Spider.S01E01.mkv", 6000),
+            ("smb://host/completed/tv/Spider/Spider.S01E02.mkv", 7000),
+        ],
+        requested=(1, 1),
+    )
+    ctx = SimpleNamespace(
+        smb_root="smb://host/completed",
+        category="tv",
+        completed_base="/downloads",
+        dialog=None,
+        interval=0,
+        on_failure=MagicMock(),
+        on_success=MagicMock(),
+        dupe=None,
+        episode_context=context,
+    )
+
+    def resolve_folder(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "smb://host/completed/tv/Spider/Spider.S01E01.mkv"
+
+    with patch("resources.lib.nzbget_resolver.record_download"), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        side_effect=resolve_folder,
+    ), patch("resources.lib.season_pack_recording.season_pack.upsert") as upsert:
+        _play_completed_download(
+            ctx,
+            "/downloads/tv/Spider",
+            "Spider-Noir.S01.2160p",
+            None,
+            None,
+            job_id=42,
+            job_name="same name",
+        )
+
+    record = upsert.call_args.args[0]
+    assert (record["backend"], record["job_id"], record["job_name"]) == (
+        "nzbget",
+        "42",
+        "same name",
+    )
+    assert record["folder"] == "smb://host/completed/tv/Spider"
+    ctx.on_success.assert_called_once()
+
+
+def test_submit_flow_records_promoted_result_id_instead_of_original_pick():
+    import threading
+    from types import SimpleNamespace
+
+    from resources.lib.nzbget_resolver import _submit_poll_resolve
+
+    ctx = SimpleNamespace(
+        settings_getter=None,
+        dupe=None,
+        dialog=_Dialog(),
+        timeout=60,
+        interval=0,
+        cancel_event=threading.Event(),
+        submitted_nzbids=[],
+        on_failure=MagicMock(),
+        episode_context={"type": "episode", "title": "Show", "season": 1},
+    )
+    with patch(
+        "resources.lib.nzbget_resolver._submit_pick", return_value=(41, None)
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={
+            "outcome": "success",
+            "dest_dir": "/downloads/tv/promoted",
+            "nzbid": 42,
+            "job_name": "promoted release",
+        },
+    ), patch(
+        "resources.lib.nzbget_resolver._play_completed_download"
+    ) as play_completed:
+        _submit_poll_resolve(ctx, "http://i/pick.nzb", "same name", None, None)
+
+    assert play_completed.call_args.kwargs == {
+        "job_id": 42,
+        "job_name": "promoted release",
+    }
+    assert play_completed.call_args.args[1] == "/downloads/tv/promoted"
 
 
 def test_smb_boundary_converts_full_context_to_requested_episode():
@@ -1771,7 +1904,12 @@ def test_poll_follows_promoted_backup_to_success():
         _SUC, return_value={"present": False}
     ):
         result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
-    assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/B",
+        "nzbid": 9,
+        "job_name": "",
+    }
 
 
 def test_poll_plays_already_succeeded_group_member():
@@ -1789,7 +1927,12 @@ def test_poll_plays_already_succeeded_group_member():
         _SUC, return_value={"present": True, "nzbid": 2, "dest_dir": "/dl/done"}
     ):
         result = poll_nzbget_job(1, dialog, _Monitor(), 60, interval=0, dupe_key="k")
-    assert result == {"outcome": "success", "dest_dir": "/dl/done"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/done",
+        "nzbid": 2,
+        "job_name": "",
+    }
 
 
 def test_poll_reports_failed_when_group_exhausted():
@@ -2483,7 +2626,12 @@ def test_group_follow_tracks_owned_promoted_backup():
             dupe_key="k",
             fleet={"owned_nzbids": lambda: (1, 9)},
         )
-    assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/B",
+        "nzbid": 9,
+        "job_name": "",
+    }
 
 
 def test_backup_nzbids_publish_into_shared_list_as_appends_land():
@@ -2719,7 +2867,12 @@ def test_poll_rescues_copy_vetoed_pick_and_plays_force_resubmit():
             dupe_key="k",
             fleet={"rescue": _rescue_stub(7, counter)},
         )
-    assert result == {"outcome": "success", "dest_dir": "/dl/R"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/R",
+        "nzbid": 7,
+        "job_name": "",
+    }
     assert counter["n"] == 1  # rescue fired exactly once
 
 
@@ -2977,7 +3130,12 @@ def test_poll_prefers_live_owned_backup_over_rescue():
                 "owned_nzbids": lambda: (1, 9),
             },
         )
-    assert result == {"outcome": "success", "dest_dir": "/dl/B"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/B",
+        "nzbid": 9,
+        "job_name": "",
+    }
     assert counter["n"] == 0  # adopted the owned backup; rescue never called
 
 
@@ -3004,7 +3162,12 @@ def test_poll_no_dupe_key_rescues_copy_vetoed_plain_submit():
             dupe_key="",
             fleet={"rescue": _rescue_stub(7, counter)},
         )
-    assert result == {"outcome": "success", "dest_dir": "/dl/R"}
+    assert result == {
+        "outcome": "success",
+        "dest_dir": "/dl/R",
+        "nzbid": 7,
+        "job_name": "",
+    }
     assert counter["n"] == 1
 
 

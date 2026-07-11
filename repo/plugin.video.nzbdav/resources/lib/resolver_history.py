@@ -121,6 +121,7 @@ def _find_completed_video_stream_with_rechecks(
     min_video_size=0,
     requested_episode=None,
     episode_context=None,
+    on_inventory=None,
 ):
     """Return a completed WebDAV stream, briefly rechecking symlink visibility.
 
@@ -142,6 +143,8 @@ def _find_completed_video_stream_with_rechecks(
         discovery_kwargs["episode_context"] = episode_context
     elif requested_episode is not None:
         discovery_kwargs["requested_episode"] = requested_episode
+    if on_inventory is not None:
+        discovery_kwargs["on_inventory"] = on_inventory
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(
         webdav_folder, **discovery_kwargs
     )
@@ -444,6 +447,17 @@ def _handle_completed_history(  # pylint: disable=too-many-arguments
     if not storage:
         return False, None, None, no_video_retries
     webdav_folder = _resolver._storage_to_webdav_path(storage)
+    on_inventory = None
+    if episode_context is not None:
+        from resources.lib.season_pack_recording import inventory_recorder
+
+        on_inventory = inventory_recorder(
+            "nzbdav",
+            history.get("nzo_id"),
+            history.get("name") or title,
+            webdav_folder,
+            episode_context,
+        )
     outcome, stream_url, stream_headers = _classify_completed_video(
         webdav_folder,
         title,
@@ -452,6 +466,7 @@ def _handle_completed_history(  # pylint: disable=too-many-arguments
         download_size,
         requested_episode=requested_episode,
         episode_context=episode_context,
+        on_inventory=on_inventory,
     )
     if outcome == "stub":
         return False, None, None, no_video_retries
@@ -481,6 +496,7 @@ def _discover_completed_video(
     download_size,
     requested_episode=None,
     episode_context=None,
+    on_inventory=None,
 ):
     """Run WebDAV discovery for a completed folder, returning the stream tuple."""
     # Thread the advertised-size floor into discovery so a root-level job-start
@@ -499,6 +515,8 @@ def _discover_completed_video(
         kwargs["episode_context"] = episode_context
     elif requested_episode is not None:
         kwargs["requested_episode"] = requested_episode
+    if on_inventory is not None:
+        kwargs["on_inventory"] = on_inventory
     return _resolver._find_completed_video_stream_with_rechecks(webdav_folder, **kwargs)
 
 
@@ -510,6 +528,7 @@ def _classify_completed_video(
     download_size,
     requested_episode=None,
     episode_context=None,
+    on_inventory=None,
 ):
     """Discover the completed video and classify it for the poll loop.
 
@@ -526,6 +545,7 @@ def _classify_completed_video(
         download_size,
         requested_episode=requested_episode,
         episode_context=episode_context,
+        on_inventory=on_inventory,
     )
     if not video_path:
         return "missing", None, None

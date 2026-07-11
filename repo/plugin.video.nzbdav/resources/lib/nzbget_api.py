@@ -248,7 +248,8 @@ def history_status(nzbid, settings_getter=None):
     """Look up a terminal job by NZBID via history.
 
     Returns {"present": bool, "success": bool, "status": str,
-    "dest_dir": str}. "success" is True ONLY for SUCCESS/* statuses, per the
+    "dest_dir": str, "nzbid": object, "job_name": str}. "success" is True
+    ONLY for SUCCESS/* statuses, per the
     spec's completion guarantee (full post-processing = a repaired, unpacked,
     playable file). WARNING/* (incl. WARNING/REPAIRABLE / WARNING/DAMAGED,
     where par2 repair did not run) is deliberately treated as a failure
@@ -268,6 +269,8 @@ def history_status(nzbid, settings_getter=None):
                 "success": status.startswith("SUCCESS"),
                 "status": status,
                 "dest_dir": _dest_dir(item),
+                "nzbid": item.get("NZBID"),
+                "job_name": str(item.get("Name") or ""),
             }
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
 
@@ -602,7 +605,7 @@ def history_success_by_dupekey(dupe_key, exclude_nzbids=None, settings_getter=No
     out STALE successes that predate the resolve (#372 round 4): their files
     may be long gone -- the reuse probe already declined them -- and playing
     one would fail "No video file found" instead of waiting for the fleet's
-    own member. Returns ``{"present","nzbid","dest_dir"}`` or
+    own member. Returns ``{"present","nzbid","job_name","dest_dir"}`` or
     ``{"present": False}``.
     """
     if not dupe_key:
@@ -658,6 +661,7 @@ def _success_history_entry(item, dupe_key):
     return {
         "present": True,
         "nzbid": item.get("NZBID"),
+        "job_name": str(item.get("Name") or ""),
         "dest_dir": _dest_dir(item),
     }
 
