@@ -114,7 +114,7 @@ def _safe_smb_root(value):
     try:
         parts = urlsplit(root)
         hostname = parts.hostname
-        _port = parts.port
+        _ = parts.port
     except (TypeError, ValueError):
         return None
     if parts.scheme.casefold() != "smb" or not hostname:
