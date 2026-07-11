@@ -370,15 +370,14 @@ def _attach_selected_result_metadata(resolver_params, selected):
 
 def _get_script_setting(key, default=""):
     """Read this addon's setting from settings.xml without Kodi settings APIs."""
-    try:
-        from defusedxml import ElementTree as element_tree
-    except ImportError:  # pragma: no cover - Kodi installs may not bundle defusedxml
-        from xml.etree import ElementTree as element_tree
+    from resources.lib.xml_safety import ParseError, safe_fromstring
 
     for settings_path in _script_settings_paths():
         try:
-            root = element_tree.parse(settings_path).getroot()
-        except (OSError, element_tree.ParseError):
+            with open(settings_path, "rb") as fh:
+                xml_bytes = fh.read()
+            root = safe_fromstring(xml_bytes)
+        except (OSError, ParseError, ValueError):
             continue
 
         for setting in root.findall(".//setting"):
