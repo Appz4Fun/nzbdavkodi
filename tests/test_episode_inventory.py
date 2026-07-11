@@ -249,6 +249,32 @@ def test_featurette_descriptive_prefix_remains_auxiliary():
     assert inventory.pack_season is None
 
 
+def test_tagless_sample_descriptive_prefix_does_not_win_fallback():
+    inventory = build_video_inventory(
+        [
+            ("/pack/video.mkv", 100),
+            ("/pack/sample.Show.Name.mkv", 900),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/pack/video.mkv"
+    assert inventory.selected_size == 100
+
+
+def test_tagless_featurette_descriptive_prefix_does_not_win_fallback():
+    inventory = build_video_inventory(
+        [
+            ("/pack/video.mkv", 100),
+            ("/pack/featurette.Behind.Scenes.mkv", 900),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/pack/video.mkv"
+    assert inventory.selected_size == 100
+
+
 def test_single_leading_trailer_marker_remains_auxiliary():
     inventory = build_video_inventory(
         [

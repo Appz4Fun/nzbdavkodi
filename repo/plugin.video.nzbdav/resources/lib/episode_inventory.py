@@ -60,6 +60,13 @@ def _is_auxiliary(name, parent):
     if not show_folder_exception and _AUXILIARY_TOKEN_RE.fullmatch(stem):
         return True
 
+    leading_marker = _AUXILIARY_RE.match(name)
+    if (
+        leading_marker
+        and leading_marker.group(1).casefold() not in _AMBIGUOUS_LEADING_MARKERS
+    ):
+        return True
+
     return any(
         _resolve_file_episode_tags(name[: match.start()], "")
         for match in _AUXILIARY_RE.finditer(name)
