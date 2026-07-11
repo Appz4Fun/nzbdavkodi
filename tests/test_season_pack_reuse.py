@@ -249,20 +249,29 @@ def test_nzbget_cached_mapping_accepts_canonical_posix_and_windows_children(
         assert season_pack_reuse._nzbget_folder_for_record(record, getter) == expected
 
 
-@pytest.mark.parametrize(
-    "smb_root",
-    [
-        "smb://box",
-        "smb:///completed",
-        "smb://box/share//nested",
-        "smb://box/share/./nested",
-        "smb://box/share/../nested",
-        "smb://user@box/share",
-        "smb://box:445/share",
-        "smb://box/share?option=1",
-        "smb://box/share#fragment",
-    ],
+_AMBIGUOUS_SMB_ROOTS = (
+    "smb://box",
+    "smb:///completed",
+    "smb://box/share//nested",
+    "smb://box/share/./nested",
+    "smb://box/share/../nested",
+    "smb://box/share?option=1",
+    "smb://box/share#fragment",
+    "smb://box:not-a-port/share",
+    "smb://box:/share",
+    "smb://box:70000/share",
+    "smb://[2001:db8::1/share",
+    "smb://box/share/%2e%2e/nested",
+    "smb://box/share/evil%2Fnested",
+    "smb://box/share/evil%5Cnested",
+    "smb://box/share/white%20space",
+    "smb://box/share/new%0Aline",
+    "smb://box/sha\nre",
+    "smb://bo%2Fx/share",
 )
+
+
+@pytest.mark.parametrize("smb_root", _AMBIGUOUS_SMB_ROOTS)
 def test_nzbget_cached_mapping_rejects_structurally_ambiguous_smb_roots(smb_root):
     assert (
         season_pack_reuse._exact_cached_smb_mapping(
@@ -280,6 +289,16 @@ def test_nzbget_cached_mapping_rejects_structurally_ambiguous_smb_roots(smb_root
         ("smb://box/share", "smb://box/share/Show"),
         ("smb://192.168.1.20/share", "smb://192.168.1.20/share/Show"),
         ("smb://box/share/nested", "smb://box/share/nested/Show"),
+        (
+            "smb://user:p@ss@box/share",
+            "smb://user:p@ss@box/share/Show",
+        ),
+        (
+            "smb://user:p%40ss@box/share",
+            "smb://user:p%40ss@box/share/Show",
+        ),
+        ("smb://[2001:db8::1]/share", "smb://[2001:db8::1]/share/Show"),
+        ("smb://box:445/share", "smb://box:445/share/Show"),
     ],
 )
 def test_nzbget_cached_mapping_accepts_structurally_valid_smb_roots(smb_root, expected):
@@ -291,6 +310,77 @@ def test_nzbget_cached_mapping_accepts_structurally_valid_smb_roots(smb_root, ex
         )
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    "smb_root",
+    [
+        "smb://user:p@ss@box/share",
+        "smb://user:p%40ss@box/share",
+        "smb://[2001:db8::1]/share",
+        "smb://box:445/share",
+    ],
+)
+def test_nzbget_reuse_preserves_valid_structured_smb_root_without_resubmitting(
+    smb_root,
+):
+    record = _record(folder="/srv/base/Show")
+    inventory = _Inventory("{}/Show/Spider-Noir.S01E01.mkv".format(smb_root))
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": smb_root}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/srv/base/Show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value="/srv/base",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory", return_value=inventory
+    ) as scan, patch(
+        "resources.lib.season_pack_reuse.season_pack.upsert", return_value=True
+    ), patch(
+        "resources.lib.nzbget_api.append_nzb"
+    ) as submit:
+        result = season_pack_reuse.reuse_exact_job(
+            record, _context(), "nzbget", settings_getter=getter
+        )
+
+    assert result.state == "valid"
+    scan.assert_called_once_with("{}/Show".format(smb_root), requested_episode=(1, 1))
+    submit.assert_not_called()
+
+
+@pytest.mark.parametrize("smb_root", _AMBIGUOUS_SMB_ROOTS)
+def test_nzbget_reuse_rejects_ambiguous_smb_root_without_scan_or_delete(smb_root):
+    record = _record(folder="/srv/base/Show")
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": smb_root}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/srv/base/Show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value="/srv/base",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory"
+    ) as scan, patch(
+        "resources.lib.season_pack_reuse.season_pack.remove"
+    ) as remove:
+        result = season_pack_reuse.reuse_exact_job(
+            record, _context(), "nzbget", settings_getter=getter
+        )
+
+    assert result.state == "transient"
+    scan.assert_not_called()
+    remove.assert_not_called()
 
 
 def test_nzbget_successful_rescan_refreshes_exact_catalog_episode_inventory(

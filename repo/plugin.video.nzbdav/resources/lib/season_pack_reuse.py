@@ -5,6 +5,7 @@
 
 import re
 from typing import NamedTuple
+from urllib.parse import unquote, urlsplit
 
 import xbmcaddon
 
@@ -103,20 +104,49 @@ def _canonical_native_path(value):
 
 def _safe_smb_root(value):
     root = str(value or "").strip().replace("\\", "/").rstrip("/")
-    if not root.lower().startswith("smb://"):
+    if _ambiguous_url_component(root):
         return None
-    location = root[6:]
-    if any(marker in location for marker in ("?", "#", "@")):
+    try:
+        parts = urlsplit(root)
+        hostname = parts.hostname
+        _port = parts.port
+    except (TypeError, ValueError):
         return None
-    parts = location.split("/")
-    if len(parts) < 2 or any(not part for part in parts):
+    if parts.scheme.casefold() != "smb" or not hostname:
         return None
-    host = parts[0]
-    if ":" in host or any(character.isspace() for character in host):
+    authority_host = parts.netloc.rpartition("@")[2]
+    if authority_host.endswith(":"):
         return None
-    if any(part in (".", "..") for part in parts[1:]):
+    if parts.query or parts.fragment:
         return None
+    decoded_host = unquote(hostname)
+    if _ambiguous_url_component(decoded_host) or any(
+        separator in decoded_host for separator in ("/", "\\")
+    ):
+        return None
+    raw_segments = parts.path.split("/")
+    if not parts.path.startswith("/") or len(raw_segments) < 2:
+        return None
+    raw_segments = raw_segments[1:]
+    if not raw_segments or any(not segment for segment in raw_segments):
+        return None
+    for raw_segment in raw_segments:
+        segment = unquote(raw_segment)
+        if (
+            segment in (".", "..")
+            or _ambiguous_url_component(segment)
+            or "/" in segment
+            or "\\" in segment
+        ):
+            return None
     return root
+
+
+def _ambiguous_url_component(value):
+    return not value or any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in value
+    )
 
 
 def _exact_cached_smb_mapping(smb_root, native_folder, completed_base):
