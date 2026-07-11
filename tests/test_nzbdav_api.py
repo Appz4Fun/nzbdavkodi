@@ -613,6 +613,7 @@ def test_get_job_history_completed(mock_http, mock_settings):
         == "/mnt/nzbdav/completed-symlinks/uncategorized/Send Help 2026"
     )
     assert result["name"] == "Send Help 2026 1080p"
+    assert result["nzo_id"] == "SABnzbd_nzo_hist1"
     call_url = mock_http.call_args[0][0]
     assert "mode=history" in call_url
     assert "apikey=testkey" in call_url

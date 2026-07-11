@@ -447,17 +447,8 @@ def _handle_completed_history(  # pylint: disable=too-many-arguments
     if not storage:
         return False, None, None, no_video_retries
     webdav_folder = _resolver._storage_to_webdav_path(storage)
-    on_inventory = None
-    if episode_context is not None:
-        from resources.lib.season_pack_recording import inventory_recorder
-
-        on_inventory = inventory_recorder(
-            "nzbdav",
-            history.get("nzo_id"),
-            history.get("name") or title,
-            webdav_folder,
-            episode_context,
-        )
+    inventories = [] if episode_context is not None else None
+    on_inventory = inventories.append if inventories is not None else None
     outcome, stream_url, stream_headers = _classify_completed_video(
         webdav_folder,
         title,
@@ -471,6 +462,17 @@ def _handle_completed_history(  # pylint: disable=too-many-arguments
     if outcome == "stub":
         return False, None, None, no_video_retries
     if outcome == "available":
+        if inventories:
+            from resources.lib.season_pack_recording import record_completed_inventory
+
+            record_completed_inventory(
+                "nzbdav",
+                history.get("nzo_id"),
+                history.get("name") or title,
+                webdav_folder,
+                episode_context,
+                inventories[-1],
+            )
         return True, stream_url, stream_headers, no_video_retries
 
     # A truthy "unavailable" outcome means the happy-path return above was

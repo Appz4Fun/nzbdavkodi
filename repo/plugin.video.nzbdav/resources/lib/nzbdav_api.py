@@ -411,7 +411,7 @@ def clear_queue(settings_getter=None, slots=None, timeout=None):
 def get_job_history(nzo_id, settings_getter=None):
     """Check if a job has landed in nzbdav's history.
 
-    Returns dict with keys ``status``, ``storage``, ``name``,
+    Returns dict with keys ``status``, ``storage``, ``name``, ``nzo_id``,
     ``fail_message`` when the nzo_id is found, or ``None`` when it
     hasn't appeared yet (or on any network / settings / parse error —
     the resolver's poll loop treats None as "keep polling", so
@@ -450,6 +450,7 @@ def get_job_history(nzo_id, settings_getter=None):
                 "status": slot.get("status", ""),
                 "storage": slot.get("storage", ""),
                 "name": slot.get("name", ""),
+                "nzo_id": slot.get("nzo_id", ""),
                 "fail_message": slot.get("fail_message", ""),
             }
     return None

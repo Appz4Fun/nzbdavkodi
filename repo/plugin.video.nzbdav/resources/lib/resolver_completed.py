@@ -285,17 +285,10 @@ def _completed_job_stream(
         "title_hint": title,
         "min_video_size": min_video_size,
     }
+    inventories = [] if episode_context is not None else None
     if episode_context is not None:
         discovery_kwargs["episode_context"] = episode_context
-        from resources.lib.season_pack_recording import inventory_recorder
-
-        discovery_kwargs["on_inventory"] = inventory_recorder(
-            "nzbdav",
-            completed_job.get("nzo_id"),
-            completed_job.get("name") or title,
-            webdav_folder,
-            episode_context,
-        )
+        discovery_kwargs["on_inventory"] = inventories.append
     elif requested_episode is not None:
         discovery_kwargs["requested_episode"] = requested_episode
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(
@@ -317,6 +310,17 @@ def _completed_job_stream(
         settings_getter,
     ):
         return None
+    if inventories:
+        from resources.lib.season_pack_recording import record_completed_inventory
+
+        record_completed_inventory(
+            "nzbdav",
+            completed_job.get("nzo_id"),
+            completed_job.get("name") or title,
+            webdav_folder,
+            episode_context,
+            inventories[-1],
+        )
     return stream_url, stream_headers
 
 
