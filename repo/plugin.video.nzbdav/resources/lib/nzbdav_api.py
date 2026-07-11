@@ -457,13 +457,8 @@ def get_job_history(nzo_id, settings_getter=None):
     return None
 
 
-def lookup_completed_job_exact(nzo_id, settings_getter=None):
-    """Tri-state lookup of one exact nzbdav completed-history identifier.
-
-    Unlike :func:`get_job_history`, this keeps a successful empty lookup apart
-    from a network, auth, JSON, or response-shape failure. That distinction is
-    required before deleting a persistent season-pack record.
-    """
+def _fetch_exact_history(nzo_id, settings_getter):
+    """Fetch and decode the exact-history response, or return ``None``."""
     try:
         base_url, api_key = _get_settings(settings_getter=settings_getter)
         params = {
@@ -481,31 +476,68 @@ def lookup_completed_job_exact(nzo_id, settings_getter=None):
             ),
             xbmc.LOGDEBUG,
         )
-        return ExactJobLookup.transient()
+        return None
+    return decoded
 
+
+def _exact_history_slots(decoded):
+    """Return a validated nzbdav history-slot list, or ``None``."""
     if not isinstance(decoded, dict):
-        return ExactJobLookup.transient()
+        return None
     history = decoded.get("history")
-    if not isinstance(history, dict) or not isinstance(history.get("slots"), list):
+    if not isinstance(history, dict):
+        return None
+    slots = history.get("slots")
+    return slots if isinstance(slots, list) else None
+
+
+def _exact_slot_identifier(slot):
+    """Return a non-empty slot identifier, or ``None`` when malformed."""
+    if not isinstance(slot, dict):
+        return None
+    identifier = slot.get("nzo_id")
+    return identifier if identifier not in (None, "") else None
+
+
+def _matched_exact_slot_result(slot):
+    """Classify one nzbdav history slot already matched by identifier."""
+    status = slot.get("status")
+    if not isinstance(status, str) or not status:
         return ExactJobLookup.transient()
+    if status != "Completed":
+        return ExactJobLookup.stale()
+    storage = slot.get("storage")
+    if not isinstance(storage, str) or not storage:
+        return ExactJobLookup.transient()
+    return ExactJobLookup.valid(_completed_job_from_slot(slot))
+
+
+def _exact_history_result(slots, nzo_id):
+    """Classify validated history slots for one exact nzbdav identifier."""
     target = str(nzo_id)
     malformed = False
-    for slot in history["slots"]:
-        if not isinstance(slot, dict) or slot.get("nzo_id") in (None, ""):
+    for slot in slots:
+        identifier = _exact_slot_identifier(slot)
+        if identifier is None:
             malformed = True
             continue
-        if str(slot.get("nzo_id")) != target:
-            continue
-        status = slot.get("status")
-        if not isinstance(status, str) or not status:
-            return ExactJobLookup.transient()
-        if status != "Completed":
-            return ExactJobLookup.stale()
-        storage = slot.get("storage")
-        if not isinstance(storage, str) or not storage:
-            return ExactJobLookup.transient()
-        return ExactJobLookup.valid(_completed_job_from_slot(slot))
+        if str(identifier) == target:
+            return _matched_exact_slot_result(slot)
     return ExactJobLookup.transient() if malformed else ExactJobLookup.stale()
+
+
+def lookup_completed_job_exact(nzo_id, settings_getter=None):
+    """Tri-state lookup of one exact nzbdav completed-history identifier.
+
+    Unlike :func:`get_job_history`, this keeps a successful empty lookup apart
+    from a network, auth, JSON, or response-shape failure. That distinction is
+    required before deleting a persistent season-pack record.
+    """
+    decoded = _fetch_exact_history(nzo_id, settings_getter)
+    slots = _exact_history_slots(decoded)
+    if slots is None:
+        return ExactJobLookup.transient()
+    return _exact_history_result(slots, nzo_id)
 
 
 def completed_by_id(nzo_id, settings_getter=None):

@@ -603,6 +603,11 @@ def test_folder_video_total_bytes_stats_records_largest_video(
       <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
   </D:response>
   <D:response>
+    <D:href>/content/uncategorized/Pack/metadata.nfo</D:href>
+    <D:propstat><D:prop><D:getcontentlength>512</D:getcontentlength>
+      <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+  <D:response>
     <D:href>/content/uncategorized/Pack/stub.mp4</D:href>
     <D:propstat><D:prop><D:getcontentlength>10000000</D:getcontentlength>
       <D:resourcetype/></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
@@ -628,6 +633,10 @@ def test_folder_video_total_bytes_stats_records_largest_video(
 
     assert total == 10000000 + 8000000000
     assert stats["max"] == 8000000000  # the subfolder sibling, not the root stub
+    assert stats["videos"] == [
+        ("/content/uncategorized/Pack/stub.mp4", 10000000),
+        ("/content/uncategorized/Pack/Sub/Show.S01E04.mkv", 8000000000),
+    ]
 
 
 @patch("resources.lib.webdav._get_settings")

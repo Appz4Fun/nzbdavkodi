@@ -150,6 +150,26 @@ def _play_identity(params, title, season, episode):
     }
 
 
+def _episode_coordinates(source_params, season, episode):
+    """Resolve canonical season/episode values from route aliases."""
+    if season is None:
+        season = source_params.get("season", "") or source_params.get("ep_season", "")
+    if episode is None:
+        episode = source_params.get("episode", "") or source_params.get(
+            "ep_episode", ""
+        )
+    return season, episode
+
+
+def _is_exact_episode_context(context):
+    """Return whether ``context`` identifies one exact episode."""
+    return (
+        context.get("type") == "episode"
+        and context.get("season") is not None
+        and context.get("episode") is not None
+    )
+
+
 def _attach_episode_context(
     resolver_params, source_params, title=None, season=None, episode=None
 ):
@@ -163,20 +183,11 @@ def _attach_episode_context(
 
     source_params = source_params if isinstance(source_params, dict) else {}
     resolver_params.pop("_episode_context", None)
-    if season is None:
-        season = source_params.get("season", "") or source_params.get("ep_season", "")
-    if episode is None:
-        episode = source_params.get("episode", "") or source_params.get(
-            "ep_episode", ""
-        )
+    season, episode = _episode_coordinates(source_params, season, episode)
     context = context_from_params(
         source_params, title=title, season=season, episode=episode
     )
-    if (
-        context.get("type") == "episode"
-        and context.get("season") is not None
-        and context.get("episode") is not None
-    ):
+    if _is_exact_episode_context(context):
         resolver_params["_episode_context"] = context
 
 
@@ -306,6 +317,33 @@ def _lookup_search_episode_args(params, search_type, title, season, episode, imd
     return title, season, episode
 
 
+def _available_filtered_rows(filtered, all_parsed, title, notify, pack_result):
+    """Return selectable provider rows, an empty local-pack pool, or ``None``."""
+    if filtered:
+        return filtered
+    if all_parsed or pack_result is None:
+        filtered = _filtered_or_prompt(all_parsed, title, notify)
+    if filtered:
+        return filtered
+    return [] if pack_result is not None else None
+
+
+def _prepare_picker_rows(results, title, notify, pack_result):
+    """Filter provider rows and prepend one exact local-pack row."""
+    from resources.lib.filter import filter_results
+
+    filtered, all_parsed = filter_results(results)
+    filtered = _available_filtered_rows(
+        filtered, all_parsed, title, notify, pack_result
+    )
+    if filtered is None:
+        return None
+    provider_row_count = len(filtered)
+    picker_rows = _prepend_pack(filtered, pack_result)
+    total_count = len(results) + len(picker_rows) - provider_row_count
+    return picker_rows, total_count
+
+
 def _handle_play_filter_and_select(
     handle, results, title, year, notify, identity=None, pack_result=None
 ):
@@ -324,22 +362,11 @@ def _handle_play_filter_and_select(
         xbmc.LOGDEBUG,
     )
 
-    from resources.lib.filter import filter_results
-
-    total_count = len(results)
-    filtered, all_parsed = filter_results(results)
-
-    if not filtered:
-        if all_parsed or pack_result is None:
-            filtered = _filtered_or_prompt(all_parsed, title, notify)
-        if not filtered and pack_result is None:
-            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
-            return
-        filtered = filtered or []
-
-    provider_row_count = len(filtered)
-    filtered = _prepend_pack(filtered, pack_result)
-    total_count += len(filtered) - provider_row_count
+    prepared = _prepare_picker_rows(results, title, notify, pack_result)
+    if prepared is None:
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+    filtered, total_count = prepared
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
@@ -768,28 +795,18 @@ def _handle_search_filter_and_select(
     Extracted verbatim from the tail of ``_handle_search``.
     """
     import resources.lib.router as _router
-    from resources.lib.filter import filter_results
 
-    total_count = len(results)
     xbmc.log(
         "NZB-DAV: Search stage: filtering {} results for '{}'".format(
             len(results), title
         ),
         xbmc.LOGDEBUG,
     )
-    filtered, all_parsed = filter_results(results)
-
-    if not filtered:
-        if all_parsed or pack_result is None:
-            filtered = _filtered_or_prompt(all_parsed, title, notify)
-        if not filtered and pack_result is None:
-            xbmcplugin.endOfDirectory(handle, succeeded=False)
-            return
-        filtered = filtered or []
-
-    provider_row_count = len(filtered)
-    filtered = _prepend_pack(filtered, pack_result)
-    total_count += len(filtered) - provider_row_count
+    prepared = _prepare_picker_rows(results, title, notify, pack_result)
+    if prepared is None:
+        xbmcplugin.endOfDirectory(handle, succeeded=False)
+        return
+    filtered, total_count = prepared
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon("plugin.video.nzbdav")

@@ -19,23 +19,46 @@ def _has_media_identity(context):
     return any(context.get(field) for field in ("title", "imdb", "tvdb", "tmdb_id"))
 
 
-def _record(backend, job_id, job_name, folder, context, inventory):
-    if not isinstance(context, dict) or context.get("type") != "episode":
-        return None
-    if not _has_media_identity(context):
-        return None
+def _record_context_valid(context):
+    if not isinstance(context, dict):
+        return False
+    if context.get("type") != "episode":
+        return False
+    return _has_media_identity(context)
+
+
+def _pack_details(context, inventory):
     season = _number(context.get("season"))
     episodes = sorted(set(getattr(inventory, "episodes", ()) or ()))
-    pack_season = getattr(inventory, "pack_season", None)
-    if season is None or pack_season != season or len(episodes) < 2:
+    if season is None:
         return None
-    if not backend or job_id is None or not str(job_id).strip() or not folder:
+    if getattr(inventory, "pack_season", None) != season:
         return None
+    if len(episodes) < 2:
+        return None
+    return season, episodes
+
+
+def _job_details(backend, job_id, job_name, folder):
+    normalized_id = str(job_id).strip() if job_id is not None else ""
+    if not backend or not normalized_id or not folder:
+        return None
+    return (
+        str(backend).strip(),
+        normalized_id,
+        str(job_name or "").strip(),
+        str(folder).strip(),
+    )
+
+
+def _record_values(job, context, pack):
+    backend, job_id, job_name, folder = job
+    season, episodes = pack
     return {
-        "backend": str(backend).strip(),
-        "job_id": str(job_id).strip(),
-        "job_name": str(job_name or "").strip(),
-        "folder": str(folder).strip(),
+        "backend": backend,
+        "job_id": job_id,
+        "job_name": job_name,
+        "folder": folder,
         "title": str(context.get("title") or "").strip(),
         "year": _number(context.get("year")),
         "imdb": str(context.get("imdb") or "").strip(),
@@ -44,6 +67,18 @@ def _record(backend, job_id, job_name, folder, context, inventory):
         "season": season,
         "episodes": episodes,
     }
+
+
+def _record(backend, job_id, job_name, folder, context, inventory):
+    if not _record_context_valid(context):
+        return None
+    pack = _pack_details(context, inventory)
+    if pack is None:
+        return None
+    job = _job_details(backend, job_id, job_name, folder)
+    if job is None:
+        return None
+    return _record_values(job, context, pack)
 
 
 def record_completed_inventory(

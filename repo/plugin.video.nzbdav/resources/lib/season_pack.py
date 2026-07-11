@@ -110,19 +110,27 @@ def _normalize_episodes(values):
     return sorted(episodes)
 
 
-def _normalize_record(record, default_timestamp=0.0):
-    if not isinstance(record, dict):
-        return None
+def _record_requirements(record):
+    """Return validated required catalog fields, or ``None``."""
     backend = _text(record.get("backend"))
     job_id = _text(record.get("job_id"))
     folder = _text(record.get("folder"))
     season = _number(record.get("season"))
     episodes = _normalize_episodes(record.get("episodes"))
-    if backend not in ("nzbget", "nzbdav") or not job_id or not folder:
+    if backend not in ("nzbget", "nzbdav"):
         return None
-    if season is None or season < 0 or not episodes:
+    if not job_id or not folder:
         return None
-    normalized = {
+    if season is None or season < 0:
+        return None
+    if not episodes:
+        return None
+    return backend, job_id, folder, season, episodes
+
+
+def _normalized_record_values(record, requirements, default_timestamp):
+    backend, job_id, folder, season, episodes = requirements
+    return {
         "backend": backend,
         "job_id": job_id,
         "job_name": _text(record.get("job_name")),
@@ -138,6 +146,15 @@ def _normalize_record(record, default_timestamp=0.0):
             record.get("last_confirmed"), default=default_timestamp
         ),
     }
+
+
+def _normalize_record(record, default_timestamp=0.0):
+    if not isinstance(record, dict):
+        return None
+    requirements = _record_requirements(record)
+    if requirements is None:
+        return None
+    normalized = _normalized_record_values(record, requirements, default_timestamp)
     return {field: normalized[field] for field in _RECORD_FIELDS}
 
 
@@ -229,8 +246,18 @@ def _save_records_unlocked(records, path=None):
         return False
 
 
-def _acquire_msvcrt_lock(lock_path, deadline):
-    """Acquire a Windows-owned nonblocking byte lock with bounded retry."""
+def _close_lock_handle(handle):
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except _IO_ERRORS:
+        # Lock cleanup is best-effort after setup or acquisition failure.
+        pass
+
+
+def _initialize_msvcrt_lock(lock_path):
+    """Open and initialize the byte used by the Windows locking primitive."""
     handle = None
     try:
         handle = open(lock_path, "a+b")
@@ -240,12 +267,15 @@ def _acquire_msvcrt_lock(lock_path, deadline):
             handle.flush()
         handle.seek(0)
     except _IO_ERRORS:
-        if handle is not None:
-            try:
-                handle.close()
-            except _IO_ERRORS:
-                # Lock setup is already failing, so close remains best-effort.
-                pass
+        _close_lock_handle(handle)
+        return None
+    return handle
+
+
+def _acquire_msvcrt_lock(lock_path, deadline):
+    """Acquire a Windows-owned nonblocking byte lock with bounded retry."""
+    handle = _initialize_msvcrt_lock(lock_path)
+    if handle is None:
         return None
 
     while True:
@@ -254,19 +284,25 @@ def _acquire_msvcrt_lock(lock_path, deadline):
             return ("msvcrt", handle, None)
         except _IO_ERRORS:
             if time.monotonic() >= deadline:
-                try:
-                    handle.close()
-                except _IO_ERRORS:
-                    # A failed close cannot make an unavailable lock usable.
-                    pass
+                _close_lock_handle(handle)
                 return None
             threading.Event().wait(_LOCK_RETRY)
 
 
+def _fcntl_available():
+    """Return whether the POSIX lock primitive is available."""
+    return callable(getattr(fcntl, "flock", None))
+
+
+def _msvcrt_available():
+    """Return whether the Windows lock primitive is available."""
+    return callable(getattr(msvcrt, "locking", None))
+
+
 def _acquire_process_lock(lock_path):
     deadline = time.monotonic() + _LOCK_TIMEOUT
-    if fcntl is None:
-        if msvcrt is None:
+    if not _fcntl_available():
+        if not _msvcrt_available():
             return None
         return _acquire_msvcrt_lock(lock_path, deadline)
     try:
@@ -381,6 +417,38 @@ class PackValidation(NamedTuple):
     outcome: str
 
 
+def _completed_job_lookup(record, settings_getter):
+    """Return ``(backend, lookup, folder_key)`` for a supported backend."""
+    backend = record.get("backend")
+    if backend == "nzbget":
+        from resources.lib.nzbget_api import completed_by_id
+
+        lookup = completed_by_id(record.get("job_id"), settings_getter=settings_getter)
+        return backend, lookup, "dest_dir"
+    if backend == "nzbdav":
+        from resources.lib.nzbdav_api import completed_by_id
+
+        lookup = completed_by_id(record.get("job_id"), settings_getter=settings_getter)
+        return backend, lookup, "storage"
+    return None
+
+
+def _remove_invalid_job(backend, job_id):
+    try:
+        removed = remove(backend, job_id)
+    except Exception:  # pylint: disable=broad-except
+        return PackValidation(None, "transient")
+    outcome = "stale" if removed else "transient"
+    return PackValidation(None, outcome)
+
+
+def _lookup_folder_matches(lookup, folder_key, record):
+    if lookup.job is None:
+        return False
+    job_folder = lookup.job.get(folder_key)
+    return str(job_folder or "") == str(record.get("folder") or "")
+
+
 def validate_job(record, settings_getter=None):
     """Validate an exact catalog job ID and backend-native folder.
 
@@ -389,53 +457,62 @@ def validate_job(record, settings_getter=None):
     """
     if not isinstance(record, dict):
         return PackValidation(None, "transient")
-    backend = record.get("backend")
-    if backend == "nzbget":
-        from resources.lib.nzbget_api import completed_by_id
-
-        lookup = completed_by_id(record.get("job_id"), settings_getter=settings_getter)
-        folder_key = "dest_dir"
-    elif backend == "nzbdav":
-        from resources.lib.nzbdav_api import completed_by_id
-
-        lookup = completed_by_id(record.get("job_id"), settings_getter=settings_getter)
-        folder_key = "storage"
-    else:
+    lookup_details = _completed_job_lookup(record, settings_getter)
+    if lookup_details is None:
         return PackValidation(None, "transient")
+    backend, lookup, folder_key = lookup_details
     if not lookup.lookup_done:
         return PackValidation(None, "transient")
-    job_folder = lookup.job.get(folder_key) if lookup.job is not None else None
-    if lookup.job is None or str(job_folder or "") != str(record.get("folder") or ""):
-        try:
-            removed = remove(backend, record.get("job_id"))
-        except Exception:  # pylint: disable=broad-except
-            return PackValidation(None, "transient")
-        outcome = "stale" if removed else "transient"
-        return PackValidation(None, outcome)
+    if not _lookup_folder_matches(lookup, folder_key, record):
+        return _remove_invalid_job(backend, record.get("job_id"))
     return PackValidation(lookup.job, "valid")
 
 
-def _content_matches(record, context):
-    common = [
-        field for field in _STRONG_IDS if record.get(field) and context.get(field)
-    ]
-    if common:
-        return all(
-            _text(record.get(field)).casefold() == _text(context.get(field)).casefold()
-            for field in common
-        )
-    if any(record.get(field) for field in _STRONG_IDS) or any(
-        context.get(field) for field in _STRONG_IDS
-    ):
-        return False
+def _matching_strong_ids(record, context):
+    return [field for field in _STRONG_IDS if record.get(field) and context.get(field)]
+
+
+def _strong_ids_match(record, context, common):
+    return all(
+        _text(record.get(field)).casefold() == _text(context.get(field)).casefold()
+        for field in common
+    )
+
+
+def _has_strong_id(values):
+    return any(values.get(field) for field in _STRONG_IDS)
+
+
+def _fallback_identity_matches(record, context):
     title = _normalize_title(record.get("title"))
-    if not title or title != _normalize_title(context.get("title")):
+    if not title:
+        return False
+    if title != _normalize_title(context.get("title")):
         return False
     record_year = _number(record.get("year"))
     context_year = _number(context.get("year"))
     if record_year is None or context_year is None:
         return record_year is None and context_year is None
     return record_year == context_year
+
+
+def _content_matches(record, context):
+    common = _matching_strong_ids(record, context)
+    if common:
+        return _strong_ids_match(record, context, common)
+    if _has_strong_id(record) or _has_strong_id(context):
+        return False
+    return _fallback_identity_matches(record, context)
+
+
+def _episode_record_matches(row, backend, season, episode, context):
+    if row.get("backend") != backend:
+        return False
+    if row.get("season") != season:
+        return False
+    if episode not in row.get("episodes", []):
+        return False
+    return _content_matches(row, context)
 
 
 def find_for_episode(context, backend):
@@ -450,10 +527,7 @@ def find_for_episode(context, backend):
     matches = [
         row
         for row in load_records()
-        if row.get("backend") == backend
-        and row.get("season") == season
-        and episode in row.get("episodes", [])
-        and _content_matches(row, context)
+        if _episode_record_matches(row, backend, season, episode, context)
     ]
     if not matches:
         return None

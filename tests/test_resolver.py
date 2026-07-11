@@ -439,6 +439,16 @@ def test_existing_completed_stream_ignores_partial_history_row(
     mock_find_video.assert_not_called()
 
 
+def test_existing_completed_stream_rejects_context_with_legacy_options():
+    from resources.lib.resolver_completed import CompletedStreamContext
+
+    context = CompletedStreamContext(completed_job_lookup_done=True)
+    with pytest.raises(TypeError, match="context.*options"):
+        _existing_completed_stream(
+            "movie.mkv", context=context, completed_job_lookup_done=False
+        )
+
+
 def _probe_response(content_length=None, code=206, body=b"\x00"):
     """Mock urllib response for the completed-stream body probe (HEAD/GET)."""
     resp = MagicMock()
@@ -8262,6 +8272,21 @@ def test_poll_until_ready_no_cleanup_on_completed_no_video(
 # Post-#217 follow-up: body-probe the history-completion path (finding #6) and
 # don't re-adopt a probe-rejected completed row during submit (finding #7).
 # ---------------------------------------------------------------------------
+
+
+def test_handle_history_result_rejects_context_with_legacy_options():
+    from resources.lib.resolver_history import HistoryContext
+
+    context = HistoryContext(max_no_video_retries=5)
+    with pytest.raises(TypeError, match="context.*options"):
+        _handle_history_result(
+            {},
+            "movie.mkv",
+            0,
+            5,
+            context=context,
+            download_size=1,
+        )
 
 
 @patch("resources.lib.resolver._completed_stream_body_available", return_value=False)

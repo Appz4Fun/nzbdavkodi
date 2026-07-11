@@ -460,20 +460,17 @@ def test_smb_inventory_rejects_partial_tree_even_with_visible_exact_episode():
 
 
 def test_resolve_completed_smb_forwards_episode_and_inventory_callback():
-    from resources.lib.nzbget_resolver import _resolve_completed_smb
+    from resources.lib.nzbget_resolver import _resolve_completed_smb, _SubmitCtx
 
     callback = MagicMock()
+    ctx = _SubmitCtx("smb://host/completed", "", "/downloads", None, 1, 60)
     with patch(
         "resources.lib.nzbget_resolver.resolve_smb_video",
         return_value="smb://host/completed/Show/Show.S01E01.mkv",
     ) as resolve:
         result = _resolve_completed_smb(
             "/downloads/Show",
-            "smb://host/completed",
-            "",
-            "/downloads",
-            None,
-            1,
+            ctx,
             requested_episode=(1, 1),
             on_inventory=callback,
         )
@@ -484,20 +481,17 @@ def test_resolve_completed_smb_forwards_episode_and_inventory_callback():
 
 
 def test_reuse_completed_job_forwards_episode_and_inventory_callback():
-    from resources.lib.nzbget_resolver import _reuse_completed_job
+    from resources.lib.nzbget_resolver import _reuse_completed_job, _SubmitCtx
 
     callback = MagicMock()
+    ctx = _SubmitCtx("smb://host/completed", "", "/downloads", None, 1, 60)
     with patch(
         "resources.lib.nzbget_resolver.resolve_smb_video",
         return_value="smb://host/completed/Show/Show.S01E01.mkv",
     ) as resolve:
         result = _reuse_completed_job(
             {"dest_dir": "/downloads/Show"},
-            "smb://host/completed",
-            "",
-            "/downloads",
-            None,
-            1,
+            ctx,
             requested_episode=(1, 1),
             on_inventory=callback,
         )
@@ -509,7 +503,7 @@ def test_reuse_completed_job_forwards_episode_and_inventory_callback():
 
 def test_reuse_completed_job_records_backend_native_dest_dir():
     from resources.lib.episode_inventory import build_video_inventory
-    from resources.lib.nzbget_resolver import _reuse_completed_job
+    from resources.lib.nzbget_resolver import _reuse_completed_job, _SubmitCtx
 
     context = {
         "type": "episode",
@@ -526,6 +520,8 @@ def test_reuse_completed_job_records_backend_native_dest_dir():
         "name": "Show.S01",
         "dest_dir": "/downloads/tv/Show.S01",
     }
+    ctx = _SubmitCtx("smb://host/completed", "tv", "/downloads", None, 1, 60)
+    ctx.episode_context = context
 
     def resolve(_folder, **kwargs):
         kwargs["on_inventory"](inventory)
@@ -536,12 +532,7 @@ def test_reuse_completed_job_records_backend_native_dest_dir():
     ), patch("resources.lib.season_pack_recording.season_pack.upsert") as upsert:
         result = _reuse_completed_job(
             completed,
-            "smb://host/completed",
-            "tv",
-            "/downloads",
-            None,
-            1,
-            episode_context=context,
+            ctx,
         )
 
     assert result.endswith("Show.S01E01.mkv")
@@ -1088,7 +1079,7 @@ def test_nzbget_completion_preserves_full_context_until_smb_boundary():
     ) as resolve_completed:
         _play_completed_download(ctx, "/downloads/show", "pack", None, None)
 
-    assert resolve_completed.call_args.kwargs["episode_context"] == episode_context
+    assert resolve_completed.call_args.args[1].episode_context == episode_context
 
 
 def test_nzbget_completion_records_exact_nzbid_and_backend_native_folder():
@@ -1193,7 +1184,7 @@ def test_submit_flow_records_promoted_result_id_instead_of_original_pick():
 
 
 def test_smb_boundary_converts_full_context_to_requested_episode():
-    from resources.lib.nzbget_resolver import _resolve_completed_smb
+    from resources.lib.nzbget_resolver import _resolve_completed_smb, _SubmitCtx
 
     context = {
         "type": "episode",
@@ -1201,18 +1192,15 @@ def test_smb_boundary_converts_full_context_to_requested_episode():
         "season": 1,
         "episode": 1,
     }
+    ctx = _SubmitCtx("smb://host/completed", "tv", "/downloads", None, 1, 60)
+    ctx.episode_context = context
     with patch(
         "resources.lib.nzbget_resolver.resolve_smb_video",
         return_value="smb://host/completed/Spider-Noir.S01E01.mkv",
     ) as resolve_smb:
         _resolve_completed_smb(
             "/downloads/show",
-            "smb://host/completed",
-            "tv",
-            "/downloads",
-            None,
-            1,
-            episode_context=context,
+            ctx,
         )
 
     assert resolve_smb.call_args.kwargs["requested_episode"] == (1, 1)

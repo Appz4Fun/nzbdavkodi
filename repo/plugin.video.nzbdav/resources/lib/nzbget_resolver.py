@@ -446,18 +446,7 @@ def _resolve_failure(handle, message=None):
     xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
-def _reuse_completed_job(  # pylint: disable=too-many-arguments
-    completed_job,
-    smb_root,
-    category,
-    completed_base,
-    dialog,
-    interval,
-    requested_episode=None,
-    on_inventory=None,
-    *,
-    episode_context=None,
-):
+def _reuse_completed_job(completed_job, ctx, requested_episode=None, on_inventory=None):
     """Probe an already-completed history match's SMB folder.
 
     Returns the playable video URL when the corroborated ``completed_job``
@@ -467,13 +456,13 @@ def _reuse_completed_job(  # pylint: disable=too-many-arguments
     if not (isinstance(completed_job, dict) and completed_job.get("dest_dir")):
         return None
     reuse_folder = nzbget_smb_target(
-        smb_root, completed_job["dest_dir"], category, completed_base
+        ctx.smb_root, completed_job["dest_dir"], ctx.category, ctx.completed_base
     )
     if not reuse_folder:
         return None
     if requested_episode is None:
-        requested_episode = _requested_episode(episode_context)
-    if on_inventory is None and episode_context is not None:
+        requested_episode = _requested_episode(ctx.episode_context)
+    if on_inventory is None and ctx.episode_context is not None:
         from resources.lib.season_pack_recording import inventory_recorder
 
         on_inventory = inventory_recorder(
@@ -481,12 +470,12 @@ def _reuse_completed_job(  # pylint: disable=too-many-arguments
             completed_job.get("nzbid"),
             completed_job.get("name", ""),
             completed_job.get("dest_dir"),
-            episode_context,
+            ctx.episode_context,
         )
     return resolve_smb_video(
         reuse_folder,
-        dialog=dialog,
-        interval=interval,
+        dialog=ctx.dialog,
+        interval=ctx.interval,
         budget=_SMB_REUSE_PROBE_BUDGET,
         requested_episode=requested_episode,
         on_inventory=on_inventory,
@@ -534,18 +523,8 @@ def _handle_poll_failure(
     return False, False
 
 
-def _resolve_completed_smb(  # pylint: disable=too-many-arguments
-    dest_dir,
-    smb_root,
-    category,
-    completed_base,
-    dialog,
-    interval,
-    requested_episode=None,
-    on_inventory=None,
-    *,
-    episode_context=None,
-    catalog_job=None,
+def _resolve_completed_smb(
+    dest_dir, ctx, requested_episode=None, on_inventory=None, catalog_job=None
 ):
     """Map a completed job's DestDir onto SMB and find the playable video.
 
@@ -553,12 +532,14 @@ def _resolve_completed_smb(  # pylint: disable=too-many-arguments
     no video appears within the resolve budget (both the same caller-facing
     failure, error string 30223).
     """
-    smb_folder = nzbget_smb_target(smb_root, dest_dir, category, completed_base)
+    smb_folder = nzbget_smb_target(
+        ctx.smb_root, dest_dir, ctx.category, ctx.completed_base
+    )
     if not smb_folder:
         return None
     if requested_episode is None:
-        requested_episode = _requested_episode(episode_context)
-    if on_inventory is None and episode_context is not None and catalog_job:
+        requested_episode = _requested_episode(ctx.episode_context)
+    if on_inventory is None and ctx.episode_context is not None and catalog_job:
         from resources.lib.season_pack_recording import inventory_recorder
 
         on_inventory = inventory_recorder(
@@ -566,12 +547,12 @@ def _resolve_completed_smb(  # pylint: disable=too-many-arguments
             catalog_job.get("job_id"),
             catalog_job.get("job_name", ""),
             catalog_job.get("folder"),
-            episode_context,
+            ctx.episode_context,
         )
     return resolve_smb_video(
         smb_folder,
-        dialog=dialog,
-        interval=interval,
+        dialog=ctx.dialog,
+        interval=ctx.interval,
         requested_episode=requested_episode,
         on_inventory=on_inventory,
     )
@@ -649,12 +630,7 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
 
     reuse_url = _reuse_completed_job(
         completed_job,
-        ctx.smb_root,
-        ctx.category,
-        ctx.completed_base,
-        ctx.dialog,
-        ctx.interval,
-        episode_context=getattr(ctx, "episode_context", None),
+        ctx,
     )
     if reuse_url:
         ctx.on_success(reuse_url)
@@ -832,12 +808,7 @@ def _play_completed_download(
     _record_fleet_pubdates(getattr(ctx, "dupe", None), title)
     video_url = _resolve_completed_smb(
         dest_dir,
-        ctx.smb_root,
-        ctx.category,
-        ctx.completed_base,
-        ctx.dialog,
-        ctx.interval,
-        episode_context=getattr(ctx, "episode_context", None),
+        ctx,
         catalog_job={
             "job_id": job_id,
             "job_name": job_name or title,

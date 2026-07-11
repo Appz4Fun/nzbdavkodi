@@ -68,6 +68,23 @@ def _marker_position_is_auxiliary(stem, match):
     return bool(_resolve_file_episode_tags(stem[: match.start()], ""))
 
 
+def _name_has_auxiliary_marker(name, show_folder_exception):
+    """Return whether ``name`` carries a conservative auxiliary marker."""
+    stem = os.path.splitext(name)[0]
+    if not show_folder_exception and _AUXILIARY_TOKEN_RE.fullmatch(stem):
+        return True
+
+    leading_marker = _AUXILIARY_RE.match(name)
+    if leading_marker and (
+        leading_marker.group(1).casefold() in _UNAMBIGUOUS_AUXILIARY_MARKERS
+    ):
+        return True
+    return any(
+        _marker_position_is_auxiliary(stem, match)
+        for match in _AUXILIARY_RE.finditer(stem)
+    )
+
+
 def _is_auxiliary(name, parent):
     """Classify conservative filename and directory auxiliary markers."""
     auxiliary_parents = _auxiliary_parent_markers(parent)
@@ -77,22 +94,7 @@ def _is_auxiliary(name, parent):
     show_folder_exception = bool(auxiliary_parents) and not different_auxiliary_parent
     if different_auxiliary_parent:
         return True
-
-    stem = os.path.splitext(name)[0]
-    if not show_folder_exception and _AUXILIARY_TOKEN_RE.fullmatch(stem):
-        return True
-
-    leading_marker = _AUXILIARY_RE.match(name)
-    if (
-        leading_marker
-        and leading_marker.group(1).casefold() in _UNAMBIGUOUS_AUXILIARY_MARKERS
-    ):
-        return True
-
-    for match in _AUXILIARY_RE.finditer(stem):
-        if _marker_position_is_auxiliary(stem, match):
-            return True
-    return False
+    return _name_has_auxiliary_marker(name, show_folder_exception)
 
 
 def _video_file(path, size):
@@ -146,23 +148,39 @@ def _leading_group_is_show(files, indexes, marker):
     return len(episode_tags) >= 2
 
 
-def _classify_leading_auxiliary(files):
+def _leading_auxiliary_candidate(item):
+    """Return ``(marker, is_main)`` for one candidate, or ``None``."""
+    if item.auxiliary:
+        return None
+    context = _leading_auxiliary_context(item.path)
+    if not context:
+        return None
+    marker, has_title_prefix = context
+    is_main = marker in _AMBIGUOUS_LEADING_MARKERS and (
+        has_title_prefix or _release_folder_matches_marker(item.path, marker)
+    )
+    return marker, is_main
+
+
+def _leading_auxiliary_groups(files):
+    """Collect leading-marker candidates, groups, and definite main files."""
     candidates = {}
     groups = {}
     main_indexes = set()
     for index, item in enumerate(files):
-        if item.auxiliary:
+        candidate = _leading_auxiliary_candidate(item)
+        if candidate is None:
             continue
-        context = _leading_auxiliary_context(item.path)
-        if not context:
-            continue
-        marker, has_title_prefix = context
+        marker, is_main = candidate
         candidates[index] = marker
         groups.setdefault(marker, []).append(index)
-        if marker in _AMBIGUOUS_LEADING_MARKERS and (
-            has_title_prefix or _release_folder_matches_marker(item.path, marker)
-        ):
+        if is_main:
             main_indexes.add(index)
+    return candidates, groups, main_indexes
+
+
+def _classify_leading_auxiliary(files):
+    candidates, groups, main_indexes = _leading_auxiliary_groups(files)
 
     for marker, indexes in groups.items():
         if _leading_group_is_show(files, indexes, marker):
@@ -198,29 +216,25 @@ def _pack_episode_summary(tagged):
     return pack_season, episodes
 
 
-def build_video_inventory(rows, requested=None):
-    """Build an inventory and select an exact requested episode when possible."""
-    files = _classify_leading_auxiliary(
-        tuple(_video_file(path, size) for path, size in rows if path)
-    )
-    main_files = tuple(item for item in files if not item.auxiliary)
-    tagged = tuple(item for item in main_files if item.episode_tags)
-    selected = None
+def _selected_video(files, main_files, tagged, requested):
+    """Select the requested episode or preserve the legacy largest fallback."""
+    if requested is None:
+        return _largest(files)
 
-    if requested is not None:
-        exact = tuple(item for item in tagged if requested in item.episode_tags)
-        if exact:
-            selected = _largest(exact)
-        elif not tagged and len(main_files) == 1:
-            # A lone generic video is a defensible ordinary-release fallback.
-            # Multiple untagged videos are ambiguous for an explicit episode:
-            # selecting by size would silently play an arbitrary file.
-            selected = main_files[0]
-    else:
-        selected = _largest(files)
+    exact = tuple(item for item in tagged if requested in item.episode_tags)
+    if exact:
+        return _largest(exact)
+    if not tagged and len(main_files) == 1:
+        # A lone generic video is a defensible ordinary-release fallback.
+        # Multiple untagged videos are ambiguous for an explicit episode:
+        # selecting by size would silently play an arbitrary file.
+        return main_files[0]
+    return None
 
+
+def _inventory_result(files, tagged, selected):
+    """Build the immutable result after classification and selection."""
     pack_season, episodes = _pack_episode_summary(tagged)
-
     return VideoInventory(
         selected_path=selected.path if selected else None,
         selected_size=selected.size if selected else 0,
@@ -229,3 +243,14 @@ def build_video_inventory(rows, requested=None):
         episodes=episodes,
         has_tagged_files=bool(tagged),
     )
+
+
+def build_video_inventory(rows, requested=None):
+    """Build an inventory and select an exact requested episode when possible."""
+    files = _classify_leading_auxiliary(
+        tuple(_video_file(path, size) for path, size in rows if path)
+    )
+    main_files = tuple(item for item in files if not item.auxiliary)
+    tagged = tuple(item for item in main_files if item.episode_tags)
+    selected = _selected_video(files, main_files, tagged, requested)
+    return _inventory_result(files, tagged, selected)

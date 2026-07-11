@@ -276,8 +276,8 @@ def history_status(nzbid, settings_getter=None):
     return {"present": False, "success": False, "status": "", "dest_dir": ""}
 
 
-def lookup_completed_job_exact(nzbid, settings_getter=None):
-    """Tri-state lookup of one exact NZBGet SUCCESS history identifier."""
+def _fetch_nzbget_history(settings_getter):
+    """Fetch NZBGet history for exact lookup, preserving transient failures."""
     try:
         history, error = _rpc_call("history", [False], settings_getter=settings_getter)
     except Exception as exc:  # pylint: disable=broad-except
@@ -287,34 +287,59 @@ def lookup_completed_job_exact(nzbid, settings_getter=None):
             ),
             xbmc.LOGDEBUG,
         )
-        return ExactJobLookup.transient()
+        return None
     if error is not None or not isinstance(history, list):
+        return None
+    return history
+
+
+def _exact_nzbget_identifier(item):
+    """Return a non-empty NZBID, or ``None`` when the history row is malformed."""
+    if not isinstance(item, dict):
+        return None
+    identifier = item.get("NZBID")
+    return identifier if identifier not in (None, "") else None
+
+
+def _matched_nzbget_history_result(item):
+    """Classify one NZBGet history row already matched by identifier."""
+    status = item.get("Status")
+    if not isinstance(status, str) or not status:
         return ExactJobLookup.transient()
+    if status != "SUCCESS" and not status.startswith("SUCCESS/"):
+        return ExactJobLookup.stale()
+    dest_dir = _dest_dir(item)
+    if not isinstance(dest_dir, str) or not dest_dir:
+        return ExactJobLookup.transient()
+    return ExactJobLookup.valid(
+        {
+            "nzbid": item.get("NZBID"),
+            "name": str(item.get("Name") or ""),
+            "status": status,
+            "dest_dir": dest_dir,
+        }
+    )
+
+
+def _exact_nzbget_history_result(history, nzbid):
+    """Classify validated NZBGet history for one exact identifier."""
     malformed = False
     for item in history:
-        if not isinstance(item, dict) or item.get("NZBID") in (None, ""):
+        identifier = _exact_nzbget_identifier(item)
+        if identifier is None:
             malformed = True
             continue
-        if not _same_nzbid(item.get("NZBID"), nzbid):
-            continue
-        status_value = item.get("Status")
-        if not isinstance(status_value, str) or not status_value:
-            return ExactJobLookup.transient()
-        status = status_value
-        if status != "SUCCESS" and not status.startswith("SUCCESS/"):
-            return ExactJobLookup.stale()
-        dest_dir = _dest_dir(item)
-        if not isinstance(dest_dir, str) or not dest_dir:
-            return ExactJobLookup.transient()
-        return ExactJobLookup.valid(
-            {
-                "nzbid": item.get("NZBID"),
-                "name": str(item.get("Name") or ""),
-                "status": status,
-                "dest_dir": dest_dir,
-            }
-        )
+        if _same_nzbid(identifier, nzbid):
+            return _matched_nzbget_history_result(item)
     return ExactJobLookup.transient() if malformed else ExactJobLookup.stale()
+
+
+def lookup_completed_job_exact(nzbid, settings_getter=None):
+    """Tri-state lookup of one exact NZBGet SUCCESS history identifier."""
+    history = _fetch_nzbget_history(settings_getter)
+    if history is None:
+        return ExactJobLookup.transient()
+    return _exact_nzbget_history_result(history, nzbid)
 
 
 def completed_by_id(nzbid, settings_getter=None):

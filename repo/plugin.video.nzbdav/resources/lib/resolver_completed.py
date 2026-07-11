@@ -28,6 +28,40 @@ class CompletedVideoProbe(NamedTuple):
     webdav_folder: str
 
 
+class CompletedStreamContext(NamedTuple):
+    """Optional inputs for probing an already-completed stream."""
+
+    on_existing_completed: object
+    completed_job_hint: object
+    completed_job_lookup_done: bool
+    settings_getter: object
+    rejected_completed_ids: object
+    download_size: object
+    requested_episode: object
+    episode_context: object
+
+
+CompletedStreamContext.__new__.__defaults__ = (
+    None,
+    None,
+    False,
+    None,
+    None,
+    None,
+    None,
+    None,
+)
+
+
+def _completed_stream_context(context, options):
+    """Normalize one context source without silently discarding options."""
+    if context is not None:
+        if options:
+            raise TypeError("context and options cannot be combined")
+        return context
+    return CompletedStreamContext(**options)
+
+
 def _submit_error_is_too_many_requests(submit_error):
     message = str(submit_error.get("message", "") or "")
     normalized = message.replace(" ", "").replace("-", "").lower()
@@ -369,18 +403,7 @@ def _completed_job_video_rejected(
     return False
 
 
-def _existing_completed_stream(  # pylint: disable=too-many-arguments
-    title,
-    on_existing_completed=None,
-    completed_job_hint=None,
-    completed_job_lookup_done=False,
-    settings_getter=None,
-    rejected_completed_ids=None,
-    download_size=None,
-    requested_episode=None,
-    *,
-    episode_context=None,
-):
+def _existing_completed_stream(title, context=None, **options):
     """Return an already-downloaded stream URL when the title exists.
 
     ``download_size`` (indexer-advertised bytes) is threaded to
@@ -388,25 +411,28 @@ def _existing_completed_stream(  # pylint: disable=too-many-arguments
     job-start stub just like the post-submit accept path. Defaults to ``None``
     (guard fails open).
     """
+    context = _completed_stream_context(context, options)
     stream_kwargs = {
-        "on_existing_completed": on_existing_completed,
-        "settings_getter": settings_getter,
-        "rejected_completed_ids": rejected_completed_ids,
-        "download_size": download_size,
+        "on_existing_completed": context.on_existing_completed,
+        "settings_getter": context.settings_getter,
+        "rejected_completed_ids": context.rejected_completed_ids,
+        "download_size": context.download_size,
     }
-    if episode_context is not None:
-        stream_kwargs["episode_context"] = episode_context
-    elif requested_episode is not None:
-        stream_kwargs["requested_episode"] = requested_episode
-    hinted_stream = _completed_job_stream(title, completed_job_hint, **stream_kwargs)
+    if context.episode_context is not None:
+        stream_kwargs["episode_context"] = context.episode_context
+    elif context.requested_episode is not None:
+        stream_kwargs["requested_episode"] = context.requested_episode
+    hinted_stream = _completed_job_stream(
+        title, context.completed_job_hint, **stream_kwargs
+    )
     if hinted_stream is not None:
         return hinted_stream
 
-    if completed_job_lookup_done:
+    if context.completed_job_lookup_done:
         return None
 
     existing = _resolver.find_completed_by_name(
-        title, **_resolver._settings_getter_kwargs(settings_getter)
+        title, **_resolver._settings_getter_kwargs(context.settings_getter)
     )
     return _completed_job_stream(title, existing, **stream_kwargs)
 

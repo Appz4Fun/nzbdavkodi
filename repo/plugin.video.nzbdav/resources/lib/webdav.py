@@ -463,6 +463,39 @@ def _folder_total_track_video(stats, href_path, size):
         stats.setdefault("videos", []).append((href_path, size))
 
 
+def _folder_total_entry_path(response, ns, request_path, seen_resources):
+    """Return one contained, unseen entry path plus its incomplete flag."""
+    pair = _folder_total_href_path(response, ns)
+    if pair is None:
+        return None, False
+    _href_text, href_path = pair
+    href_path = _folder_total_resolve_child_path(href_path, request_path)
+    resource_key = _folder_total_resource_key(href_path)
+    if resource_key in seen_resources:
+        return None, False
+    if not _folder_total_path_is_contained(href_path, request_path):
+        xbmc.log(
+            "NZB-DAV: folder inventory ignored out-of-tree href '{}' "
+            "for '{}'".format(href_path, request_path),
+            xbmc.LOGWARNING,
+        )
+        return None, True
+    seen_resources.add(resource_key)
+    return href_path, False
+
+
+def _folder_total_entry_video_size(response, ns, href_path, request_path, subdirs):
+    """Return video bytes plus incomplete flag, or ``(None, False)`` to skip."""
+    from urllib.parse import unquote
+
+    if _folder_total_collect_subdir(response, href_path, request_path, subdirs, ns):
+        return None, False
+    lowered = unquote(href_path).lower()
+    if not any(lowered.endswith(ext) for ext in _FOLDER_TOTAL_VIDEO_EXTENSIONS):
+        return None, False
+    return _folder_total_video_size(response, ns)
+
+
 def _folder_total_scan_entries(root, folder_path, stats, seen_resources):
     """Walk the PROPFIND responses once; return ``(total, incomplete, subdirs)``.
 
@@ -470,8 +503,6 @@ def _folder_total_scan_entries(root, folder_path, stats, seen_resources):
     caller to recurse into, and flags ``incomplete`` when a video file cannot be
     sized. Tracks the largest single file via ``_folder_total_track_max``.
     """
-    from urllib.parse import unquote
-
     ns = {"D": "DAV:"}
     request_path = _folder_total_absolute_path(folder_path).rstrip("/") or "/"
 
@@ -479,29 +510,18 @@ def _folder_total_scan_entries(root, folder_path, stats, seen_resources):
     incomplete = False
     subdirs = []
     for response in root.findall(".//D:response", ns):
-        pair = _folder_total_href_path(response, ns)
-        if pair is None:
-            continue
-        _href_text, href_path = pair
-        href_path = _folder_total_resolve_child_path(href_path, request_path)
-        resource_key = _folder_total_resource_key(href_path)
-        if resource_key in seen_resources:
-            continue
-        if not _folder_total_path_is_contained(href_path, request_path):
-            xbmc.log(
-                "NZB-DAV: folder inventory ignored out-of-tree href '{}' "
-                "for '{}'".format(href_path, request_path),
-                xbmc.LOGWARNING,
-            )
+        href_path, entry_incomplete = _folder_total_entry_path(
+            response, ns, request_path, seen_resources
+        )
+        if entry_incomplete:
             incomplete = True
+        if href_path is None:
             continue
-        seen_resources.add(resource_key)
-        if _folder_total_collect_subdir(response, href_path, request_path, subdirs, ns):
+        size, entry_incomplete = _folder_total_entry_video_size(
+            response, ns, href_path, request_path, subdirs
+        )
+        if size is None:
             continue
-        lowered = unquote(href_path).lower()
-        if not any(lowered.endswith(ext) for ext in _FOLDER_TOTAL_VIDEO_EXTENSIONS):
-            continue
-        size, entry_incomplete = _folder_total_video_size(response, ns)
         if entry_incomplete:
             incomplete = True
             continue

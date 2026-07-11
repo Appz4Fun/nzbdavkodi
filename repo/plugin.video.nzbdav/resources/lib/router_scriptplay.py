@@ -225,15 +225,11 @@ def _script_play_filter_autoselect_tag(
         )
     )
 
-    if not filtered:
-        if all_parsed or pack_result is None:
-            filtered = _script_play_filtered_or_prompt(
-                loading, all_parsed, title, notify
-            )
-        if not filtered and pack_result is None:
-            return None
-        filtered = filtered or []
-
+    filtered = _script_play_available_rows(
+        loading, filtered, all_parsed, title, notify, pack_result
+    )
+    if filtered is None:
+        return None
     provider_row_count = len(filtered)
     filtered = _router._prepend_pack(filtered, pack_result)
     total_count += len(filtered) - provider_row_count
@@ -247,9 +243,27 @@ def _script_play_filter_autoselect_tag(
         _script_play_auto_select(params, filtered[0], filtered)
         return None
 
-    providers = _router._provider_rows(filtered)
-    completed_jobs = _script_play_tag_available(providers) if providers else None
+    completed_jobs = _script_play_completed_jobs(_router, filtered)
     return filtered, total_count, completed_jobs
+
+
+def _script_play_available_rows(
+    loading, filtered, all_parsed, title, notify, pack_result
+):
+    """Return selectable provider rows, an empty local-pack pool, or ``None``."""
+    if filtered:
+        return filtered
+    if all_parsed or pack_result is None:
+        filtered = _script_play_filtered_or_prompt(loading, all_parsed, title, notify)
+    if filtered:
+        return filtered
+    return [] if pack_result is not None else None
+
+
+def _script_play_completed_jobs(router_module, filtered):
+    """Tag ordinary provider rows while leaving a pack-only picker untouched."""
+    providers = router_module._provider_rows(filtered)
+    return _script_play_tag_available(providers) if providers else None
 
 
 def _script_play_filtered_or_prompt(loading, all_parsed, title, notify):
