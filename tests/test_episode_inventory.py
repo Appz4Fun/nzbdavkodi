@@ -11,6 +11,34 @@ def test_requested_episode_beats_larger_sibling():
     assert inventory.selected_size == 6_636_525_153
 
 
+def test_spider_noir_observed_pack_selects_every_requested_episode():
+    sizes = {
+        1: 6_636_525_153,
+        2: 6_012_759_026,
+        3: 6_729_581_754,
+        4: 6_992_182_919,
+        5: 7_045_751_649,
+        6: 5_966_021_813,
+        7: 6_005_692_472,
+        8: 6_834_315_395,
+    }
+    rows = [
+        ("/Spider-Noir/Spider-Noir.S01E{:02d}.mkv".format(episode), size)
+        for episode, size in sizes.items()
+    ]
+
+    for episode in range(1, 9):
+        inventory = build_video_inventory(rows, requested=(1, episode))
+        assert "S01E{:02d}".format(episode) in inventory.selected_path
+
+    inventory = build_video_inventory(rows, requested=(1, 1))
+    assert inventory.selected_size == sizes[1]
+    assert inventory.episodes == tuple(range(1, 9))
+    assert max(inventory.files, key=lambda item: item.size).episode_tags == frozenset(
+        ((1, 5),)
+    )
+
+
 def test_named_wrong_episode_fails_closed_but_no_context_keeps_largest():
     rows = [("/pack/Show.S01E05.mkv", 900), ("/pack/Show.S01E04.mkv", 800)]
 

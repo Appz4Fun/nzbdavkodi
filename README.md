@@ -116,6 +116,9 @@ Full walkthrough:
   show's id for more accurate episode results.
 - **Quality filtering and ranking** by resolution, HDR, audio, codec, language,
   release group, size, and keywords.
+- **Exact season-pack playback and reuse**: completed multi-episode downloads
+  play the requested episode instead of the largest file, then appear as an
+  already-downloaded pack for later episodes from that same backend job.
 - **A local stream proxy** that preserves seeking, rewrites tail-`moov` MP4s in
   pure Python, recovers from missing articles, and offers optional Matroska
   remux and fMP4 HLS tiers for large or Dolby Vision files.

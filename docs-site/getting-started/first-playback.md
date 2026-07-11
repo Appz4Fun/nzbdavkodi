@@ -26,6 +26,22 @@ indexer, and release group.
 If you turn on **Auto-select best match** in settings, NZB-DAV skips the picker
 and plays the top-ranked result automatically.
 
+## Reuse a completed season pack
+
+When a completed backend job contains multiple reliably named episodes,
+NZB-DAV remembers the episodes in that job. A later request for one of them
+shows **Already downloaded season pack — Episodes …** first in the picker (or
+prefers it when auto-select is enabled). Selecting that row reuses the completed
+download without submitting another NZB.
+
+Before playback, NZB-DAV rechecks the exact backend job and its original
+completed folder, inventories it again, and selects the requested
+season/episode from the filename. A missing requested episode never falls back
+to a differently named episode. If the job or folder was conclusively removed,
+the saved row becomes stale; temporary network, authentication, or server
+errors leave it saved for a later attempt while normal online results remain
+available.
+
 ## Watch the download progress
 
 After you pick a source, NZB-DAV submits it to your backend and shows a progress

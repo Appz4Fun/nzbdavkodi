@@ -84,7 +84,32 @@ disabled). It then chooses the playable file:
   `.mov`.
 - For a **TV season pack**, NZB-DAV matches the requested season/episode against
   filenames — handling multi-episode and range patterns — and recurses into
-  subfolders when needed. With no episode hint, it falls back to largest-wins.
+  subfolders when needed. A named wrong episode fails closed rather than being
+  selected for its size.
+- When filenames have no reliable episode tags, discovery retains the legacy
+  largest-video fallback because an exact episode cannot be proven.
+
+## Remembering completed season packs
+
+After exact file discovery and stream validation, a folder containing at least
+two reliably named episodes from exactly one season is recorded for later
+reuse. This works with both nzbdav/WebDAV and NZBGet/SMB. The catalog is stored
+in the add-on profile at
+`special://profile/addon_data/plugin.video.nzbdav/season_packs.json` and is
+bounded to the 100 most recently confirmed jobs.
+
+One record represents one completed backend job. Its key is the backend plus
+the exact native job identifier (`nzo_id` for nzbdav or `NZBID` for NZBGet), and
+it also retains that job's native completed folder. Records are never combined
+by filename or release name.
+
+For a later request, the router prepends an already-downloaded season-pack row
+only when the catalog says that exact episode is present. Selection validates
+the exact history identifier and folder, inventories the folder again, and
+requires an exact episode match before playback; it does not submit another
+NZB or substitute a differently named episode. Conclusively missing or changed
+jobs become stale. Transient API, authentication, network, parsing, or storage
+errors fail soft and preserve the record for a later attempt.
 
 ### Guarding against "Completed but broken"
 
