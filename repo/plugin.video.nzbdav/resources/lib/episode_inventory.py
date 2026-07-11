@@ -10,7 +10,7 @@ from typing import NamedTuple, Optional
 from resources.lib.webdav_match import _resolve_file_episode_tags
 
 _AUXILIARY_RE = re.compile(
-    r"(?:^|[. _/\\-])(samples?|trailers?|featurettes?|extras?)(?:[. _/\\-]|$)",
+    r"(?:^|[. _-])(samples?|trailers?|featurettes?|extras?)(?:[. _-]|$)",
     re.IGNORECASE,
 )
 
@@ -38,6 +38,14 @@ def _coerce_size(value):
         return 0
 
 
+def _is_auxiliary(name):
+    """Return whether a basename has an auxiliary marker after episode identity."""
+    return any(
+        _resolve_file_episode_tags(name[: match.start()], "")
+        for match in _AUXILIARY_RE.finditer(name)
+    )
+
+
 def _video_file(path, size):
     name = os.path.basename(path)
     parent = path.rsplit("/", 1)[0] if "/" in path else ""
@@ -45,7 +53,7 @@ def _video_file(path, size):
         path=path,
         size=_coerce_size(size),
         episode_tags=_resolve_file_episode_tags(name, parent),
-        auxiliary=bool(_AUXILIARY_RE.search(path)),
+        auxiliary=_is_auxiliary(name),
     )
 
 

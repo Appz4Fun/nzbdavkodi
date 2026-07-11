@@ -51,17 +51,56 @@ def test_sample_does_not_create_phantom_pack_episode():
     assert inventory.pack_season is None
 
 
-def test_auxiliary_exact_match_does_not_override_generic_main_video():
+def test_trailer_in_show_title_remains_main_pack_content():
+    inventory = build_video_inventory(
+        [
+            ("/p/Trailer.Park.Boys.S01E01.mkv", 100),
+            ("/p/Trailer.Park.Boys.S01E02.mkv", 200),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/p/Trailer.Park.Boys.S01E01.mkv"
+    assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
+
+
+def test_extras_in_show_title_remains_main_pack_content():
+    inventory = build_video_inventory(
+        [
+            ("/p/Extras.S01E01.mkv", 100),
+            ("/p/Extras.S01E02.mkv", 200),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/p/Extras.S01E01.mkv"
+    assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
+
+
+def test_auxiliary_suffix_exact_match_does_not_override_generic_main_video():
     inventory = build_video_inventory(
         [
             ("/p/video.mkv", 100),
-            ("/p/FEATURETTE/Show.S01E01.mkv", 500),
+            ("/p/Show.S01E01.FEATURETTE.mkv", 500),
         ],
         requested=(1, 1),
     )
 
     assert inventory.selected_path == "/p/video.mkv"
     assert inventory.has_tagged_files is False
+
+
+def test_auxiliary_ancestor_name_does_not_classify_episode_files():
+    inventory = build_video_inventory(
+        [
+            ("/p/FEATURETTE/Show.S01E01.mkv", 100),
+            ("/p/FEATURETTE/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/p/FEATURETTE/Show.S01E01.mkv"
+    assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
 
 
 def test_separator_bounded_auxiliary_names_do_not_match_inside_words():
