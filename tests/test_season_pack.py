@@ -272,6 +272,13 @@ def test_context_from_params_safely_converts_numeric_fields_and_overrides():
     )
 
 
+def test_requested_episode_normalizes_context_and_rejects_incomplete_values():
+    assert season_pack.requested_episode({"season": "1", "episode": "5"}) == (1, 5)
+    assert season_pack.requested_episode({"season": "1", "episode": ""}) is None
+    assert season_pack.requested_episode({"season": -1, "episode": 5}) is None
+    assert season_pack.requested_episode(None) is None
+
+
 def test_episode_summary_is_concise_for_ranges_and_gaps():
     assert season_pack.episode_summary([8, 2, 1, 3, 4, 5, 6, 7, 7]) == "1-8"
     assert season_pack.episode_summary([5, 1, 3]) == "1, 3, 5"

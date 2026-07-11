@@ -73,6 +73,7 @@ from resources.lib.nzbget_resolver_smb import (  # noqa: E402,F401
     pick_largest_video,
     resolve_smb_video,
 )
+from resources.lib.season_pack import requested_episode as _requested_episode
 
 # Same extensions the WebDAV path uses (webdav.py VIDEO_EXTENSIONS).
 _POLL_INTERVAL = 2.0
@@ -558,6 +559,7 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         # NZBGet Smart-Duplicates submission (#372): the picker-computed
         # {"key","pick_score","backups"} dict, threaded from the resolve params.
         self.dupe = None
+        self.requested_episode = None
         # Set on user-cancel so the background backup worker stops submitting
         # more duplicates (#372 round 2).
         self.cancel_event = threading.Event()
@@ -584,6 +586,7 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
         ctx.completed_base,
         ctx.dialog,
         ctx.interval,
+        requested_episode=getattr(ctx, "requested_episode", None),
     )
     if reuse_url:
         ctx.on_success(reuse_url)
@@ -749,6 +752,7 @@ def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_si
         ctx.completed_base,
         ctx.dialog,
         ctx.interval,
+        requested_episode=getattr(ctx, "requested_episode", None),
     )
     if not video_url:
         ctx.on_failure(_string(30223))
@@ -774,7 +778,7 @@ def _record_fleet_pubdates(dupe, title):
             record_download(title, pubdate)
 
 
-def _run_nzbget_backend(
+def _run_nzbget_backend(  # pylint: disable=too-many-arguments
     nzb_url,
     title,
     settings_getter,
@@ -783,6 +787,8 @@ def _run_nzbget_backend(
     download_identity=(None, None),
     completed_job=None,
     dupe=None,
+    *,
+    episode_context=None,
 ):
     """Shared NZBGet flow: reuse completed files, else submit -> poll -> SMB.
 
@@ -791,9 +797,10 @@ def _run_nzbget_backend(
     for the silent cancel exit); this core guarantees a single terminal callback
     and owns the progress dialog. ``download_identity`` is the
     ``(download_pubdate, download_size)`` pair recording the selected result's
-    identity in the ledger for the picker's "DL" tag; ``completed_job`` is the
-    corroborated history match played directly (nothing submitted) when its
-    ``dest_dir`` still holds a playable video over SMB. ``dupe`` is the
+    identity in the ledger for the picker's "DL" tag; ``episode_context``
+    supplies the exact season/episode requested by the router. ``completed_job``
+    is the corroborated history match played directly (nothing submitted) when
+    its ``dest_dir`` still holds a playable video over SMB. ``dupe`` is the
     picker-computed NZBGet Smart-Duplicates submission (#372).
     """
     dialog = None
@@ -815,6 +822,7 @@ def _run_nzbget_backend(
             on_failure,
             dupe=dupe,
         )
+        ctx.requested_episode = _requested_episode(episode_context)
         leave_job = _reuse_or_submit(
             ctx, nzb_url, title, completed_job, download_identity
         )
@@ -906,6 +914,7 @@ def resolve_and_play_nzbget(
         ),
         completed_job=params.get("_nzbget_completed_job"),
         dupe=params.get("_nzbget_dupe"),
+        episode_context=params.get("_episode_context"),
     )
 
 
@@ -953,4 +962,5 @@ def play_nzbget(
         ),
         completed_job=resolve_params.get("_nzbget_completed_job"),
         dupe=resolve_params.get("_nzbget_dupe"),
+        episode_context=resolve_params.get("_episode_context"),
     )

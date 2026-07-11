@@ -107,6 +107,7 @@ from resources.lib.router_fallback import (  # noqa: F401
 )
 from resources.lib.router_play import (  # noqa: F401
     _apply_completed_job_hint,
+    _attach_episode_context,
     _attach_nzbget_dupe,
     _ensure_nzbget_completed_hint,
     _extract_search_params,
@@ -683,6 +684,7 @@ def _handle_search(handle, params):
     title, season, episode = _lookup_search_episode_args(
         params, search_type, title, season, episode, imdb
     )
+    _attach_episode_context(params, params, title=title, season=season, episode=episode)
 
     cache_kwargs = dict(
         year=year, imdb=imdb, season=season, episode=episode, tvdb=tvdb, tmdb_id=tmdb_id
@@ -726,6 +728,7 @@ def _handle_script_play(params):
     title, season, episode = _script_play_resolve_episode_args(
         params, search_type, title, season, episode, imdb
     )
+    _attach_episode_context(params, params, title=title, season=season, episode=episode)
 
     _script_play_stage(
         "skipping cache for '{}' ({})".format(

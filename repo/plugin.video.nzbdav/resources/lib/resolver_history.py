@@ -114,7 +114,12 @@ def _handle_job_status(job_status, nzo_id, dialog, last_status):
 
 
 def _find_completed_video_stream_with_rechecks(
-    webdav_folder, monitor=None, settings_getter=None, title_hint=None, min_video_size=0
+    webdav_folder,
+    monitor=None,
+    settings_getter=None,
+    title_hint=None,
+    min_video_size=0,
+    requested_episode=None,
 ):
     """Return a completed WebDAV stream, briefly rechecking symlink visibility.
 
@@ -127,11 +132,15 @@ def _find_completed_video_stream_with_rechecks(
     the real file (#282 follow-up D). ``0`` (default) disables the floor.
     """
     _resolver._resolve_stage("find_video_stream_start")
+    discovery_kwargs = {
+        "settings_getter": settings_getter,
+        "title_hint": title_hint,
+        "min_video_size": min_video_size,
+    }
+    if requested_episode is not None:
+        discovery_kwargs["requested_episode"] = requested_episode
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(
-        webdav_folder,
-        settings_getter=settings_getter,
-        title_hint=title_hint,
-        min_video_size=min_video_size,
+        webdav_folder, **discovery_kwargs
     )
     _resolver._resolve_stage("find_video_stream_done path={}".format(bool(video_path)))
     if video_path or monitor is None:
@@ -144,12 +153,7 @@ def _find_completed_video_stream_with_rechecks(
             "find_video_stream_retry delay={}".format(delay_seconds)
         )
         video_path, stream_url, stream_headers = (
-            _resolver._find_video_stream_for_folder(
-                webdav_folder,
-                settings_getter=settings_getter,
-                title_hint=title_hint,
-                min_video_size=min_video_size,
-            )
+            _resolver._find_video_stream_for_folder(webdav_folder, **discovery_kwargs)
         )
         _resolver._resolve_stage(
             "find_video_stream_retry_done path={}".format(bool(video_path))
@@ -369,7 +373,7 @@ def _report_no_video_exhaustion(
     _resolver.xbmcgui.Dialog().ok(_resolver._addon_name(), msg)
 
 
-def _handle_history_result(
+def _handle_history_result(  # pylint: disable=too-many-arguments
     history,
     title,
     no_video_retries,
@@ -378,6 +382,8 @@ def _handle_history_result(
     settings_getter=None,
     modal_failures=True,
     download_size=None,
+    *,
+    requested_episode=None,
 ):
     """Handle history-based completion and failure states.
 
@@ -408,6 +414,7 @@ def _handle_history_result(
         monitor=monitor,
         settings_getter=settings_getter,
         download_size=download_size,
+        requested_episode=requested_episode,
     )
 
 
@@ -419,6 +426,7 @@ def _handle_completed_history(
     monitor=None,
     settings_getter=None,
     download_size=None,
+    requested_episode=None,
 ):
     """Handle a Completed history row: discover, stub/body-probe, or retry.
 
@@ -430,7 +438,12 @@ def _handle_completed_history(
         return False, None, None, no_video_retries
     webdav_folder = _resolver._storage_to_webdav_path(storage)
     outcome, stream_url, stream_headers = _classify_completed_video(
-        webdav_folder, title, monitor, settings_getter, download_size
+        webdav_folder,
+        title,
+        monitor,
+        settings_getter,
+        download_size,
+        requested_episode=requested_episode,
     )
     if outcome == "stub":
         return False, None, None, no_video_retries
@@ -453,7 +466,12 @@ def _handle_completed_history(
 
 
 def _discover_completed_video(
-    webdav_folder, title, monitor, settings_getter, download_size
+    webdav_folder,
+    title,
+    monitor,
+    settings_getter,
+    download_size,
+    requested_episode=None,
 ):
     """Run WebDAV discovery for a completed folder, returning the stream tuple."""
     # Thread the advertised-size floor into discovery so a root-level job-start
@@ -462,17 +480,24 @@ def _discover_completed_video(
     # unknown size. The accept-time guard shares the same floor via
     # _stub_min_size_floor (folder-total comparison).
     min_video_size = _stub_min_size_floor(download_size)
-    return _resolver._find_completed_video_stream_with_rechecks(
-        webdav_folder,
-        monitor=monitor,
-        settings_getter=settings_getter,
-        title_hint=title,
-        min_video_size=min_video_size,
-    )
+    kwargs = {
+        "monitor": monitor,
+        "settings_getter": settings_getter,
+        "title_hint": title,
+        "min_video_size": min_video_size,
+    }
+    if requested_episode is not None:
+        kwargs["requested_episode"] = requested_episode
+    return _resolver._find_completed_video_stream_with_rechecks(webdav_folder, **kwargs)
 
 
 def _classify_completed_video(
-    webdav_folder, title, monitor, settings_getter, download_size
+    webdav_folder,
+    title,
+    monitor,
+    settings_getter,
+    download_size,
+    requested_episode=None,
 ):
     """Discover the completed video and classify it for the poll loop.
 
@@ -482,7 +507,12 @@ def _classify_completed_video(
     ``"missing"`` (no video discovered yet).
     """
     video_path, stream_url, stream_headers = _discover_completed_video(
-        webdav_folder, title, monitor, settings_getter, download_size
+        webdav_folder,
+        title,
+        monitor,
+        settings_getter,
+        download_size,
+        requested_episode=requested_episode,
     )
     if not video_path:
         return "missing", None, None

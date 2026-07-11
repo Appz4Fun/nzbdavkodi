@@ -14,6 +14,7 @@ moved name is re-exported from ``resolver``.
 """
 
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
+from resources.lib.season_pack import requested_episode
 
 
 class _ResolveSideEffects:
@@ -35,6 +36,9 @@ class _ResolveSideEffects:
         self._nzb_url = nzb_url
         self._dead = dead
         self._settings_getter = settings_getter
+        self.requested_episode = requested_episode(
+            (params or {}).get("_episode_context") if isinstance(params, dict) else None
+        )
         self.cleanup_state = None
         self.fallback_state = None
 
@@ -51,6 +55,7 @@ class _ResolveSideEffects:
             selected_indexer=selected_indexer,
             rejected_completed_ids=rejected_completed_ids,
             dead=self._dead,
+            requested_episode=self.requested_episode,
         )
 
     def start_fallback_after_primary(self, _nzo_id):
@@ -80,11 +85,14 @@ def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effe
     ``resolve``."""
     selected_indexer = params.get("_selected_indexer", "")
     picker_completed_lookup_done = _resolver._picker_completed_lookup_done(params)
+    picker_kwargs = {
+        "on_existing_completed": effects.start_cleanup_once,
+        "rejected_completed_ids": rejected_completed_ids,
+    }
+    if effects.requested_episode is not None:
+        picker_kwargs["requested_episode"] = effects.requested_episode
     completed_stream = _resolver._picker_completed_stream(
-        title,
-        params,
-        on_existing_completed=effects.start_cleanup_once,
-        rejected_completed_ids=rejected_completed_ids,
+        title, params, **picker_kwargs
     )
     if completed_stream is not None:
         stream_url, stream_headers = completed_stream
@@ -134,12 +142,15 @@ def _resolve_and_play_acquire_stream(
     # One rejected-id set per resolve attempt, shared so a Completed row the
     # picker body probe rejects is honored by the submit/poll paths.
     rejected_completed_ids = set()
+    picker_kwargs = {
+        "on_existing_completed": effects.start_cleanup_once,
+        "settings_getter": settings_getter,
+        "rejected_completed_ids": rejected_completed_ids,
+    }
+    if effects.requested_episode is not None:
+        picker_kwargs["requested_episode"] = effects.requested_episode
     completed_stream = _resolver._picker_completed_stream(
-        title,
-        resolve_params,
-        on_existing_completed=effects.start_cleanup_once,
-        settings_getter=settings_getter,
-        rejected_completed_ids=rejected_completed_ids,
+        title, resolve_params, **picker_kwargs
     )
     _resolver._resolve_stage("picker completed stream checked")
     if completed_stream is not None:

@@ -516,6 +516,77 @@ def test_completed_job_stream_threads_title_as_episode_hint(mock_find_stream):
 
 
 @patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_threads_explicit_episode_request(mock_find_stream):
+    mock_find_stream.return_value = (
+        "/content/uncategorized/Show/Show.S01E01.mkv",
+        "http://webdav/Show.S01E01.mkv",
+        {},
+    )
+    job = {
+        "status": "Completed",
+        "name": "Show.S01.2160p.WEB-DL",
+        "storage": "/mnt/nzbdav/completed-symlinks/uncategorized/Show",
+    }
+
+    with patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ):
+        _completed_job_stream("Show.S01.2160p.WEB-DL", job, requested_episode=(1, 1))
+
+    assert mock_find_stream.call_args.kwargs["requested_episode"] == (1, 1)
+
+
+def test_resolve_and_play_episode_threads_request_through_poll_context():
+    params = {
+        "_episode_context": {"season": 1, "episode": 1},
+        "_completed_job_lookup_done": True,
+    }
+    with patch("resources.lib.resolver._nzbget_enabled", return_value=False), patch(
+        "resources.lib.resolver._picker_completed_stream", return_value=None
+    ) as picker, patch(
+        "resources.lib.resolver._resolve_and_play_submit_and_poll",
+        return_value=(None, None, None),
+    ) as submit_poll, patch(
+        "resources.lib.resolver._stop_fallback_submit_worker"
+    ):
+        resolve_and_play("http://i/pack.nzb", "Show.S01.2160p", params=params)
+
+    assert picker.call_args.kwargs["requested_episode"] == (1, 1)
+    poll_ctx = submit_poll.call_args.args[-1]
+    assert poll_ctx.requested_episode == (1, 1)
+
+
+@patch("resources.lib.resolver._handle_history_result")
+@patch("resources.lib.resolver._handle_job_status", return_value=(False, None))
+@patch("resources.lib.resolver._poll_once", return_value=({}, {}, None))
+@patch("resources.lib.resolver._submit_nzb_with_retries", return_value="nzo-1")
+@patch("resources.lib.resolver._existing_completed_stream", return_value=None)
+@patch("resources.lib.resolver.xbmc")
+def test_poll_until_ready_keeps_episode_request_for_completed_fallback(
+    mock_xbmc,
+    _mock_existing,
+    _mock_submit,
+    _mock_poll,
+    _mock_status,
+    mock_history,
+):
+    """Every completed history candidate is resolved for the same episode."""
+    mock_xbmc.Monitor.return_value = _make_monitor()
+    mock_history.return_value = (True, None, None, 0)
+
+    _poll_until_ready(
+        "http://i/pack.nzb",
+        "Show.S01.2160p",
+        _make_dialog(),
+        1,
+        60,
+        poll_ctx=PollContext(requested_episode=(1, 1)),
+    )
+
+    assert mock_history.call_args.kwargs["requested_episode"] == (1, 1)
+
+
+@patch("resources.lib.resolver._find_video_stream_for_folder")
 def test_completed_job_stream_rejects_when_midfile_body_unavailable(mock_find_stream):
     """nzbdav says Completed but the mid-file articles are gone (the
     Good/Bad/Ugly failure): the byte-0 header reads, but a mid-file range

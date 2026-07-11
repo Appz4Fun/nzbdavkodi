@@ -285,6 +285,17 @@ def context_from_params(params, title=None, season=None, episode=None):
     }
 
 
+def requested_episode(context):
+    """Return a normalized ``(season, episode)`` tuple, or ``None``."""
+    if not isinstance(context, dict):
+        return None
+    season = _number(context.get("season"))
+    episode = _number(context.get("episode"))
+    if season is None or episode is None or season < 0 or episode < 0:
+        return None
+    return season, episode
+
+
 def episode_summary(episodes):
     """Return a compact ordered episode range or comma-separated list."""
     values = _normalize_episodes(episodes)

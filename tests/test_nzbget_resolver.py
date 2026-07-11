@@ -730,6 +730,54 @@ def test_resolve_success_resolves_true_with_smb_url():
     assert plugin.setResolvedUrl.call_args[0][1] is True
 
 
+def test_resolve_episode_threads_exact_request_to_smb_selection():
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/tv/Spider-Noir"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/Spider-Noir/Spider-Noir.S01E01.mkv",
+    ) as resolve_smb:
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/pack.nzb",
+                "title": "Spider-Noir.S01.2160p",
+                "_episode_context": {"season": 1, "episode": 1},
+            },
+            settings_getter=_full_settings(),
+        )
+
+    assert resolve_smb.call_args.kwargs["requested_episode"] == (1, 1)
+
+
+def test_resolve_movie_leaves_smb_selection_without_episode_request():
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        return_value=(42, None),
+    ), patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "success", "dest_dir": "/dl/movies/The.Movie"},
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/The.Movie/movie.mkv",
+    ) as resolve_smb:
+        resolve_and_play_nzbget(
+            7,
+            {"nzburl": "http://i/movie.nzb", "title": "The.Movie"},
+            settings_getter=_full_settings(),
+        )
+
+    assert resolve_smb.call_args.kwargs.get("requested_episode") is None
+
+
 def test_resolve_success_applies_resume_offset_to_listitem():
     # The resume position carried from the scrubbed bookmark must be set on the
     # ListItem as StartOffset so a replay resumes instead of restarting.

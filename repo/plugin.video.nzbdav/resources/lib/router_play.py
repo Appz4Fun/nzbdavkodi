@@ -150,6 +150,36 @@ def _play_identity(params, title, season, episode):
     }
 
 
+def _attach_episode_context(
+    resolver_params, source_params, title=None, season=None, episode=None
+):
+    """Attach canonical episode identity to internal resolver parameters.
+
+    The public plugin URL remains unchanged.  Movies and episode requests whose
+    season/episode could not be resolved deliberately carry no exact-selection
+    context, preserving the legacy largest/title-hint behavior.
+    """
+    from resources.lib.season_pack import context_from_params
+
+    source_params = source_params if isinstance(source_params, dict) else {}
+    resolver_params.pop("_episode_context", None)
+    if season is None:
+        season = source_params.get("season", "") or source_params.get("ep_season", "")
+    if episode is None:
+        episode = source_params.get("episode", "") or source_params.get(
+            "ep_episode", ""
+        )
+    context = context_from_params(
+        source_params, title=title, season=season, episode=episode
+    )
+    if (
+        context.get("type") == "episode"
+        and context.get("season") is not None
+        and context.get("episode") is not None
+    ):
+        resolver_params["_episode_context"] = context
+
+
 def _extract_search_params(params):
     """Pull the common (search_type, title, year, imdb, tvdb, tmdb_id, season,
     episode) tuple from cleaned route params.
@@ -301,6 +331,7 @@ def _handle_play_auto_select(handle, best, filtered, identity=None):
             best, filtered
         ),
     }
+    _attach_episode_context(resolver_params, identity or {})
     _attach_nzbget_dupe(resolver_params, best, filtered, identity)
     _ensure_nzbget_completed_hint(best)
     _router._attach_selected_result_metadata(resolver_params, best)
@@ -637,6 +668,7 @@ def _handle_play_resolve_selection(
             selected, filtered
         ),
     }
+    _attach_episode_context(resolver_params, identity or {})
     _attach_nzbget_dupe(resolver_params, selected, filtered, identity)
     _apply_completed_job_hint(resolver_params, selected, completed_jobs)
     _router._attach_selected_result_metadata(resolver_params, selected)

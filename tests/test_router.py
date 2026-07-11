@@ -2008,6 +2008,142 @@ def test_handle_search_auto_select_passes_clean_params_to_resolver(
 @patch("xbmcaddon.Addon")
 @patch("xbmcplugin.endOfDirectory")
 @patch("resources.lib.resolver.resolve_and_play")
+@patch("resources.lib.filter.filter_results")
+@patch("resources.lib.router._search_all_providers")
+@patch("resources.lib.cache.set_cached")
+@patch("resources.lib.cache.get_cached", return_value=None)
+def test_handle_search_episode_threads_canonical_context_to_resolver(
+    mock_cache,
+    mock_set_cache,
+    mock_search,
+    mock_filter,
+    mock_resolve_and_play,
+    mock_end,
+    mock_addon,
+):
+    """Episode identity must survive provider search and auto-selection."""
+    _install_progress_dialog_that_wont_cancel()
+    mock_addon.return_value.getSetting.side_effect = _stub_setting("true")
+    chosen = {"title": "Spider-Noir.S01.2160p", "link": "http://i/pack.nzb"}
+    mock_search.return_value = ([chosen], None)
+    mock_filter.return_value = ([chosen], [chosen])
+
+    _handle_search(
+        17,
+        {
+            "type": "episode",
+            "title": "Spider-Noir",
+            "tvdb": "451234",
+            "season": "1",
+            "episode": "1",
+        },
+    )
+
+    context = mock_resolve_and_play.call_args.kwargs["params"]["_episode_context"]
+    assert context == {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "",
+        "tvdb": "451234",
+        "tmdb_id": "",
+        "season": 1,
+        "episode": 1,
+    }
+    mock_end.assert_called_once_with(17, succeeded=False)
+
+
+@patch("resources.lib.resolver.resolve")
+def test_handle_play_auto_select_threads_resolved_episode_context(mock_resolve):
+    from resources.lib.router import _handle_play_auto_select
+
+    best = {"title": "Spider-Noir.S01.2160p", "link": "http://i/pack.nzb"}
+    identity = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt1234567",
+        "tvdb": "",
+        "tmdb_id": "987",
+        "season": "1",
+        "episode": "1",
+    }
+
+    with patch("resources.lib.router._fallback_candidate_loader_for_selection"):
+        _handle_play_auto_select(9, best, [best], identity)
+
+    assert mock_resolve.call_args.args[1]["_episode_context"] == {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt1234567",
+        "tvdb": "",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+
+
+@patch("resources.lib.resolver.resolve")
+def test_handle_play_auto_select_movie_omits_episode_context(mock_resolve):
+    from resources.lib.router import _handle_play_auto_select
+
+    best = {"title": "The.Matrix.1999", "link": "http://i/movie.nzb"}
+    identity = {"type": "movie", "title": "The Matrix", "season": "", "episode": ""}
+
+    with patch("resources.lib.router._fallback_candidate_loader_for_selection"):
+        _handle_play_auto_select(9, best, [best], identity)
+
+    assert "_episode_context" not in mock_resolve.call_args.args[1]
+
+
+@patch("resources.lib.router._script_play_picker_and_resolve")
+@patch("resources.lib.router._script_play_search_filter_tag")
+def test_handle_script_play_threads_resolved_episode_context(mock_prepare, mock_picker):
+    from resources.lib.router import _handle_script_play
+
+    chosen = {"title": "Spider-Noir.S01.2160p", "link": "http://i/pack.nzb"}
+    mock_prepare.return_value = ([chosen], 1, {})
+
+    _handle_script_play(
+        {
+            "type": "episode",
+            "title": "Spider-Noir",
+            "imdb": "tt1234567",
+            "season": "1",
+            "episode": "1",
+        }
+    )
+
+    params = mock_picker.call_args.args[0]
+    assert params["_episode_context"]["season"] == 1
+    assert params["_episode_context"]["episode"] == 1
+    assert params["_episode_context"]["imdb"] == "tt1234567"
+
+
+@patch("resources.lib.resolver.resolve_and_play")
+def test_route_resolve_threads_episode_aliases_without_changing_public_params(
+    mock_resolve_and_play,
+):
+    from resources.lib.router import _route_resolve
+
+    _route_resolve(
+        {
+            "nzburl": "http://i/pack.nzb",
+            "title": "Spider-Noir",
+            "type": "episode",
+            "ep_season": "1",
+            "ep_episode": "1",
+        }
+    )
+
+    params = mock_resolve_and_play.call_args.kwargs["params"]
+    assert params["ep_season"] == "1"
+    assert params["ep_episode"] == "1"
+    assert params["_episode_context"]["season"] == 1
+    assert params["_episode_context"]["episode"] == 1
+
+
+@patch("xbmcaddon.Addon")
+@patch("xbmcplugin.endOfDirectory")
+@patch("resources.lib.resolver.resolve_and_play")
 @patch("resources.lib.results_dialog.show_results_dialog")
 @patch("resources.lib.filter.filter_results")
 @patch("resources.lib.router._search_all_providers")

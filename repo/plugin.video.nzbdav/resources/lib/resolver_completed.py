@@ -95,7 +95,11 @@ def _start_existing_completed_cleanup(title, on_existing_completed):
 
 
 def _delegated_find_video_stream_for_folder(
-    webdav_folder, settings_getter, title_hint, min_video_size
+    webdav_folder,
+    settings_getter,
+    title_hint,
+    min_video_size,
+    requested_episode=None,
 ):
     """Return the webdav one-shot discovery tuple, or None when not delegable.
 
@@ -115,13 +119,15 @@ def _delegated_find_video_stream_for_folder(
             is _webdav.get_webdav_stream_url_for_path
         ):
             _resolver._resolve_stage("find_video_stream_for_folder_delegated")
+            kwargs = {
+                "title_hint": title_hint,
+                "min_video_size": min_video_size,
+            }
+            kwargs.update(_resolver._settings_getter_kwargs(settings_getter))
+            if requested_episode is not None:
+                kwargs["requested_episode"] = requested_episode
             video_path, stream_url, stream_headers = (
-                _resolver.find_video_stream_for_folder(
-                    webdav_folder,
-                    title_hint=title_hint,
-                    min_video_size=min_video_size,
-                    **_resolver._settings_getter_kwargs(settings_getter),
-                )
+                _resolver.find_video_stream_for_folder(webdav_folder, **kwargs)
             )
             if video_path:
                 _resolver._remember_resolved_stream_content_length_hint(
@@ -136,7 +142,11 @@ def _delegated_find_video_stream_for_folder(
 
 
 def _find_video_stream_for_folder(
-    webdav_folder, settings_getter=None, title_hint=None, min_video_size=0
+    webdav_folder,
+    settings_getter=None,
+    title_hint=None,
+    min_video_size=0,
+    requested_episode=None,
 ):
     """Return video path, URL, and headers for a completed WebDAV folder.
 
@@ -153,7 +163,11 @@ def _find_video_stream_for_folder(
     disables the floor, so the unknown-size path is unchanged.
     """
     delegated = _delegated_find_video_stream_for_folder(
-        webdav_folder, settings_getter, title_hint, min_video_size
+        webdav_folder,
+        settings_getter,
+        title_hint,
+        min_video_size,
+        requested_episode=requested_episode,
     )
     if delegated is not None:
         return delegated
@@ -231,6 +245,7 @@ def _completed_job_stream(
     settings_getter=None,
     rejected_completed_ids=None,
     download_size=None,
+    requested_episode=None,
 ):
     """Return a WebDAV stream URL from a completed nzbdav history row.
 
@@ -254,11 +269,15 @@ def _completed_job_stream(
     # subfolder holding the real file rather than serving the stub. 0 for unknown
     # size. The stub guard below shares the same floor (folder-total comparison).
     min_video_size = _resolver._stub_min_size_floor(download_size)
+    discovery_kwargs = {
+        "settings_getter": settings_getter,
+        "title_hint": title,
+        "min_video_size": min_video_size,
+    }
+    if requested_episode is not None:
+        discovery_kwargs["requested_episode"] = requested_episode
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(
-        webdav_folder,
-        settings_getter=settings_getter,
-        title_hint=title,
-        min_video_size=min_video_size,
+        webdav_folder, **discovery_kwargs
     )
     if not video_path:
         return None
@@ -332,6 +351,7 @@ def _existing_completed_stream(
     settings_getter=None,
     rejected_completed_ids=None,
     download_size=None,
+    requested_episode=None,
 ):
     """Return an already-downloaded stream URL when the title exists.
 
@@ -340,14 +360,15 @@ def _existing_completed_stream(
     job-start stub just like the post-submit accept path. Defaults to ``None``
     (guard fails open).
     """
-    hinted_stream = _completed_job_stream(
-        title,
-        completed_job_hint,
-        on_existing_completed=on_existing_completed,
-        settings_getter=settings_getter,
-        rejected_completed_ids=rejected_completed_ids,
-        download_size=download_size,
-    )
+    stream_kwargs = {
+        "on_existing_completed": on_existing_completed,
+        "settings_getter": settings_getter,
+        "rejected_completed_ids": rejected_completed_ids,
+        "download_size": download_size,
+    }
+    if requested_episode is not None:
+        stream_kwargs["requested_episode"] = requested_episode
+    hinted_stream = _completed_job_stream(title, completed_job_hint, **stream_kwargs)
     if hinted_stream is not None:
         return hinted_stream
 
@@ -357,14 +378,7 @@ def _existing_completed_stream(
     existing = _resolver.find_completed_by_name(
         title, **_resolver._settings_getter_kwargs(settings_getter)
     )
-    return _completed_job_stream(
-        title,
-        existing,
-        on_existing_completed=on_existing_completed,
-        settings_getter=settings_getter,
-        rejected_completed_ids=rejected_completed_ids,
-        download_size=download_size,
-    )
+    return _completed_job_stream(title, existing, **stream_kwargs)
 
 
 def _picker_completed_stream(
@@ -373,6 +387,7 @@ def _picker_completed_stream(
     on_existing_completed=None,
     settings_getter=None,
     rejected_completed_ids=None,
+    requested_episode=None,
 ):
     """Return a picker-provided completed stream before opening progress UI.
 
@@ -387,19 +402,21 @@ def _picker_completed_stream(
     lookup_done = _picker_completed_lookup_done(params)
     if not has_hint and not lookup_done:
         return None
-    return _resolver._existing_completed_stream(
-        title,
-        on_existing_completed=on_existing_completed,
-        completed_job_hint=params.get("_completed_job"),
-        completed_job_lookup_done=lookup_done,
-        settings_getter=settings_getter,
-        rejected_completed_ids=rejected_completed_ids,
+    kwargs = {
+        "on_existing_completed": on_existing_completed,
+        "completed_job_hint": params.get("_completed_job"),
+        "completed_job_lookup_done": lookup_done,
+        "settings_getter": settings_getter,
+        "rejected_completed_ids": rejected_completed_ids,
         # The indexer-advertised size rides along on the picker params; thread it
         # through so a picker-supplied Completed row that is the #282 job-start
         # stub is rejected before the progress UI opens, exactly as the
         # submit/poll paths do.
-        download_size=params.get("_download_size"),
-    )
+        "download_size": params.get("_download_size"),
+    }
+    if requested_episode is not None:
+        kwargs["requested_episode"] = requested_episode
+    return _resolver._existing_completed_stream(title, **kwargs)
 
 
 def _picker_completed_lookup_done(params):
