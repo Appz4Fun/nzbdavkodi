@@ -50,6 +50,7 @@ __all__ = [
     "probe_webdav_reachable",
     "get_video_file_size_hint",
     "folder_video_total_bytes",
+    "folder_video_inventory",
     "find_video_file",
     "find_video_stream_for_folder",
     "get_webdav_stream_url_for_path",
@@ -404,6 +405,12 @@ def _folder_total_track_max(stats, size):
         stats["max"] = size
 
 
+def _folder_total_track_video(stats, href_path, size):
+    """Append one completely-sized video row to the optional walk stats."""
+    if stats is not None:
+        stats.setdefault("videos", []).append((href_path, size))
+
+
 def _folder_total_scan_entries(root, url, stats):
     """Walk the PROPFIND responses once; return ``(total, incomplete, subdirs)``.
 
@@ -435,6 +442,7 @@ def _folder_total_scan_entries(root, url, stats):
             continue
         total += size
         _folder_total_track_max(stats, size)
+        _folder_total_track_video(stats, href_path, size)
     return total, incomplete, subdirs
 
 
@@ -535,6 +543,34 @@ def folder_video_total_bytes(
     if sub_incomplete:
         incomplete = True
     return _FOLDER_TOTAL_INCOMPLETE if incomplete else total
+
+
+def folder_video_inventory(
+    folder_path, requested=None, settings_getter=None, _settings=None
+):
+    """Return a confirmed full-tree video inventory, or ``None`` if incomplete.
+
+    The same bounded PROPFIND walk used by the completed-folder stub guard
+    collects every supported video path and size. A transient traversal or
+    sizing error therefore remains distinguishable from a reachable empty
+    folder: errors return ``None`` while an empty folder returns an empty
+    :class:`~resources.lib.episode_inventory.VideoInventory`.
+
+    ``_settings`` is an internal one-settings-read fast path used by
+    :func:`find_video_stream_for_folder`.
+    """
+    from resources.lib.episode_inventory import build_video_inventory
+
+    stats = {"videos": []}
+    total = folder_video_total_bytes(
+        folder_path,
+        settings_getter=settings_getter,
+        _settings=_settings,
+        _stats=stats,
+    )
+    if total < 0:
+        return None
+    return build_video_inventory(stats["videos"], requested=requested)
 
 
 def find_video_file(
@@ -682,7 +718,12 @@ def get_webdav_stream_url_for_path(file_path, settings_getter=None):
 
 
 def find_video_stream_for_folder(
-    folder_path, settings_getter=None, title_hint=None, min_video_size=0
+    folder_path,
+    settings_getter=None,
+    title_hint=None,
+    min_video_size=0,
+    requested_episode=None,
+    on_inventory=None,
 ):
     """Find a folder's playable video path and stream URL with one settings read.
 
@@ -693,14 +734,43 @@ def find_video_stream_for_folder(
     ``min_video_size`` is the optional advertised-size floor that lets discovery
     recurse past a root-level job-start stub into the subfolder holding the real
     file (#282); see ``find_video_file``. ``0`` (default) disables the floor.
+
+    ``requested_episode`` is an explicit ``(season, episode)`` identity. Unlike
+    the advisory title hint, it fails closed when the completed folder contains
+    named episodes but not the requested one. ``on_inventory`` receives the
+    confirmed full-tree inventory; callback failures never block playback.
     """
     settings = _read_settings(settings_getter)
+    explicit_tags = (
+        frozenset((requested_episode,)) if requested_episode is not None else None
+    )
     video_path = find_video_file(
         folder_path,
-        hints=TitleHints(title_hint=title_hint),
+        hints=TitleHints(title_hint=title_hint, episode_tags=explicit_tags),
         min_video_size=min_video_size,
         _state=(0, None, False, settings),
     )
+    inventory = None
+    if requested_episode is not None or on_inventory is not None:
+        inventory = folder_video_inventory(
+            folder_path,
+            requested=requested_episode,
+            settings_getter=settings_getter,
+            _settings=settings,
+        )
+        if requested_episode is not None:
+            # Explicit route identity is authoritative. A named different
+            # episode, or an incomplete scan, must never degrade to the
+            # title-derived/legacy candidate from find_video_file().
+            video_path = inventory.selected_path if inventory is not None else None
+    if on_inventory is not None and inventory is not None:
+        try:
+            on_inventory(inventory)
+        except Exception as error:  # pylint: disable=broad-except
+            xbmc.log(
+                "NZB-DAV: WebDAV inventory callback failed: {}".format(error),
+                xbmc.LOGDEBUG,
+            )
     if not video_path:
         return None, None, None
     stream_url, stream_headers = _get_webdav_stream_url_for_path_with_settings(

@@ -10,6 +10,7 @@ from resources.lib.webdav import (
     TitleHints,
     find_video_file,
     find_video_stream_for_folder,
+    folder_video_inventory,
     folder_video_total_bytes,
     get_webdav_stream_url_for_path,
     probe_webdav_reachable,
@@ -659,6 +660,193 @@ def test_folder_video_total_bytes_negative_length_is_incomplete(
 
     # The -1 must not subtract (would give 7999999999); it flags incomplete.
     assert folder_video_total_bytes("/content/uncategorized/Movie/") < 0
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_folder_video_inventory_selects_nested_spider_noir_explicit_episode(
+    mock_urlopen, mock_settings
+):
+    """The complete-tree inventory selects E01 even when nested E05 is larger."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    root = _propfind_listing(
+        [
+            ("/downloads/Spider-Noir/", True, None),
+            ("/downloads/Spider-Noir/Season%201/", True, None),
+        ]
+    )
+    season = _propfind_listing(
+        [
+            ("/downloads/Spider-Noir/Season%201/", True, None),
+            (
+                "/downloads/Spider-Noir/Season%201/Spider-Noir.S01E01.mkv",
+                False,
+                7_000,
+            ),
+            (
+                "/downloads/Spider-Noir/Season%201/Spider-Noir.S01E05.mkv",
+                False,
+                11_000,
+            ),
+        ]
+    )
+
+    def propfind(req, **_kwargs):
+        if req.full_url.endswith("/Spider-Noir/"):
+            return _propfind_resp(root)
+        if req.full_url.endswith("/Season%201/"):
+            return _propfind_resp(season)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(req.full_url))
+
+    mock_urlopen.side_effect = propfind
+
+    inventory = folder_video_inventory("/downloads/Spider-Noir/", requested=(1, 1))
+
+    assert inventory.selected_path.endswith("Spider-Noir.S01E01.mkv")
+    assert inventory.selected_size == 7_000
+    assert inventory.pack_season == 1
+    assert inventory.episodes == (1, 5)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_explicit_episode_rejects_named_wrong_fallback(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/Show.S01E05.mkv", False, 9_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    result = find_video_stream_for_folder("/downloads/Show/", requested_episode=(1, 1))
+
+    assert result == (None, None, None)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_explicit_episode_uses_generic_largest_fallback(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/video-small.mkv", False, 4_000),
+            ("/downloads/Show/video-large.mkv", False, 9_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    path, _url, _headers = find_video_stream_for_folder(
+        "/downloads/Show/", requested_episode=(1, 1)
+    )
+
+    assert path == "/downloads/Show/video-large.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_title_hint_without_explicit_episode_keeps_legacy_fallback(
+    mock_urlopen, mock_settings
+):
+    """A title-derived missing episode remains advisory without explicit context."""
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/content/Show/", True, None),
+            ("/content/Show/Show.S01E05.mkv", False, 9_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    path, _url, _headers = find_video_stream_for_folder(
+        "/content/Show/", title_hint="Show.S01E01"
+    )
+
+    assert path == "/content/Show/Show.S01E05.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_inventory_callback_receives_confirmed_inventory(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/Show.S01E01.mkv", False, 8_000),
+            ("/downloads/Show/Show.S01E02.mkv", False, 9_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+    seen = []
+
+    path, _url, _headers = find_video_stream_for_folder(
+        "/downloads/Show/",
+        requested_episode=(1, 1),
+        on_inventory=seen.append,
+    )
+
+    assert path == "/downloads/Show/Show.S01E01.mkv"
+    assert len(seen) == 1
+    assert seen[0].episodes == (1, 2)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_inventory_callback_failure_does_not_block_playback(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/Show.S01E01.mkv", False, 8_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    def fail_callback(_inventory):
+        raise RuntimeError("catalog unavailable")
+
+    path, _url, _headers = find_video_stream_for_folder(
+        "/downloads/Show/",
+        requested_episode=(1, 1),
+        on_inventory=fail_callback,
+    )
+
+    assert path == "/downloads/Show/Show.S01E01.mkv"
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_does_not_callback_on_incomplete_inventory(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/Show.S01E01.mkv", False, None),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+    callback = MagicMock()
+
+    result = find_video_stream_for_folder(
+        "/downloads/Show/",
+        requested_episode=(1, 1),
+        on_inventory=callback,
+    )
+
+    assert result == (None, None, None)
+    callback.assert_not_called()
 
 
 @patch("resources.lib.webdav._get_settings")
