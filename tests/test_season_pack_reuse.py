@@ -73,6 +73,23 @@ def test_stale_removal_exception_is_transient_without_escaping():
     remove.assert_called_once_with("nzbget", "41")
 
 
+def test_reuse_missing_job_keeps_picker_record_when_remove_fails(tmp_path, monkeypatch):
+    record = _record()
+    monkeypatch.setattr(
+        season_pack_reuse.season_pack, "_catalog_dir", lambda: str(tmp_path)
+    )
+    assert season_pack_reuse.season_pack.upsert(record) is True
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.stale(),
+    ), patch("resources.lib.season_pack_reuse.season_pack.remove", return_value=False):
+        result = season_pack_reuse.reuse_exact_job(record, _context(), "nzbget")
+
+    assert result.state == "transient"
+    assert season_pack_reuse.season_pack.find_exact("nzbget", "41") == record
+
+
 def test_nzbget_valid_exact_job_reuses_requested_episode_without_submit():
     record = _record()
     inventory = _Inventory("smb://box/done/show/Spider-Noir.S01E01.mkv")

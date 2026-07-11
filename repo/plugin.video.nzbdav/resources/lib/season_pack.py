@@ -406,8 +406,12 @@ def validate_job(record, settings_getter=None):
         return PackValidation(None, "transient")
     job_folder = lookup.job.get(folder_key) if lookup.job is not None else None
     if lookup.job is None or str(job_folder or "") != str(record.get("folder") or ""):
-        remove(backend, record.get("job_id"))
-        return PackValidation(None, "stale")
+        try:
+            removed = remove(backend, record.get("job_id"))
+        except Exception:  # pylint: disable=broad-except
+            return PackValidation(None, "transient")
+        outcome = "stale" if removed else "transient"
+        return PackValidation(None, outcome)
     return PackValidation(lookup.job, "valid")
 
 

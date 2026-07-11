@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from resources.lib import season_pack
+from resources.lib.exact_job import ExactJobLookup
 
 from tests.season_pack_process_helper import racing_upsert
 
@@ -151,6 +152,44 @@ def test_remove_deletes_only_exact_backend_job_key(tmp_path, monkeypatch):
         ("nzbget", "42"),
         ("nzbdav", "41"),
     }
+
+
+def test_validate_missing_job_is_transient_when_exact_remove_returns_false():
+    record = _record()
+    with patch(
+        "resources.lib.nzbget_api.completed_by_id",
+        return_value=ExactJobLookup.stale(),
+    ), patch.object(season_pack, "remove", return_value=False) as remove:
+        validation = season_pack.validate_job(record)
+
+    assert validation == season_pack.PackValidation(None, "transient")
+    remove.assert_called_once_with("nzbget", "41")
+
+
+def test_validate_folder_mismatch_is_transient_when_exact_remove_raises():
+    record = _record(backend="nzbdav", folder="/expected")
+    lookup = ExactJobLookup.valid({"nzo_id": "41", "storage": "/different"})
+    with patch(
+        "resources.lib.nzbdav_api.completed_by_id", return_value=lookup
+    ), patch.object(
+        season_pack, "remove", side_effect=OSError("catalog unavailable")
+    ) as remove:
+        validation = season_pack.validate_job(record)
+
+    assert validation == season_pack.PackValidation(None, "transient")
+    remove.assert_called_once_with("nzbdav", "41")
+
+
+def test_validate_missing_job_is_stale_only_after_successful_exact_remove():
+    record = _record()
+    with patch(
+        "resources.lib.nzbget_api.completed_by_id",
+        return_value=ExactJobLookup.stale(),
+    ), patch.object(season_pack, "remove", return_value=True) as remove:
+        validation = season_pack.validate_job(record)
+
+    assert validation == season_pack.PackValidation(None, "stale")
+    remove.assert_called_once_with("nzbget", "41")
 
 
 def test_find_requires_backend_season_available_episode_and_identity(
