@@ -642,7 +642,8 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
         # A pack row is one explicit selection, never shorthand for an online
         # provider. Stale and transient validation both fail closed; the user
         # can choose an ordinary result separately.
-        ctx.on_failure(_string(30223))
+        failure_message = None if pack_reuse.state == "stale" else _string(30223)
+        ctx.on_failure(failure_message)
         return False
 
     reuse_url = _reuse_completed_job(

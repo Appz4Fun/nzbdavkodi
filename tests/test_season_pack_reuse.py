@@ -613,7 +613,7 @@ def test_nzbget_stale_pack_notifies_and_fails_without_provider_submit():
     notify.assert_called_once_with(
         nzbget_resolver._addon_name(), nzbget_resolver._string(30365), 4000
     )
-    ctx.on_failure.assert_called_once_with(nzbget_resolver._string(30223))
+    ctx.on_failure.assert_called_once_with(None)
     submit.assert_not_called()
 
 

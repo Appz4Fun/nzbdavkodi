@@ -57,6 +57,79 @@ def _full_settings():
     )
 
 
+def _season_pack_params():
+    return {
+        "nzburl": "",
+        "title": "Spider-Noir.S01",
+        "_season_pack": {
+            "backend": "nzbget",
+            "job_id": "41",
+            "job_name": "Spider-Noir.S01",
+            "folder": "/downloads/Spider-Noir.S01",
+            "title": "Spider-Noir",
+            "imdb": "",
+            "tvdb": "451234",
+            "tmdb_id": "",
+            "season": 1,
+            "episodes": [1, 2],
+            "last_confirmed": 1,
+        },
+        "_episode_context": {
+            "type": "episode",
+            "title": "Spider-Noir",
+            "imdb": "",
+            "tvdb": "451234",
+            "tmdb_id": "",
+            "season": 1,
+            "episode": 2,
+        },
+    }
+
+
+def test_handle_stale_pack_shows_one_notice_and_resolves_false():
+    from resources.lib import nzbget_resolver, season_pack_reuse
+
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("stale", None, None),
+    ), patch("resources.lib.nzbget_resolver._notify") as notify, patch(
+        "resources.lib.nzbget_resolver.xbmcplugin.setResolvedUrl"
+    ) as resolved, patch.object(
+        nzbget_resolver.nzbget_api, "append_nzb"
+    ) as submit:
+        resolve_and_play_nzbget(7, _season_pack_params(), _full_settings())
+
+    notify.assert_called_once_with(
+        nzbget_resolver._addon_name(), nzbget_resolver._string(30365), 4000
+    )
+    assert resolved.call_count == 1
+    assert resolved.call_args.args[:2] == (7, False)
+    submit.assert_not_called()
+
+
+def test_handleless_stale_pack_shows_one_notice_without_starting_player():
+    from resources.lib import nzbget_resolver, season_pack_reuse
+
+    params = _season_pack_params()
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("stale", None, None),
+    ), patch("resources.lib.nzbget_resolver._notify") as notify, patch(
+        "resources.lib.nzbget_resolver.xbmc.Player"
+    ) as player, patch.object(
+        nzbget_resolver.nzbget_api, "append_nzb"
+    ) as submit:
+        play_nzbget(
+            "", params["title"], params=params, settings_getter=_full_settings()
+        )
+
+    notify.assert_called_once_with(
+        nzbget_resolver._addon_name(), nzbget_resolver._string(30365), 4000
+    )
+    player.return_value.play.assert_not_called()
+    submit.assert_not_called()
+
+
 def test_resolve_smb_video_returns_largest_file_url():
     xbmcvfs = sys.modules["xbmcvfs"]
 
