@@ -16,11 +16,7 @@ _AUXILIARY_RE = re.compile(
 _AUXILIARY_TOKEN_RE = re.compile(
     r"(?:samples?|trailers?|featurettes?|extras?)", re.IGNORECASE
 )
-_LEADING_EPISODE_RE = re.compile(
-    r"(?:s\d{1,3}[. _-]*e\d{1,4}(?:[. _-]*e\d{1,4})*|"
-    r"\d{1,2}[xх]\d{1,3})(?:[. _-]|$)",
-    re.IGNORECASE,
-)
+_AMBIGUOUS_LEADING_MARKERS = frozenset(("extra", "extras", "trailer", "trailers"))
 
 
 class VideoFile(NamedTuple):
@@ -64,14 +60,6 @@ def _is_auxiliary(name, parent):
     if not show_folder_exception and _AUXILIARY_TOKEN_RE.fullmatch(stem):
         return True
 
-    leading_marker = _AUXILIARY_RE.match(name)
-    if (
-        leading_marker
-        and not show_folder_exception
-        and _LEADING_EPISODE_RE.match(name[leading_marker.end() :])
-    ):
-        return True
-
     return any(
         _resolve_file_episode_tags(name[: match.start()], "")
         for match in _AUXILIARY_RE.finditer(name)
@@ -93,9 +81,72 @@ def _largest(files):
     return max(files, key=lambda item: item.size) if files else None
 
 
+def _leading_auxiliary_marker(path):
+    name = os.path.basename(path)
+    match = _AUXILIARY_RE.match(name)
+    if not match:
+        return None
+    remainder = name[match.end() :].lstrip(". _-")
+    if not _resolve_file_episode_tags(remainder, ""):
+        return None
+    return match.group(1).casefold()
+
+
+def _release_folder_matches_marker(path, marker):
+    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+    for segment in (item for item in re.split(r"[/\\]+", parent) if item):
+        leading_segment = re.split(r"[. _-]+", segment, maxsplit=1)[0]
+        if leading_segment.casefold() == marker:
+            return True
+    return False
+
+
+def _leading_group_is_show(files, indexes, marker):
+    if marker not in _AMBIGUOUS_LEADING_MARKERS or len(indexes) < 2:
+        return False
+    seasons = {
+        season for index in indexes for season, _episode in files[index].episode_tags
+    }
+    episodes = {
+        episode for index in indexes for _season, episode in files[index].episode_tags
+    }
+    return len(seasons) == 1 and len(episodes) >= 2
+
+
+def _classify_leading_auxiliary(files):
+    candidates = {}
+    groups = {}
+    main_indexes = set()
+    for index, item in enumerate(files):
+        if item.auxiliary:
+            continue
+        marker = _leading_auxiliary_marker(item.path)
+        if not marker:
+            continue
+        candidates[index] = marker
+        groups.setdefault(marker, []).append(index)
+        if _release_folder_matches_marker(item.path, marker):
+            main_indexes.add(index)
+
+    for marker, indexes in groups.items():
+        if _leading_group_is_show(files, indexes, marker):
+            main_indexes.update(indexes)
+
+    return tuple(
+        (
+            item._replace(auxiliary=True)
+            if index in candidates and index not in main_indexes
+            else item
+        )
+        for index, item in enumerate(files)
+    )
+
+
 def build_video_inventory(rows, requested=None):
     """Build an inventory and select an exact requested episode when possible."""
-    files = tuple(_video_file(path, size) for path, size in rows if path)
+    files = _classify_leading_auxiliary(
+        tuple(_video_file(path, size) for path, size in rows if path)
+    )
     main_files = tuple(item for item in files if not item.auxiliary)
     tagged = tuple(item for item in main_files if item.episode_tags)
     selected = None

@@ -87,6 +87,32 @@ def test_extras_in_show_title_remains_main_pack_content():
     assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
 
 
+def test_flat_extras_show_files_remain_main_pack_content():
+    inventory = build_video_inventory(
+        [
+            ("/p/Extras.S01E01.mkv", 100),
+            ("/p/Extras.S01E02.mkv", 200),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/p/Extras.S01E01.mkv"
+    assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
+
+
+def test_extras_release_folder_preserves_leading_show_name():
+    inventory = build_video_inventory(
+        [
+            ("/p/Extras.S01.1080p/Extras.S01E01.mkv", 100),
+            ("/p/Other.S01E02.mkv", 200),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/p/Extras.S01.1080p/Extras.S01E01.mkv"
+    assert inventory.files[0].auxiliary is False
+
+
 def test_auxiliary_suffix_exact_match_does_not_override_generic_main_video():
     inventory = build_video_inventory(
         [
@@ -160,6 +186,34 @@ def test_leading_auxiliary_marker_does_not_create_pack_episode():
     inventory = build_video_inventory(
         [
             ("/pack/sample.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
+def test_single_leading_extras_marker_remains_auxiliary():
+    inventory = build_video_inventory(
+        [
+            ("/pack/extras.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
+def test_leading_auxiliary_marker_strips_full_separator_run():
+    inventory = build_video_inventory(
+        [
+            ("/pack/sample - S01E01.mkv", 100),
             ("/pack/Show.S01E02.mkv", 200),
         ],
         requested=(1, 2),
