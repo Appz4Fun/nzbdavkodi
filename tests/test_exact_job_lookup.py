@@ -116,7 +116,6 @@ def test_malformed_nzbget_history_cannot_prove_exact_job_missing_or_stale():
         [{"Name": "Spider-Noir.S01", "Status": "SUCCESS/ALL"}],
         [{"NZBID": 41, "DestDir": "/downloads/show"}],
         [{"NZBID": 41, "Status": "SUCCESS/ALL"}],
-        [{"NZBID": 41, "Status": "FAILURE/HEALTH"}],
     )
     for history in malformed_payloads:
         with patch.object(nzbget_api, "_rpc_call", return_value=(history, None)):
@@ -145,10 +144,24 @@ def test_malformed_nzbdav_history_cannot_prove_exact_job_missing_or_stale():
         [{"name": "Spider-Noir.S01", "status": "Completed"}],
         [{"nzo_id": "wanted", "storage": "/downloads/show"}],
         [{"nzo_id": "wanted", "status": "Completed"}],
-        [{"nzo_id": "wanted", "status": "Failed"}],
     )
     for slots in malformed_slots:
         payload = {"history": {"slots": slots}}
         with patch.object(nzbdav_api, "_http_get", return_value=json.dumps(payload)):
             result = nzbdav_api.lookup_completed_job_exact("wanted", _getter)
         assert result.state == "transient"
+
+
+def test_conclusive_failure_status_does_not_require_completed_folder_fields():
+    with patch.object(
+        nzbget_api,
+        "_rpc_call",
+        return_value=([{"NZBID": 41, "Status": "FAILURE/HEALTH"}], None),
+    ):
+        assert nzbget_api.lookup_completed_job_exact(41, _getter).state == "stale"
+
+    payload = {"history": {"slots": [{"nzo_id": "wanted", "status": "Failed"}]}}
+    with patch.object(nzbdav_api, "_http_get", return_value=json.dumps(payload)):
+        assert nzbdav_api.lookup_completed_job_exact("wanted", _getter).state == (
+            "stale"
+        )

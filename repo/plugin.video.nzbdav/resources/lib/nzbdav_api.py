@@ -497,16 +497,13 @@ def lookup_completed_job_exact(nzo_id, settings_getter=None):
         if str(slot.get("nzo_id")) != target:
             continue
         status = slot.get("status")
-        storage = slot.get("storage")
-        if (
-            not isinstance(status, str)
-            or not status
-            or not isinstance(storage, str)
-            or not storage
-        ):
+        if not isinstance(status, str) or not status:
             return ExactJobLookup.transient()
         if status != "Completed":
             return ExactJobLookup.stale()
+        storage = slot.get("storage")
+        if not isinstance(storage, str) or not storage:
+            return ExactJobLookup.transient()
         return ExactJobLookup.valid(_completed_job_from_slot(slot))
     return ExactJobLookup.transient() if malformed else ExactJobLookup.stale()
 
