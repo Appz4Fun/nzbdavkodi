@@ -304,6 +304,12 @@ def test_tagless_nonleading_sample_does_not_win_fallback():
     assert inventory.selected_path == "/pack/video.mkv"
 
 
+def test_tagless_nonleading_sample_with_description_does_not_win_fallback():
+    inventory = _tagless_nonleading_auxiliary_inventory("Sample.Clip")
+
+    assert inventory.selected_path == "/pack/video.mkv"
+
+
 def test_tagless_nonleading_trailer_does_not_win_fallback():
     inventory = _tagless_nonleading_auxiliary_inventory("Trailer")
 
@@ -312,6 +318,12 @@ def test_tagless_nonleading_trailer_does_not_win_fallback():
 
 def test_tagless_nonleading_featurette_does_not_win_fallback():
     inventory = _tagless_nonleading_auxiliary_inventory("Featurette")
+
+    assert inventory.selected_path == "/pack/video.mkv"
+
+
+def test_tagless_nonleading_featurette_with_description_does_not_win_fallback():
+    inventory = _tagless_nonleading_auxiliary_inventory("Featurette.Behind.Scenes")
 
     assert inventory.selected_path == "/pack/video.mkv"
 

@@ -16,6 +16,9 @@ _AUXILIARY_RE = re.compile(
 _AUXILIARY_TOKEN_RE = re.compile(
     r"(?:samples?|trailers?|featurettes?|extras?)", re.IGNORECASE
 )
+_UNAMBIGUOUS_AUXILIARY_MARKERS = frozenset(
+    ("sample", "samples", "featurette", "featurettes")
+)
 _AMBIGUOUS_LEADING_MARKERS = frozenset(("extra", "extras", "trailer", "trailers"))
 
 
@@ -63,13 +66,15 @@ def _is_auxiliary(name, parent):
     leading_marker = _AUXILIARY_RE.match(name)
     if (
         leading_marker
-        and leading_marker.group(1).casefold() not in _AMBIGUOUS_LEADING_MARKERS
+        and leading_marker.group(1).casefold() in _UNAMBIGUOUS_AUXILIARY_MARKERS
     ):
         return True
 
     for match in _AUXILIARY_RE.finditer(stem):
         if match.start() == 0:
             continue
+        if match.group(1).casefold() in _UNAMBIGUOUS_AUXILIARY_MARKERS:
+            return True
         if match.end() == len(stem):
             return True
         if _resolve_file_episode_tags(stem[: match.start()], ""):
