@@ -86,8 +86,10 @@ disabled). It then chooses the playable file:
   filenames — handling multi-episode and range patterns — and recurses into
   subfolders when needed. A named wrong episode fails closed rather than being
   selected for its size.
-- When filenames have no reliable episode tags, discovery retains the legacy
-  largest-video fallback because an exact episode cannot be proven.
+- With an explicit episode request, one generic video may retain the ordinary
+  single-file fallback. Multiple untagged videos are ambiguous and fail closed
+  instead of selecting one by size. Without episode context, discovery
+  preserves the legacy largest-video behavior.
 
 ## Remembering completed season packs
 

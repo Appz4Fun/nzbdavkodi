@@ -4,6 +4,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from resources.lib import season_pack_reuse
 from resources.lib.episode_inventory import build_video_inventory
 from resources.lib.exact_job import ExactJobLookup
@@ -161,6 +162,84 @@ def test_nzbget_reuse_rejects_job_folder_equal_to_completed_base():
     assert result.state == "transient"
     scan.assert_not_called()
     remove.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("native_folder", "completed_base"),
+    [
+        ("/srv/downloads/../other/Show", "/srv/downloads"),
+        ("/srv/downloads/a/../../other/Show", "/srv/downloads"),
+        ("/srv/downloads/a/../b/Show", "/srv/downloads"),
+        ("relative/downloads/Show", "/srv/downloads"),
+        (r"C:\downloads\..\other\Show", r"C:\downloads"),
+        (r"C:downloads\Show", r"C:\downloads"),
+        (r"C:\downloads\Show", r"\\server\share\downloads"),
+    ],
+)
+def test_nzbget_reuse_rejects_unprovable_or_traversing_exact_mapping(
+    native_folder, completed_base
+):
+    record = _record(folder=native_folder)
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": "smb://box/completed"}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid({"nzbid": "41", "dest_dir": native_folder}),
+    ), patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value=completed_base,
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory"
+    ) as scan, patch(
+        "resources.lib.season_pack_reuse.season_pack.remove"
+    ) as remove:
+        result = season_pack_reuse.reuse_exact_job(
+            record, _context(), "nzbget", settings_getter=getter
+        )
+
+    assert result.state == "transient"
+    scan.assert_not_called()
+    remove.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("native_folder", "completed_base", "smb_root", "expected"),
+    [
+        (
+            "/srv/downloads/shows/Show",
+            "/srv/downloads",
+            "smb://box/completed",
+            "smb://box/completed/shows/Show",
+        ),
+        (
+            r"C:\downloads\shows\Show",
+            r"C:\downloads",
+            "smb://box/completed",
+            "smb://box/completed/shows/Show",
+        ),
+        (
+            "/srv/downloads/shows/Show",
+            "/srv/downloads",
+            "smb://box/completed/shows",
+            "smb://box/completed/shows/Show",
+        ),
+    ],
+)
+def test_nzbget_cached_mapping_accepts_canonical_posix_and_windows_children(
+    native_folder, completed_base, smb_root, expected
+):
+    record = _record(folder=native_folder)
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": smb_root}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value=completed_base,
+    ):
+        assert season_pack_reuse._nzbget_folder_for_record(record, getter) == expected
 
 
 def test_nzbget_successful_rescan_refreshes_exact_catalog_episode_inventory(

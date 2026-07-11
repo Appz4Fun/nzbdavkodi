@@ -6,6 +6,7 @@
 import json
 import multiprocessing
 import os
+import time
 from unittest.mock import patch
 
 from resources.lib import season_pack
@@ -305,6 +306,44 @@ def test_directory_lock_owner_write_failure_cleans_created_lock(tmp_path, monkey
         assert season_pack._acquire_process_lock(lock_path) is None
 
     assert not os.path.exists(lock_path + ".d")
+
+
+def test_directory_lock_partial_owner_write_cleans_only_new_lock_and_can_retry(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(season_pack, "fcntl", None)
+    lock_path = str(tmp_path / "catalog.lock")
+
+    def partial_write(_owner, handle):
+        handle.write('{"pid":')
+        handle.flush()
+        raise OSError("write interrupted")
+
+    with patch.object(season_pack.json, "dump", side_effect=partial_write):
+        assert season_pack._acquire_process_lock(lock_path) is None
+
+    assert not os.path.exists(lock_path + ".d")
+    lock = season_pack._acquire_process_lock(lock_path)
+    assert lock is not None
+    season_pack._release_process_lock(lock)
+    assert not os.path.exists(lock_path + ".d")
+
+
+def test_directory_lock_preserves_old_malformed_foreign_owner(tmp_path, monkeypatch):
+    monkeypatch.setattr(season_pack, "fcntl", None)
+    monkeypatch.setattr(season_pack, "_STALE_LOCK_SECONDS", 0)
+    lock_path = str(tmp_path / "catalog.lock")
+    lock_dir = lock_path + ".d"
+    os.mkdir(lock_dir)
+    owner_path = os.path.join(lock_dir, "owner.json")
+    with open(owner_path, "w", encoding="utf-8") as handle:
+        handle.write("{malformed")
+    os.utime(lock_dir, (1, 1))
+
+    assert season_pack._acquire_directory_lock(lock_path, time.monotonic()) is None
+    assert os.path.isdir(lock_dir)
+    with open(owner_path, "r", encoding="utf-8") as handle:
+        assert handle.read() == "{malformed"
 
 
 def test_context_from_params_safely_converts_numeric_fields_and_overrides():

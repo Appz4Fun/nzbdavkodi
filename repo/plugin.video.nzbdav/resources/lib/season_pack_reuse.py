@@ -3,11 +3,14 @@
 
 """Validate and reuse one exact completed season-pack job."""
 
+import re
 from typing import NamedTuple
 
 import xbmcaddon
 
 from resources.lib import nzbget_api, season_pack, webdav
+
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:/")
 
 
 class ReuseResult(NamedTuple):
@@ -59,21 +62,91 @@ def _bound_setting_getter(settings_getter):
     return getter
 
 
+def _canonical_native_path(value):
+    """Return ``(canonical, root, segments)`` for a provable absolute path.
+
+    Both slash styles are accepted, but any explicit ``.``/``..`` component is
+    rejected rather than normalized. Cached reuse must preserve the exact
+    lexical job mapping, not reinterpret a history path containing traversal.
+    """
+    normalized = str(value or "").strip().replace("\\", "/")
+    if not normalized:
+        return None
+    if normalized.startswith("//") and not normalized.startswith("///"):
+        parts = normalized[2:].split("/")
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            return None
+        root = ("unc", parts[0].casefold(), parts[1].casefold())
+        path_parts = parts[2:]
+        prefix = "//{}/{}".format(parts[0], parts[1])
+    elif _WINDOWS_DRIVE_RE.match(normalized):
+        root = ("drive", normalized[:2].casefold())
+        path_parts = normalized[3:].split("/")
+        prefix = normalized[:2] + "/"
+    elif normalized.startswith("/"):
+        root = ("posix",)
+        path_parts = normalized[1:].split("/")
+        prefix = "/"
+    else:
+        return None
+    if any(part in (".", "..") for part in path_parts):
+        return None
+    segments = tuple(part for part in path_parts if part)
+    if prefix == "/":
+        canonical = "/" + "/".join(segments)
+    elif prefix.endswith("/"):
+        canonical = prefix + "/".join(segments)
+    else:
+        canonical = prefix + ("/" + "/".join(segments) if segments else "")
+    return canonical, root, segments
+
+
+def _safe_smb_root(value):
+    root = str(value or "").strip().replace("\\", "/").rstrip("/")
+    if not root.lower().startswith("smb://"):
+        return None
+    if any(part in (".", "..") for part in root[6:].split("/")):
+        return None
+    return root
+
+
+def _exact_cached_smb_mapping(smb_root, native_folder, completed_base):
+    """Map a canonical strict completed-base child without path traversal."""
+    target = _canonical_native_path(native_folder)
+    base = _canonical_native_path(completed_base)
+    smb_root = _safe_smb_root(smb_root)
+    if target is None or base is None or smb_root is None:
+        return None
+    _target_path, target_root, target_segments = target
+    _base_path, base_root, base_segments = base
+    if target_root != base_root or len(target_segments) <= len(base_segments):
+        return None
+    target_prefix = tuple(
+        part.casefold() for part in target_segments[: len(base_segments)]
+    )
+    base_key = tuple(part.casefold() for part in base_segments)
+    if target_prefix != base_key:
+        return None
+    relative = list(target_segments[len(base_segments) :])
+    if relative and smb_root.casefold().endswith("/" + relative[0].casefold()):
+        relative.pop(0)
+    if not relative:
+        return None
+    return "{}/{}".format(smb_root, "/".join(relative))
+
+
 def _nzbget_folder_for_record(record, settings_getter=None):
     # Cached reuse must prove the server-native completed folder maps under
     # NZBGet's configured completed base.  The ordinary first-play resolver may
     # use its heuristic fallback, but applying that here could map an unrelated
     # same-tail folder to a remembered job.
-    from resources.lib import nzbget_resolver
-
     getter = _bound_setting_getter(settings_getter)
     smb_root = getter("nzbget_smb_root", "").strip()
     completed_base = nzbget_api.completed_base_dir(settings_getter=settings_getter)
-    native_folder = str(record.get("folder") or "").replace("\\", "/").rstrip("/")
-    if not smb_root or not completed_base or not native_folder:
-        return None
-    return nzbget_resolver._smb_exact_mapping(
-        native_folder, smb_root.rstrip("/"), completed_base
+    return _exact_cached_smb_mapping(
+        smb_root,
+        record.get("folder"),
+        completed_base,
     )
 
 

@@ -279,6 +279,10 @@ def _acquire_directory_lock(lock_path, deadline):
         except _IO_ERRORS:
             if created:
                 try:
+                    os.remove(os.path.join(lock_dir, "owner.json"))
+                except OSError:
+                    pass
+                try:
                     os.rmdir(lock_dir)
                 except OSError:
                     pass
