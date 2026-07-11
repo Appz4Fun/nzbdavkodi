@@ -10,7 +10,6 @@ import re
 import tempfile
 import threading
 import time
-import uuid
 from contextlib import contextmanager
 from typing import NamedTuple
 
@@ -21,6 +20,11 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - CoreELEC and macOS provide fcntl
     fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - msvcrt is available only on Windows
+    msvcrt = None
 
 _PROFILE_SPECIAL_PATH = "special://profile/addon_data/plugin.video.nzbdav"
 _CATALOG_FILENAME = "season_packs.json"
@@ -45,7 +49,6 @@ _IO_ERRORS = (IOError, OSError, TypeError, ValueError)
 _THREAD_LOCK = threading.RLock()
 _LOCK_TIMEOUT = 2.0
 _LOCK_RETRY = 0.02
-_STALE_LOCK_SECONDS = 30.0
 
 
 def _catalog_dir():
@@ -226,107 +229,46 @@ def _save_records_unlocked(records, path=None):
         return False
 
 
-def _pid_is_alive(pid):
-    """Return True unless the OS conclusively reports that ``pid`` is dead."""
+def _acquire_msvcrt_lock(lock_path, deadline):
+    """Acquire a Windows-owned nonblocking byte lock with bounded retry."""
+    handle = None
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except (OSError, PermissionError):
-        return True
-    return True
-
-
-def _directory_lock_owner(lock_dir):
-    try:
-        owner_path = os.path.join(lock_dir, "owner.json")
-        with open(owner_path, "r", encoding="utf-8") as handle:
-            owner = json.load(handle)
-        return int(owner["pid"]), str(owner["token"])
-    except (KeyError,) + _IO_ERRORS:
+        handle = open(lock_path, "a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+    except _IO_ERRORS:
+        if handle is not None:
+            try:
+                handle.close()
+            except _IO_ERRORS:
+                # Lock setup is already failing, so close remains best-effort.
+                pass
         return None
 
-
-def _remove_stale_directory_lock(lock_dir):
-    """Remove a sufficiently old fallback lock with no live valid owner."""
-    owner_path = os.path.join(lock_dir, "owner.json")
-    try:
-        newest_mtime = os.path.getmtime(lock_dir)
-        try:
-            newest_mtime = max(newest_mtime, os.path.getmtime(owner_path))
-        except FileNotFoundError:
-            pass
-        age = time.time() - newest_mtime
-    except OSError:
-        return
-    owner = _directory_lock_owner(lock_dir)
-    if age < _STALE_LOCK_SECONDS or (owner is not None and _pid_is_alive(owner[0])):
-        return
-
-    if owner is None:
-        try:
-            os.rmdir(lock_dir)
-            return
-        except OSError:
-            # A concurrent owner write or malformed owner file needs revalidation.
-            pass
-
-    # Recheck both freshness and ownership immediately before removing owner.json.
-    # This preserves a creator that completed its owner write during our first read.
-    try:
-        newest_mtime = max(os.path.getmtime(lock_dir), os.path.getmtime(owner_path))
-        owner = _directory_lock_owner(lock_dir)
-        if time.time() - newest_mtime < _STALE_LOCK_SECONDS:
-            return
-        if owner is not None and _pid_is_alive(owner[0]):
-            return
-        os.remove(owner_path)
-        os.rmdir(lock_dir)
-    except OSError:
-        # Another process may have repaired or removed the lock; cleanup is best-effort.
-        pass
-
-
-def _acquire_directory_lock(lock_path, deadline):
-    """Portable fallback for platforms without ``fcntl``."""
-    lock_dir = lock_path + ".d"
-    token = uuid.uuid4().hex
     while True:
-        created = False
         try:
-            os.mkdir(lock_dir)
-            created = True
-            with open(
-                os.path.join(lock_dir, "owner.json"), "w", encoding="utf-8"
-            ) as handle:
-                json.dump({"pid": os.getpid(), "token": token}, handle)
-            return ("directory", lock_dir, token)
-        except FileExistsError:
-            _remove_stale_directory_lock(lock_dir)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return ("msvcrt", handle, None)
         except _IO_ERRORS:
-            if created:
+            if time.monotonic() >= deadline:
                 try:
-                    os.remove(os.path.join(lock_dir, "owner.json"))
-                except OSError:
-                    # Rollback is best-effort after this process failed to
-                    # publish ownership.
+                    handle.close()
+                except _IO_ERRORS:
+                    # A failed close cannot make an unavailable lock usable.
                     pass
-                try:
-                    os.rmdir(lock_dir)
-                except OSError:
-                    # Preserve any lock state that another process created
-                    # during rollback.
-                    pass
-            return None
-        if time.monotonic() >= deadline:
-            return None
-        threading.Event().wait(_LOCK_RETRY)
+                return None
+            threading.Event().wait(_LOCK_RETRY)
 
 
 def _acquire_process_lock(lock_path):
     deadline = time.monotonic() + _LOCK_TIMEOUT
     if fcntl is None:
-        return _acquire_directory_lock(lock_path, deadline)
+        if msvcrt is None:
+            return None
+        return _acquire_msvcrt_lock(lock_path, deadline)
     try:
         handle = open(lock_path, "a+", encoding="utf-8")
     except _IO_ERRORS:
@@ -343,7 +285,7 @@ def _acquire_process_lock(lock_path):
 
 
 def _release_process_lock(lock):
-    kind, resource, token = lock
+    kind, resource, _token = lock
     if kind == "fcntl":
         try:
             fcntl.flock(resource.fileno(), fcntl.LOCK_UN)
@@ -352,13 +294,18 @@ def _release_process_lock(lock):
             pass
         resource.close()
         return
-    owner = _directory_lock_owner(resource)
-    if owner != (os.getpid(), token):
+    if kind != "msvcrt":
         return
     try:
-        os.remove(os.path.join(resource, "owner.json"))
-        os.rmdir(resource)
-    except OSError:
+        resource.seek(0)
+        msvcrt.locking(resource.fileno(), msvcrt.LK_UNLCK, 1)
+    except _IO_ERRORS:
+        # Closing the handle still releases the OS-owned lock after unlock failure.
+        pass
+    try:
+        resource.close()
+    except _IO_ERRORS:
+        # Catalog operations are fail-soft even if Windows reports close failure.
         pass
 
 

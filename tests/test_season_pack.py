@@ -6,12 +6,29 @@
 import json
 import multiprocessing
 import os
-import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
 from resources.lib import season_pack
 
 from tests.season_pack_process_helper import racing_upsert
+
+
+class _FakeMsvcrt:  # pylint: disable=too-few-public-methods
+    LK_NBLCK = 1
+    LK_UNLCK = 2
+
+    def __init__(self, fail_lock=False, fail_unlock=False):
+        self.fail_lock = fail_lock
+        self.fail_unlock = fail_unlock
+        self.calls = []
+
+    def locking(self, fd, mode, size):
+        self.calls.append((fd, mode, size, os.lseek(fd, 0, os.SEEK_CUR)))
+        if (mode == self.LK_NBLCK and self.fail_lock) or (
+            mode == self.LK_UNLCK and self.fail_unlock
+        ):
+            raise OSError("lock unavailable")
 
 
 def _context(episode=2, **overrides):
@@ -300,126 +317,98 @@ def test_failed_atomic_replace_preserves_existing_catalog_and_fails_soft(
     assert not list(tmp_path.glob("season-pack-*.json"))
 
 
-def test_directory_lock_owner_write_failure_cleans_created_lock(tmp_path, monkeypatch):
+def test_msvcrt_lock_acquires_initialized_byte_and_releases(tmp_path, monkeypatch):
+    fake_msvcrt = _FakeMsvcrt()
     monkeypatch.setattr(season_pack, "fcntl", None)
+    monkeypatch.setattr(season_pack, "msvcrt", fake_msvcrt, raising=False)
+    lock_path = str(tmp_path / "catalog.lock")
+
+    lock = season_pack._acquire_process_lock(lock_path)
+
+    assert lock is not None
+    assert lock[0] == "msvcrt"
+    assert (tmp_path / "catalog.lock").read_bytes() == b"\0"
+    handle = lock[1]
+
+    season_pack._release_process_lock(lock)
+
+    assert handle.closed is True
+    calls = [(mode, size, position) for _fd, mode, size, position in fake_msvcrt.calls]
+    assert calls == [
+        (fake_msvcrt.LK_NBLCK, 1, 0),
+        (fake_msvcrt.LK_UNLCK, 1, 0),
+    ]
+
+
+def test_msvcrt_lock_contention_retries_until_timeout_and_closes(tmp_path, monkeypatch):
+    fake_msvcrt = _FakeMsvcrt(fail_lock=True)
+    monkeypatch.setattr(season_pack, "fcntl", None)
+    monkeypatch.setattr(season_pack, "msvcrt", fake_msvcrt, raising=False)
+    monkeypatch.setattr(season_pack, "_LOCK_TIMEOUT", 0.5)
+    monkeypatch.setattr(season_pack, "_LOCK_RETRY", 0)
+    lock_path = str(tmp_path / "catalog.lock")
+
+    with patch.object(season_pack.time, "monotonic", side_effect=(0.0, 0.0, 1.0)):
+        lock = season_pack._acquire_process_lock(lock_path)
+
+    assert lock is None
+    attempts = [call for call in fake_msvcrt.calls if call[1] == fake_msvcrt.LK_NBLCK]
+    assert len(attempts) == 2
+    with pytest.raises(OSError):
+        os.fstat(attempts[-1][0])
+
+
+def test_msvcrt_unlock_failure_still_closes_handle(tmp_path, monkeypatch):
+    fake_msvcrt = _FakeMsvcrt(fail_unlock=True)
+    monkeypatch.setattr(season_pack, "fcntl", None)
+    monkeypatch.setattr(season_pack, "msvcrt", fake_msvcrt, raising=False)
+    lock = season_pack._acquire_process_lock(str(tmp_path / "catalog.lock"))
+    assert lock is not None
+
+    season_pack._release_process_lock(lock)
+
+    assert lock[1].closed is True
+    assert fake_msvcrt.calls[-1][1] == fake_msvcrt.LK_UNLCK
+
+
+def test_msvcrt_open_failure_returns_none(tmp_path, monkeypatch):
+    fake_msvcrt = _FakeMsvcrt()
+    monkeypatch.setattr(season_pack, "fcntl", None)
+    monkeypatch.setattr(season_pack, "msvcrt", fake_msvcrt, raising=False)
     lock_path = str(tmp_path / "catalog.lock")
 
     with patch("builtins.open", side_effect=OSError("read-only filesystem")):
-        assert season_pack._acquire_process_lock(lock_path) is None
+        lock = season_pack._acquire_process_lock(lock_path)
 
-    assert not os.path.exists(lock_path + ".d")
+    assert lock is None
 
 
-def test_directory_lock_partial_owner_write_cleans_only_new_lock_and_can_retry(
+def test_msvcrt_initialization_failure_closes_and_returns_none(tmp_path, monkeypatch):
+    fake_msvcrt = _FakeMsvcrt()
+    handle = MagicMock()
+    handle.seek.side_effect = OSError("seek failed")
+    monkeypatch.setattr(season_pack, "fcntl", None)
+    monkeypatch.setattr(season_pack, "msvcrt", fake_msvcrt, raising=False)
+
+    with patch("builtins.open", return_value=handle):
+        lock = season_pack._acquire_process_lock(str(tmp_path / "catalog.lock"))
+
+    assert lock is None
+    handle.close.assert_called_once_with()
+
+
+def test_missing_os_lock_primitive_fails_without_directory_artifact(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(season_pack, "fcntl", None)
+    monkeypatch.setattr(season_pack, "msvcrt", None, raising=False)
     lock_path = str(tmp_path / "catalog.lock")
 
-    def partial_write(_owner, handle):
-        handle.write('{"pid":')
-        handle.flush()
-        raise OSError("write interrupted")
-
-    with patch.object(season_pack.json, "dump", side_effect=partial_write):
-        assert season_pack._acquire_process_lock(lock_path) is None
-
-    assert not os.path.exists(lock_path + ".d")
     lock = season_pack._acquire_process_lock(lock_path)
-    assert lock is not None
-    season_pack._release_process_lock(lock)
+
+    assert lock is None
+    assert not os.path.exists(lock_path)
     assert not os.path.exists(lock_path + ".d")
-
-
-def test_directory_lock_reclaims_old_ownerless_lock_and_acquires(tmp_path, monkeypatch):
-    monkeypatch.setattr(season_pack, "fcntl", None)
-    lock_path = str(tmp_path / "catalog.lock")
-    lock_dir = lock_path + ".d"
-    os.mkdir(lock_dir)
-    stale = time.time() - season_pack._STALE_LOCK_SECONDS - 1
-    os.utime(lock_dir, (stale, stale))
-
-    lock = season_pack._acquire_directory_lock(
-        lock_path, time.monotonic() + season_pack._LOCK_TIMEOUT
-    )
-
-    assert lock is not None
-    season_pack._release_process_lock(lock)
-    assert not os.path.exists(lock_dir)
-
-
-def test_directory_lock_reclaims_old_malformed_owner_and_acquires(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(season_pack, "fcntl", None)
-    lock_path = str(tmp_path / "catalog.lock")
-    lock_dir = lock_path + ".d"
-    os.mkdir(lock_dir)
-    owner_path = os.path.join(lock_dir, "owner.json")
-    with open(owner_path, "w", encoding="utf-8") as handle:
-        handle.write("{malformed")
-    stale = time.time() - season_pack._STALE_LOCK_SECONDS - 1
-    os.utime(owner_path, (stale, stale))
-    os.utime(lock_dir, (stale, stale))
-
-    lock = season_pack._acquire_directory_lock(
-        lock_path, time.monotonic() + season_pack._LOCK_TIMEOUT
-    )
-
-    assert lock is not None
-    season_pack._release_process_lock(lock)
-    assert not os.path.exists(lock_dir)
-
-
-def test_directory_lock_preserves_fresh_missing_and_malformed_owners(tmp_path):
-    for suffix, payload in (("missing", None), ("malformed", "{malformed")):
-        lock_dir = str(tmp_path / suffix)
-        os.mkdir(lock_dir)
-        owner_path = os.path.join(lock_dir, "owner.json")
-        if payload is not None:
-            with open(owner_path, "w", encoding="utf-8") as handle:
-                handle.write(payload)
-
-        season_pack._remove_stale_directory_lock(lock_dir)
-
-        assert os.path.isdir(lock_dir)
-        if payload is not None:
-            with open(owner_path, "r", encoding="utf-8") as handle:
-                assert handle.read() == payload
-
-
-def test_directory_lock_preserves_old_valid_live_owner(tmp_path, monkeypatch):
-    lock_dir = str(tmp_path / "live-owner")
-    os.mkdir(lock_dir)
-    owner_path = os.path.join(lock_dir, "owner.json")
-    with open(owner_path, "w", encoding="utf-8") as handle:
-        json.dump({"pid": 123, "token": "live"}, handle)
-    stale = time.time() - season_pack._STALE_LOCK_SECONDS - 1
-    os.utime(owner_path, (stale, stale))
-    os.utime(lock_dir, (stale, stale))
-    monkeypatch.setattr(season_pack, "_pid_is_alive", lambda _pid: True)
-
-    season_pack._remove_stale_directory_lock(lock_dir)
-
-    assert os.path.isdir(lock_dir)
-    with open(owner_path, "r", encoding="utf-8") as handle:
-        assert json.load(handle) == {"pid": 123, "token": "live"}
-
-
-def test_directory_lock_reclaims_old_valid_dead_owner(tmp_path, monkeypatch):
-    lock_dir = str(tmp_path / "dead-owner")
-    os.mkdir(lock_dir)
-    owner_path = os.path.join(lock_dir, "owner.json")
-    with open(owner_path, "w", encoding="utf-8") as handle:
-        json.dump({"pid": 123, "token": "dead"}, handle)
-    stale = time.time() - season_pack._STALE_LOCK_SECONDS - 1
-    os.utime(owner_path, (stale, stale))
-    os.utime(lock_dir, (stale, stale))
-    monkeypatch.setattr(season_pack, "_pid_is_alive", lambda _pid: False)
-
-    season_pack._remove_stale_directory_lock(lock_dir)
-
-    assert not os.path.exists(lock_dir)
 
 
 def test_context_from_params_safely_converts_numeric_fields_and_overrides():
