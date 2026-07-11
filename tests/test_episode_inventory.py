@@ -221,6 +221,34 @@ def test_leading_auxiliary_marker_does_not_create_pack_episode():
     assert inventory.pack_season is None
 
 
+def test_sample_descriptive_prefix_remains_auxiliary():
+    inventory = build_video_inventory(
+        [
+            ("/pack/sample.Show.Name.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
+def test_featurette_descriptive_prefix_remains_auxiliary():
+    inventory = build_video_inventory(
+        [
+            ("/pack/featurette.Behind.Scenes.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
 def test_single_leading_trailer_marker_remains_auxiliary():
     inventory = build_video_inventory(
         [

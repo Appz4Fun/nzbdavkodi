@@ -130,7 +130,9 @@ def _classify_leading_auxiliary(files):
         marker, has_title_prefix = context
         candidates[index] = marker
         groups.setdefault(marker, []).append(index)
-        if has_title_prefix or _release_folder_matches_marker(item.path, marker):
+        if marker in _AMBIGUOUS_LEADING_MARKERS and (
+            has_title_prefix or _release_folder_matches_marker(item.path, marker)
+        ):
             main_indexes.add(index)
 
     for marker, indexes in groups.items():
