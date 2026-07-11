@@ -74,6 +74,31 @@ def test_trailer_in_show_title_remains_main_pack_content():
     assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
 
 
+def test_trailer_park_boys_single_episode_beats_generic_video():
+    inventory = build_video_inventory(
+        [
+            ("/p/Trailer.Park.Boys.S01E01.mkv", 100),
+            ("/p/video.mkv", 900),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/p/Trailer.Park.Boys.S01E01.mkv"
+
+
+def test_trailer_park_boys_mixed_seasons_selects_exact_episode():
+    inventory = build_video_inventory(
+        [
+            ("/p/Trailer.Park.Boys.S01E01.mkv", 100),
+            ("/p/Trailer.Park.Boys.S02E01.mkv", 200),
+        ],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/p/Trailer.Park.Boys.S01E01.mkv"
+    assert inventory.pack_season is None
+
+
 def test_extras_in_show_title_remains_main_pack_content():
     inventory = build_video_inventory(
         [
@@ -186,6 +211,20 @@ def test_leading_auxiliary_marker_does_not_create_pack_episode():
     inventory = build_video_inventory(
         [
             ("/pack/sample.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
+def test_single_leading_trailer_marker_remains_auxiliary():
+    inventory = build_video_inventory(
+        [
+            ("/pack/trailer.S01E01.mkv", 100),
             ("/pack/Show.S01E02.mkv", 200),
         ],
         requested=(1, 2),

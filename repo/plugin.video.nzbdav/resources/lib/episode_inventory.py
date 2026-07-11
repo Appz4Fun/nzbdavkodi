@@ -81,15 +81,24 @@ def _largest(files):
     return max(files, key=lambda item: item.size) if files else None
 
 
-def _leading_auxiliary_marker(path):
+def _leading_auxiliary_context(path):
+    """Return ``(marker, has_title_prefix)`` for a parseable leading marker.
+
+    Prefixes are parsed incrementally by the authoritative episode parser. Two
+    tokens before the first recognized episode are conservative title evidence
+    (``Trailer.Park.Boys.S01E01``); a direct marker remains auxiliary.
+    """
     name = os.path.basename(path)
     match = _AUXILIARY_RE.match(name)
     if not match:
         return None
     remainder = name[match.end() :].lstrip(". _-")
-    if not _resolve_file_episode_tags(remainder, ""):
-        return None
-    return match.group(1).casefold()
+    parts = tuple(item for item in re.split(r"[. _-]+", remainder) if item)
+    for count in range(1, len(parts) + 1):
+        probe = ".".join(parts[:count])
+        if _resolve_file_episode_tags(probe, ""):
+            return (match.group(1).casefold(), count >= 3)
+    return None
 
 
 def _release_folder_matches_marker(path, marker):
@@ -104,13 +113,8 @@ def _release_folder_matches_marker(path, marker):
 def _leading_group_is_show(files, indexes, marker):
     if marker not in _AMBIGUOUS_LEADING_MARKERS or len(indexes) < 2:
         return False
-    seasons = {
-        season for index in indexes for season, _episode in files[index].episode_tags
-    }
-    episodes = {
-        episode for index in indexes for _season, episode in files[index].episode_tags
-    }
-    return len(seasons) == 1 and len(episodes) >= 2
+    episode_tags = {tag for index in indexes for tag in files[index].episode_tags}
+    return len(episode_tags) >= 2
 
 
 def _classify_leading_auxiliary(files):
@@ -120,12 +124,13 @@ def _classify_leading_auxiliary(files):
     for index, item in enumerate(files):
         if item.auxiliary:
             continue
-        marker = _leading_auxiliary_marker(item.path)
-        if not marker:
+        context = _leading_auxiliary_context(item.path)
+        if not context:
             continue
+        marker, has_title_prefix = context
         candidates[index] = marker
         groups.setdefault(marker, []).append(index)
-        if _release_folder_matches_marker(item.path, marker):
+        if has_title_prefix or _release_folder_matches_marker(item.path, marker):
             main_indexes.add(index)
 
     for marker, indexes in groups.items():
