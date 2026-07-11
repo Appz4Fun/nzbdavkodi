@@ -120,6 +120,7 @@ def _find_completed_video_stream_with_rechecks(
     title_hint=None,
     min_video_size=0,
     requested_episode=None,
+    episode_context=None,
 ):
     """Return a completed WebDAV stream, briefly rechecking symlink visibility.
 
@@ -137,7 +138,9 @@ def _find_completed_video_stream_with_rechecks(
         "title_hint": title_hint,
         "min_video_size": min_video_size,
     }
-    if requested_episode is not None:
+    if episode_context is not None:
+        discovery_kwargs["episode_context"] = episode_context
+    elif requested_episode is not None:
         discovery_kwargs["requested_episode"] = requested_episode
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(
         webdav_folder, **discovery_kwargs
@@ -384,6 +387,7 @@ def _handle_history_result(  # pylint: disable=too-many-arguments
     download_size=None,
     *,
     requested_episode=None,
+    episode_context=None,
 ):
     """Handle history-based completion and failure states.
 
@@ -415,10 +419,11 @@ def _handle_history_result(  # pylint: disable=too-many-arguments
         settings_getter=settings_getter,
         download_size=download_size,
         requested_episode=requested_episode,
+        episode_context=episode_context,
     )
 
 
-def _handle_completed_history(
+def _handle_completed_history(  # pylint: disable=too-many-arguments
     history,
     title,
     no_video_retries,
@@ -427,6 +432,8 @@ def _handle_completed_history(
     settings_getter=None,
     download_size=None,
     requested_episode=None,
+    *,
+    episode_context=None,
 ):
     """Handle a Completed history row: discover, stub/body-probe, or retry.
 
@@ -444,6 +451,7 @@ def _handle_completed_history(
         settings_getter,
         download_size,
         requested_episode=requested_episode,
+        episode_context=episode_context,
     )
     if outcome == "stub":
         return False, None, None, no_video_retries
@@ -472,6 +480,7 @@ def _discover_completed_video(
     settings_getter,
     download_size,
     requested_episode=None,
+    episode_context=None,
 ):
     """Run WebDAV discovery for a completed folder, returning the stream tuple."""
     # Thread the advertised-size floor into discovery so a root-level job-start
@@ -486,7 +495,9 @@ def _discover_completed_video(
         "title_hint": title,
         "min_video_size": min_video_size,
     }
-    if requested_episode is not None:
+    if episode_context is not None:
+        kwargs["episode_context"] = episode_context
+    elif requested_episode is not None:
         kwargs["requested_episode"] = requested_episode
     return _resolver._find_completed_video_stream_with_rechecks(webdav_folder, **kwargs)
 
@@ -498,6 +509,7 @@ def _classify_completed_video(
     settings_getter,
     download_size,
     requested_episode=None,
+    episode_context=None,
 ):
     """Discover the completed video and classify it for the poll loop.
 
@@ -513,6 +525,7 @@ def _classify_completed_video(
         settings_getter,
         download_size,
         requested_episode=requested_episode,
+        episode_context=episode_context,
     )
     if not video_path:
         return "missing", None, None

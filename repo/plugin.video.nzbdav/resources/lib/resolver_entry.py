@@ -14,7 +14,6 @@ moved name is re-exported from ``resolver``.
 """
 
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
-from resources.lib.season_pack import requested_episode
 
 
 class _ResolveSideEffects:
@@ -36,8 +35,11 @@ class _ResolveSideEffects:
         self._nzb_url = nzb_url
         self._dead = dead
         self._settings_getter = settings_getter
-        self.requested_episode = requested_episode(
-            (params or {}).get("_episode_context") if isinstance(params, dict) else None
+        episode_context = (
+            params.get("_episode_context") if isinstance(params, dict) else None
+        )
+        self.episode_context = (
+            dict(episode_context) if isinstance(episode_context, dict) else None
         )
         self.cleanup_state = None
         self.fallback_state = None
@@ -55,7 +57,7 @@ class _ResolveSideEffects:
             selected_indexer=selected_indexer,
             rejected_completed_ids=rejected_completed_ids,
             dead=self._dead,
-            requested_episode=self.requested_episode,
+            episode_context=self.episode_context,
         )
 
     def start_fallback_after_primary(self, _nzo_id):
@@ -70,6 +72,8 @@ class _ResolveSideEffects:
                 "dead": self._dead,
                 "primary_nzb_url": self._nzb_url,
             }
+            if self.episode_context is not None:
+                kwargs["episode_context"] = self.episode_context
             kwargs.update(_resolver._settings_getter_kwargs(self._settings_getter))
             self.fallback_state = _resolver._start_fallback_submit_worker(
                 self._candidates, **kwargs
@@ -89,8 +93,8 @@ def _resolve_acquire_stream(nzb_url, title, params, rejected_completed_ids, effe
         "on_existing_completed": effects.start_cleanup_once,
         "rejected_completed_ids": rejected_completed_ids,
     }
-    if effects.requested_episode is not None:
-        picker_kwargs["requested_episode"] = effects.requested_episode
+    if effects.episode_context is not None:
+        picker_kwargs["episode_context"] = effects.episode_context
     completed_stream = _resolver._picker_completed_stream(
         title, params, **picker_kwargs
     )
@@ -147,8 +151,8 @@ def _resolve_and_play_acquire_stream(
         "settings_getter": settings_getter,
         "rejected_completed_ids": rejected_completed_ids,
     }
-    if effects.requested_episode is not None:
-        picker_kwargs["requested_episode"] = effects.requested_episode
+    if effects.episode_context is not None:
+        picker_kwargs["episode_context"] = effects.episode_context
     completed_stream = _resolver._picker_completed_stream(
         title, resolve_params, **picker_kwargs
     )

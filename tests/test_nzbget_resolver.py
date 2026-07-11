@@ -748,7 +748,15 @@ def test_resolve_episode_threads_exact_request_to_smb_selection():
             {
                 "nzburl": "http://i/pack.nzb",
                 "title": "Spider-Noir.S01.2160p",
-                "_episode_context": {"season": 1, "episode": 1},
+                "_episode_context": {
+                    "type": "episode",
+                    "title": "Spider-Noir",
+                    "imdb": "tt1234567",
+                    "tvdb": "451234",
+                    "tmdb_id": "987",
+                    "season": 1,
+                    "episode": 1,
+                },
             },
             settings_getter=_full_settings(),
         )
@@ -776,6 +784,66 @@ def test_resolve_movie_leaves_smb_selection_without_episode_request():
         )
 
     assert resolve_smb.call_args.kwargs.get("requested_episode") is None
+
+
+def test_nzbget_completion_preserves_full_context_until_smb_boundary():
+    from types import SimpleNamespace
+
+    from resources.lib.nzbget_resolver import _play_completed_download
+
+    episode_context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt1234567",
+        "tvdb": "451234",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    ctx = SimpleNamespace(
+        smb_root="smb://host/completed",
+        category="tv",
+        completed_base="/downloads",
+        dialog=None,
+        interval=1,
+        on_failure=MagicMock(),
+        on_success=MagicMock(),
+        dupe=None,
+        episode_context=episode_context,
+    )
+    with patch("resources.lib.nzbget_resolver.record_download"), patch(
+        "resources.lib.nzbget_resolver._resolve_completed_smb",
+        return_value="smb://host/completed/Spider-Noir.S01E01.mkv",
+    ) as resolve_completed:
+        _play_completed_download(ctx, "/downloads/show", "pack", None, None)
+
+    assert resolve_completed.call_args.kwargs["episode_context"] == episode_context
+
+
+def test_smb_boundary_converts_full_context_to_requested_episode():
+    from resources.lib.nzbget_resolver import _resolve_completed_smb
+
+    context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "season": 1,
+        "episode": 1,
+    }
+    with patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value="smb://host/completed/Spider-Noir.S01E01.mkv",
+    ) as resolve_smb:
+        _resolve_completed_smb(
+            "/downloads/show",
+            "smb://host/completed",
+            "tv",
+            "/downloads",
+            None,
+            1,
+            episode_context=context,
+        )
+
+    assert resolve_smb.call_args.kwargs["requested_episode"] == (1, 1)
 
 
 def test_resolve_success_applies_resume_offset_to_listitem():

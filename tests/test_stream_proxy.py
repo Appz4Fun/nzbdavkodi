@@ -16026,6 +16026,82 @@ def test_standby_refresh_threads_source_title_as_find_video_file_hint():
     )
 
 
+def test_standby_refresh_uses_full_episode_context_for_exact_webdav_selection():
+    handler = _make_handler()
+    episode_context = {
+        "type": "episode",
+        "title": "The Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 3,
+        "episode": 7,
+    }
+    source = {
+        "nzo_id": "nzo-episode",
+        "title": "The.Show.S03.1080p.WEB-DL.x264-GRP",
+        "episode_context": episode_context,
+        "stream_url": "",
+        "failed": False,
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={"status": "Completed", "storage": "/mnt/data/show"},
+    ), patch(
+        "resources.lib.webdav.find_video_stream_for_folder",
+        return_value=("/content/show/The.Show.S03E07.mkv", "http://x/e07", {}),
+    ) as find_stream:
+        path = handler._resolve_standby_video_path(source, "nzo-episode")
+
+    assert path.endswith("S03E07.mkv")
+    assert find_stream.call_args.kwargs["requested_episode"] == (3, 7)
+
+
+def test_fallback_source_normalization_preserves_full_episode_context():
+    from resources.lib.stream_proxy import _normalize_fallback_source
+
+    context = {
+        "type": "episode",
+        "title": "The Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 3,
+        "episode": 7,
+    }
+
+    normalized = _normalize_fallback_source(
+        {"nzo_id": "nzo-episode", "episode_context": context}
+    )
+
+    assert normalized["episode_context"] == context
+    assert normalized["episode_context"] is not context
+
+
+def test_standby_movie_context_with_numeric_fields_keeps_legacy_selection():
+    handler = _make_handler()
+    source = {
+        "nzo_id": "nzo-movie",
+        "title": "The.Movie.2026",
+        "episode_context": {"type": "movie", "season": 1, "episode": 7},
+    }
+
+    with patch(
+        "resources.lib.nzbdav_api.get_job_history",
+        return_value={"status": "Completed", "storage": "/mnt/data/movie"},
+    ), patch(
+        "resources.lib.webdav.find_video_file", return_value="/content/movie/main.mkv"
+    ) as find_video, patch(
+        "resources.lib.webdav.find_video_stream_for_folder"
+    ) as find_stream:
+        path = handler._resolve_standby_video_path(source, "nzo-movie")
+
+    assert path.endswith("main.mkv")
+    find_video.assert_called_once()
+    find_stream.assert_not_called()
+
+
 def test_standby_refresh_passes_none_hint_when_source_title_absent():
     """A source with no title must pass title_hint=None (largest-wins, f12b3c3)."""
     handler = _make_handler()

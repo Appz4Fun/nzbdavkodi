@@ -273,9 +273,21 @@ def test_context_from_params_safely_converts_numeric_fields_and_overrides():
 
 
 def test_requested_episode_normalizes_context_and_rejects_incomplete_values():
-    assert season_pack.requested_episode({"season": "1", "episode": "5"}) == (1, 5)
-    assert season_pack.requested_episode({"season": "1", "episode": ""}) is None
-    assert season_pack.requested_episode({"season": -1, "episode": 5}) is None
+    assert season_pack.requested_episode(
+        {"type": "episode", "season": "1", "episode": "5"}
+    ) == (1, 5)
+    assert (
+        season_pack.requested_episode({"type": "episode", "season": "1", "episode": ""})
+        is None
+    )
+    assert (
+        season_pack.requested_episode({"type": "episode", "season": -1, "episode": 5})
+        is None
+    )
+    assert (
+        season_pack.requested_episode({"type": "movie", "season": 1, "episode": 5})
+        is None
+    )
     assert season_pack.requested_episode(None) is None
 
 

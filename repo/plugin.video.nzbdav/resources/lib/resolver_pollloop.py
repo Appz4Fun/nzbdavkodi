@@ -32,6 +32,7 @@ class PollContext(NamedTuple):
     download_size: object = None
     dead: object = None
     requested_episode: object = None
+    episode_context: object = None
 
 
 def _record_download_soft(title, download_pubdate, download_size):
@@ -150,7 +151,9 @@ def _poll_until_ready(
         rejected_completed_ids=poll_ctx.rejected_completed_ids,
         download_size=poll_ctx.download_size,
     )
-    if poll_ctx.requested_episode is not None:
+    if poll_ctx.episode_context is not None:
+        existing_kwargs["episode_context"] = poll_ctx.episode_context
+    elif poll_ctx.requested_episode is not None:
         existing_kwargs["requested_episode"] = poll_ctx.requested_episode
     existing_stream = _resolver._existing_completed_stream(title, **existing_kwargs)
     if existing_stream is not None:
@@ -216,7 +219,9 @@ def _poll_until_ready(
             "modal_failures": poll_ctx.settings_getter is None,
             "download_size": poll_ctx.download_size,
         }
-        if poll_ctx.requested_episode is not None:
+        if poll_ctx.episode_context is not None:
+            history_kwargs["episode_context"] = poll_ctx.episode_context
+        elif poll_ctx.requested_episode is not None:
             history_kwargs["requested_episode"] = poll_ctx.requested_episode
         should_stop, stream_url, stream_headers, no_video_retries = (
             _resolver._handle_history_result(

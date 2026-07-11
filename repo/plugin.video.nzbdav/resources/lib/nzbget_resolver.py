@@ -434,7 +434,7 @@ def _resolve_failure(handle, message=None):
     xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
-def _reuse_completed_job(
+def _reuse_completed_job(  # pylint: disable=too-many-arguments
     completed_job,
     smb_root,
     category,
@@ -443,6 +443,8 @@ def _reuse_completed_job(
     interval,
     requested_episode=None,
     on_inventory=None,
+    *,
+    episode_context=None,
 ):
     """Probe an already-completed history match's SMB folder.
 
@@ -457,6 +459,8 @@ def _reuse_completed_job(
     )
     if not reuse_folder:
         return None
+    if requested_episode is None:
+        requested_episode = _requested_episode(episode_context)
     return resolve_smb_video(
         reuse_folder,
         dialog=dialog,
@@ -508,7 +512,7 @@ def _handle_poll_failure(
     return False, False
 
 
-def _resolve_completed_smb(
+def _resolve_completed_smb(  # pylint: disable=too-many-arguments
     dest_dir,
     smb_root,
     category,
@@ -517,6 +521,8 @@ def _resolve_completed_smb(
     interval,
     requested_episode=None,
     on_inventory=None,
+    *,
+    episode_context=None,
 ):
     """Map a completed job's DestDir onto SMB and find the playable video.
 
@@ -527,6 +533,8 @@ def _resolve_completed_smb(
     smb_folder = nzbget_smb_target(smb_root, dest_dir, category, completed_base)
     if not smb_folder:
         return None
+    if requested_episode is None:
+        requested_episode = _requested_episode(episode_context)
     return resolve_smb_video(
         smb_folder,
         dialog=dialog,
@@ -559,7 +567,7 @@ class _SubmitCtx:  # pylint: disable=too-few-public-methods
         # NZBGet Smart-Duplicates submission (#372): the picker-computed
         # {"key","pick_score","backups"} dict, threaded from the resolve params.
         self.dupe = None
-        self.requested_episode = None
+        self.episode_context = None
         # Set on user-cancel so the background backup worker stops submitting
         # more duplicates (#372 round 2).
         self.cancel_event = threading.Event()
@@ -586,7 +594,7 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
         ctx.completed_base,
         ctx.dialog,
         ctx.interval,
-        requested_episode=getattr(ctx, "requested_episode", None),
+        episode_context=getattr(ctx, "episode_context", None),
     )
     if reuse_url:
         ctx.on_success(reuse_url)
@@ -752,7 +760,7 @@ def _play_completed_download(ctx, dest_dir, title, download_pubdate, download_si
         ctx.completed_base,
         ctx.dialog,
         ctx.interval,
-        requested_episode=getattr(ctx, "requested_episode", None),
+        episode_context=getattr(ctx, "episode_context", None),
     )
     if not video_url:
         ctx.on_failure(_string(30223))
@@ -822,7 +830,9 @@ def _run_nzbget_backend(  # pylint: disable=too-many-arguments
             on_failure,
             dupe=dupe,
         )
-        ctx.requested_episode = _requested_episode(episode_context)
+        ctx.episode_context = (
+            dict(episode_context) if isinstance(episode_context, dict) else None
+        )
         leave_job = _reuse_or_submit(
             ctx, nzb_url, title, completed_job, download_identity
         )

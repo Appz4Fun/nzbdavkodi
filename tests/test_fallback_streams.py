@@ -3234,6 +3234,23 @@ def test_build_prepare_fallback_payload_preserves_completed_and_standby_jobs():
     ]
 
 
+def test_build_prepare_fallback_payload_preserves_episode_context():
+    context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt1234567",
+        "tvdb": "451234",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    payload = build_prepare_fallback_payload(
+        [{"title": "pack", "nzo_id": "nzo-pack", "episode_context": context}]
+    )
+
+    assert payload[0]["episode_context"] == context
+
+
 def test_fingerprint_ranges_uses_100_deterministic_4096_byte_samples_for_large_files():
     """Fingerprint count was raised 20 → 100 to give the cutover a denser
     byte-equivalence proof per fallback (still 4096 bytes per range)."""

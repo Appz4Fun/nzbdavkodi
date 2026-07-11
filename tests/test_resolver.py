@@ -536,9 +536,71 @@ def test_completed_job_stream_threads_explicit_episode_request(mock_find_stream)
     assert mock_find_stream.call_args.kwargs["requested_episode"] == (1, 1)
 
 
+@patch("resources.lib.resolver._find_video_stream_for_folder")
+def test_completed_job_stream_preserves_full_episode_context(mock_find_stream):
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    mock_find_stream.return_value = (
+        "/content/Show/Show.S01E01.mkv",
+        "http://webdav/Show.S01E01.mkv",
+        {},
+    )
+    job = {
+        "status": "Completed",
+        "name": "Show.S01.2160p.WEB-DL",
+        "storage": "/mnt/data/completed-symlinks/tv/Show",
+    }
+
+    with patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ):
+        _completed_job_stream(
+            "Show.S01.2160p.WEB-DL", job, episode_context=episode_context
+        )
+
+    assert mock_find_stream.call_args.kwargs["episode_context"] == episode_context
+
+
+@patch("resources.lib.resolver_completed._delegated_find_video_stream_for_folder")
+def test_webdav_boundary_converts_full_context_to_requested_episode(mock_delegated):
+    from resources.lib.resolver import _find_video_stream_for_folder
+
+    mock_delegated.return_value = (
+        "/content/Show/Show.S01E01.mkv",
+        "http://webdav/Show.S01E01.mkv",
+        {},
+    )
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+
+    _find_video_stream_for_folder("/content/Show/", episode_context=episode_context)
+
+    assert mock_delegated.call_args.kwargs["requested_episode"] == (1, 1)
+
+
 def test_resolve_and_play_episode_threads_request_through_poll_context():
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
     params = {
-        "_episode_context": {"season": 1, "episode": 1},
+        "_episode_context": episode_context,
         "_completed_job_lookup_done": True,
     }
     with patch("resources.lib.resolver._nzbget_enabled", return_value=False), patch(
@@ -551,9 +613,39 @@ def test_resolve_and_play_episode_threads_request_through_poll_context():
     ):
         resolve_and_play("http://i/pack.nzb", "Show.S01.2160p", params=params)
 
-    assert picker.call_args.kwargs["requested_episode"] == (1, 1)
+    assert picker.call_args.kwargs["episode_context"] == episode_context
     poll_ctx = submit_poll.call_args.args[-1]
-    assert poll_ctx.requested_episode == (1, 1)
+    assert poll_ctx.episode_context == episode_context
+
+
+def test_resolve_side_effects_threads_full_context_into_fallback_worker():
+    from resources.lib.resolver_entry import _ResolveSideEffects
+
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    effects = _ResolveSideEffects(
+        {"_episode_context": episode_context},
+        [],
+        None,
+        "http://i/primary.nzb",
+        MagicMock(),
+    )
+
+    with patch("resources.lib.resolver._start_playback_state_cleanup"), patch(
+        "resources.lib.resolver._get_fallback_submit_delay_seconds", return_value=0
+    ), patch(
+        "resources.lib.resolver._start_fallback_submit_worker", return_value={}
+    ) as start:
+        effects.start_fallback_after_primary("nzo-primary")
+
+    assert start.call_args.kwargs["episode_context"] == episode_context
 
 
 @patch("resources.lib.resolver._handle_history_result")
@@ -574,16 +666,25 @@ def test_poll_until_ready_keeps_episode_request_for_completed_fallback(
     mock_xbmc.Monitor.return_value = _make_monitor()
     mock_history.return_value = (True, None, None, 0)
 
+    episode_context = {
+        "type": "episode",
+        "title": "Show",
+        "imdb": "tt1234567",
+        "tvdb": "7654",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
     _poll_until_ready(
         "http://i/pack.nzb",
         "Show.S01.2160p",
         _make_dialog(),
         1,
         60,
-        poll_ctx=PollContext(requested_episode=(1, 1)),
+        poll_ctx=PollContext(episode_context=episode_context),
     )
 
-    assert mock_history.call_args.kwargs["requested_episode"] == (1, 1)
+    assert mock_history.call_args.kwargs["episode_context"] == episode_context
 
 
 @patch("resources.lib.resolver._find_video_stream_for_folder")
@@ -4848,6 +4949,32 @@ def test_submit_fallback_candidates_batches_existing_job_probes(
         "SABnzbd_nzo_submitted_a",
         "SABnzbd_nzo_submitted_b",
     ]
+
+
+@patch("resources.lib.resolver.find_queued_by_names", return_value={})
+@patch("resources.lib.resolver.find_completed_by_names", return_value={})
+@patch("resources.lib.resolver.submit_nzb", return_value=("nzo-fallback", None))
+def test_fallback_job_records_preserve_full_episode_context(
+    _mock_submit, _mock_completed, _mock_queued
+):
+    from resources.lib.resolver import _submit_fallback_candidates
+
+    episode_context = {
+        "type": "episode",
+        "title": "Spider-Noir",
+        "imdb": "tt1234567",
+        "tvdb": "451234",
+        "tmdb_id": "987",
+        "season": 1,
+        "episode": 1,
+    }
+    jobs = _submit_fallback_candidates(
+        [{"title": "Spider-Noir.S01", "link": "http://i/fallback.nzb"}],
+        _make_monitor(),
+        episode_context=episode_context,
+    )
+
+    assert jobs[0]["episode_context"] == episode_context
 
 
 @patch("resources.lib.resolver.find_queued_by_names", return_value={})

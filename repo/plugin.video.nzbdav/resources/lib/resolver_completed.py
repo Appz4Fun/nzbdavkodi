@@ -147,6 +147,7 @@ def _find_video_stream_for_folder(
     title_hint=None,
     min_video_size=0,
     requested_episode=None,
+    episode_context=None,
 ):
     """Return video path, URL, and headers for a completed WebDAV folder.
 
@@ -162,6 +163,10 @@ def _find_video_stream_for_folder(
     rather than being returned on every poll (#282 follow-up D). ``0`` (default)
     disables the floor, so the unknown-size path is unchanged.
     """
+    if requested_episode is None and episode_context is not None:
+        from resources.lib.season_pack import requested_episode as _episode_tuple
+
+        requested_episode = _episode_tuple(episode_context)
     delegated = _delegated_find_video_stream_for_folder(
         webdav_folder,
         settings_getter,
@@ -246,6 +251,7 @@ def _completed_job_stream(
     rejected_completed_ids=None,
     download_size=None,
     requested_episode=None,
+    episode_context=None,
 ):
     """Return a WebDAV stream URL from a completed nzbdav history row.
 
@@ -274,7 +280,9 @@ def _completed_job_stream(
         "title_hint": title,
         "min_video_size": min_video_size,
     }
-    if requested_episode is not None:
+    if episode_context is not None:
+        discovery_kwargs["episode_context"] = episode_context
+    elif requested_episode is not None:
         discovery_kwargs["requested_episode"] = requested_episode
     video_path, stream_url, stream_headers = _resolver._find_video_stream_for_folder(
         webdav_folder, **discovery_kwargs
@@ -343,7 +351,7 @@ def _completed_job_video_rejected(
     return False
 
 
-def _existing_completed_stream(
+def _existing_completed_stream(  # pylint: disable=too-many-arguments
     title,
     on_existing_completed=None,
     completed_job_hint=None,
@@ -352,6 +360,8 @@ def _existing_completed_stream(
     rejected_completed_ids=None,
     download_size=None,
     requested_episode=None,
+    *,
+    episode_context=None,
 ):
     """Return an already-downloaded stream URL when the title exists.
 
@@ -366,7 +376,9 @@ def _existing_completed_stream(
         "rejected_completed_ids": rejected_completed_ids,
         "download_size": download_size,
     }
-    if requested_episode is not None:
+    if episode_context is not None:
+        stream_kwargs["episode_context"] = episode_context
+    elif requested_episode is not None:
         stream_kwargs["requested_episode"] = requested_episode
     hinted_stream = _completed_job_stream(title, completed_job_hint, **stream_kwargs)
     if hinted_stream is not None:
@@ -388,6 +400,7 @@ def _picker_completed_stream(
     settings_getter=None,
     rejected_completed_ids=None,
     requested_episode=None,
+    episode_context=None,
 ):
     """Return a picker-provided completed stream before opening progress UI.
 
@@ -414,7 +427,9 @@ def _picker_completed_stream(
         # submit/poll paths do.
         "download_size": params.get("_download_size"),
     }
-    if requested_episode is not None:
+    if episode_context is not None:
+        kwargs["episode_context"] = episode_context
+    elif requested_episode is not None:
         kwargs["requested_episode"] = requested_episode
     return _resolver._existing_completed_stream(title, **kwargs)
 

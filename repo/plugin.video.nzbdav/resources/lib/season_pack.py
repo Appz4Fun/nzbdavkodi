@@ -287,7 +287,7 @@ def context_from_params(params, title=None, season=None, episode=None):
 
 def requested_episode(context):
     """Return a normalized ``(season, episode)`` tuple, or ``None``."""
-    if not isinstance(context, dict):
+    if not isinstance(context, dict) or context.get("type") != "episode":
         return None
     season = _number(context.get("season"))
     episode = _number(context.get("episode"))
