@@ -317,7 +317,7 @@ def _completed_job_stream(
             "nzbdav",
             completed_job.get("nzo_id"),
             completed_job.get("name") or title,
-            webdav_folder,
+            completed_job.get("storage"),
             episode_context,
             inventories[-1],
         )

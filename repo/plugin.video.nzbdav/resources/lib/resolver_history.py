@@ -469,7 +469,7 @@ def _handle_completed_history(  # pylint: disable=too-many-arguments
                 "nzbdav",
                 history.get("nzo_id"),
                 history.get("name") or title,
-                webdav_folder,
+                storage,
                 episode_context,
                 inventories[-1],
             )

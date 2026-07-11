@@ -309,6 +309,47 @@ def test_reuse_completed_job_forwards_episode_and_inventory_callback():
     assert resolve.call_args.kwargs["on_inventory"] is callback
 
 
+def test_reuse_completed_job_records_backend_native_dest_dir():
+    from resources.lib.episode_inventory import build_video_inventory
+    from resources.lib.nzbget_resolver import _reuse_completed_job
+
+    context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [("smb://host/Show.S01E01.mkv", 1), ("smb://host/Show.S01E02.mkv", 2)],
+        requested=(1, 1),
+    )
+    completed = {
+        "nzbid": 77,
+        "name": "Show.S01",
+        "dest_dir": "/downloads/tv/Show.S01",
+    }
+
+    def resolve(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "smb://host/Show.S01E01.mkv"
+
+    with patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video", side_effect=resolve
+    ), patch("resources.lib.season_pack_recording.season_pack.upsert") as upsert:
+        result = _reuse_completed_job(
+            completed,
+            "smb://host/completed",
+            "tv",
+            "/downloads",
+            None,
+            1,
+            episode_context=context,
+        )
+
+    assert result.endswith("Show.S01E01.mkv")
+    assert upsert.call_args.args[0]["folder"] == completed["dest_dir"]
+
+
 def test_resolve_smb_video_descends_into_subdirectory():
     # Common archive layout: the release folder holds only a nested
     # subdirectory, and the video lives inside it. The resolver must descend
@@ -852,7 +893,7 @@ def test_nzbget_completion_preserves_full_context_until_smb_boundary():
     assert resolve_completed.call_args.kwargs["episode_context"] == episode_context
 
 
-def test_nzbget_completion_records_exact_nzbid_and_mapped_smb_folder():
+def test_nzbget_completion_records_exact_nzbid_and_backend_native_folder():
     from types import SimpleNamespace
 
     from resources.lib.episode_inventory import build_video_inventory
@@ -910,7 +951,7 @@ def test_nzbget_completion_records_exact_nzbid_and_mapped_smb_folder():
         "42",
         "same name",
     )
-    assert record["folder"] == "smb://host/completed/tv/Spider"
+    assert record["folder"] == "/downloads/tv/Spider"
     ctx.on_success.assert_called_once()
 
 

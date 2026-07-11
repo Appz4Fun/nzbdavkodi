@@ -750,7 +750,7 @@ def test_completed_history_records_pack_under_exact_history_nzo_id():
         "SABnzbd_nzo_exact",
         "Spider-Noir.S01.2160p",
     )
-    assert record["folder"] == "/content/tv/exact/"
+    assert record["folder"] == history["storage"]
 
 
 def test_completed_history_catalog_write_failure_does_not_block_playback():
@@ -952,6 +952,46 @@ def test_existing_completed_body_rejection_does_not_record_discovered_inventory(
 
     assert stream is None
     upsert.assert_not_called()
+
+
+def test_existing_completed_records_backend_native_storage_after_validation():
+    from resources.lib.episode_inventory import build_video_inventory
+
+    context = {
+        "type": "episode",
+        "title": "Show",
+        "season": 1,
+        "episode": 1,
+    }
+    inventory = build_video_inventory(
+        [("/p/Show.S01E01.mkv", 1), ("/p/Show.S01E02.mkv", 2)],
+        requested=(1, 1),
+    )
+    completed = {
+        "status": "Completed",
+        "storage": "/mnt/nzbdav/completed-symlinks/tv/pack",
+        "name": "Show.S01",
+        "nzo_id": "exact",
+    }
+
+    def discover(_folder, **kwargs):
+        kwargs["on_inventory"](inventory)
+        return "/p/Show.S01E01.mkv", "http://webdav/p/Show.S01E01.mkv", {}
+
+    with patch(
+        "resources.lib.resolver._find_video_stream_for_folder",
+        side_effect=discover,
+    ), patch(
+        "resources.lib.resolver._discovered_video_is_stub", return_value=False
+    ), patch(
+        "resources.lib.resolver._completed_stream_body_available", return_value=True
+    ), patch(
+        "resources.lib.season_pack_recording.season_pack.upsert"
+    ) as upsert:
+        stream = _completed_job_stream("Show.S01", completed, episode_context=context)
+
+    assert stream is not None
+    assert upsert.call_args.args[0]["folder"] == completed["storage"]
 
 
 @patch("resources.lib.resolver._find_video_stream_for_folder")

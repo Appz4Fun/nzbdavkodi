@@ -479,7 +479,7 @@ def _reuse_completed_job(  # pylint: disable=too-many-arguments
             "nzbget",
             completed_job.get("nzbid"),
             completed_job.get("name", ""),
-            reuse_folder,
+            completed_job.get("dest_dir"),
             episode_context,
         )
     return resolve_smb_video(
@@ -564,7 +564,7 @@ def _resolve_completed_smb(  # pylint: disable=too-many-arguments
             "nzbget",
             catalog_job.get("job_id"),
             catalog_job.get("job_name", ""),
-            smb_folder,
+            catalog_job.get("folder"),
             episode_context,
         )
     return resolve_smb_video(
@@ -807,7 +807,11 @@ def _play_completed_download(
         ctx.dialog,
         ctx.interval,
         episode_context=getattr(ctx, "episode_context", None),
-        catalog_job={"job_id": job_id, "job_name": job_name or title},
+        catalog_job={
+            "job_id": job_id,
+            "job_name": job_name or title,
+            "folder": dest_dir,
+        },
     )
     if not video_url:
         ctx.on_failure(_string(30223))
