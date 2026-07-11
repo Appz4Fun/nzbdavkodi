@@ -19,12 +19,22 @@ def test_named_wrong_episode_fails_closed_but_no_context_keeps_largest():
 
 
 def test_no_context_keeps_largest_even_when_it_is_auxiliary():
-    rows = [("/pack/movie.mkv", 800), ("/pack/movie.sample.mkv", 900)]
+    rows = [("/pack/movie.mkv", 800), ("/pack/sample.mkv", 900)]
 
     inventory = build_video_inventory(rows)
 
-    assert inventory.selected_path == "/pack/movie.sample.mkv"
+    assert inventory.selected_path == "/pack/sample.mkv"
     assert inventory.selected_size == 900
+
+
+def test_requested_context_excludes_larger_standalone_sample():
+    inventory = build_video_inventory(
+        [("/pack/video.mkv", 100), ("/pack/sample.mkv", 900)],
+        requested=(1, 1),
+    )
+
+    assert inventory.selected_path == "/pack/video.mkv"
+    assert inventory.selected_size == 100
 
 
 def test_pack_requires_two_episodes_in_exactly_one_season():
@@ -67,13 +77,13 @@ def test_trailer_in_show_title_remains_main_pack_content():
 def test_extras_in_show_title_remains_main_pack_content():
     inventory = build_video_inventory(
         [
-            ("/p/Extras.S01E01.mkv", 100),
-            ("/p/Extras.S01E02.mkv", 200),
+            ("/downloads/Extras/Extras.S01E01.mkv", 100),
+            ("/downloads/Extras/Extras.S01E02.mkv", 200),
         ],
         requested=(1, 1),
     )
 
-    assert inventory.selected_path == "/p/Extras.S01E01.mkv"
+    assert inventory.selected_path == "/downloads/Extras/Extras.S01E01.mkv"
     assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
 
 
@@ -90,17 +100,46 @@ def test_auxiliary_suffix_exact_match_does_not_override_generic_main_video():
     assert inventory.has_tagged_files is False
 
 
-def test_auxiliary_ancestor_name_does_not_classify_episode_files():
+def test_auxiliary_featurette_directory_excludes_episode_files():
     inventory = build_video_inventory(
         [
             ("/p/FEATURETTE/Show.S01E01.mkv", 100),
-            ("/p/FEATURETTE/Show.S01E02.mkv", 200),
+            ("/p/Show.S01E02.mkv", 200),
         ],
-        requested=(1, 1),
+        requested=(1, 2),
     )
 
-    assert inventory.selected_path == "/p/FEATURETTE/Show.S01E01.mkv"
-    assert (inventory.pack_season, inventory.episodes) == (1, (1, 2))
+    assert inventory.selected_path == "/p/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
+def test_auxiliary_extras_directory_does_not_create_pack_episode():
+    inventory = build_video_inventory(
+        [
+            ("/pack/EXTRAS/Show.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
+
+
+def test_leading_auxiliary_marker_does_not_create_pack_episode():
+    inventory = build_video_inventory(
+        [
+            ("/pack/sample.S01E01.mkv", 100),
+            ("/pack/Show.S01E02.mkv", 200),
+        ],
+        requested=(1, 2),
+    )
+
+    assert inventory.selected_path == "/pack/Show.S01E02.mkv"
+    assert inventory.episodes == (2,)
+    assert inventory.pack_season is None
 
 
 def test_separator_bounded_auxiliary_names_do_not_match_inside_words():

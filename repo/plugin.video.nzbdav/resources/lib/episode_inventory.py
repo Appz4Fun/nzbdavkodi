@@ -13,6 +13,13 @@ _AUXILIARY_RE = re.compile(
     r"(?:^|[. _-])(samples?|trailers?|featurettes?|extras?)(?:[. _-]|$)",
     re.IGNORECASE,
 )
+_AUXILIARY_TOKEN_RE = re.compile(
+    r"(?:samples?|trailers?|featurettes?|extras?)", re.IGNORECASE
+)
+_LEADING_EPISODE_RE = re.compile(
+    r"(?:s\d{1,3}[. _-]*e\d{1,4}|\d{1,2}[xх]\d{1,3})(?:[. _-]|$)",
+    re.IGNORECASE,
+)
 
 
 class VideoFile(NamedTuple):
@@ -38,8 +45,29 @@ def _coerce_size(value):
         return 0
 
 
-def _is_auxiliary(name):
-    """Return whether a basename has an auxiliary marker after episode identity."""
+def _is_auxiliary(name, parent):
+    """Classify conservative filename and nearest-directory auxiliary markers."""
+    parent_name = os.path.basename(parent.rstrip("/")) if parent else ""
+    leading_name = re.split(r"[. _-]+", name, maxsplit=1)[0]
+    parent_is_auxiliary = bool(_AUXILIARY_TOKEN_RE.fullmatch(parent_name))
+    show_folder_exception = (
+        parent_is_auxiliary and leading_name.casefold() == parent_name.casefold()
+    )
+    if parent_is_auxiliary and not show_folder_exception:
+        return True
+
+    stem = os.path.splitext(name)[0]
+    if not show_folder_exception and _AUXILIARY_TOKEN_RE.fullmatch(stem):
+        return True
+
+    leading_marker = _AUXILIARY_RE.match(name)
+    if (
+        leading_marker
+        and not show_folder_exception
+        and _LEADING_EPISODE_RE.match(name[leading_marker.end() :])
+    ):
+        return True
+
     return any(
         _resolve_file_episode_tags(name[: match.start()], "")
         for match in _AUXILIARY_RE.finditer(name)
@@ -53,7 +81,7 @@ def _video_file(path, size):
         path=path,
         size=_coerce_size(size),
         episode_tags=_resolve_file_episode_tags(name, parent),
-        auxiliary=_is_auxiliary(name),
+        auxiliary=_is_auxiliary(name, parent),
     )
 
 
