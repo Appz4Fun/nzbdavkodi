@@ -230,6 +230,7 @@ def test_resolve_smb_video_does_not_play_named_wrong_episode():
         url = resolve_smb_video(
             "smb://host/Show",
             monitor=_Monitor(),
+            budget=0,
             requested_episode=(1, 1),
             on_inventory=seen.append,
         )
@@ -237,6 +238,44 @@ def test_resolve_smb_video_does_not_play_named_wrong_episode():
     assert url is None
     assert len(seen) == 1
     assert seen[0].has_tagged_files is True
+
+
+def test_resolve_smb_video_waits_for_requested_episode_after_wrong_sibling():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    listings = [
+        ([], ["Show.S01E05.mkv"]),
+        ([], ["Show.S01E05.mkv", "Show.S01E01.mkv"]),
+    ]
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listings
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url == "smb://host/Show/Show.S01E01.mkv"
+    assert len(seen) == 1
+    assert seen[0].selected_path == url
+
+
+def test_resolve_smb_video_waits_for_exact_after_multiple_generic_files():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    listings = [
+        ([], ["video-a.mkv", "video-b.mkv"]),
+        ([], ["video-a.mkv", "video-b.mkv", "Show.S01E01.mkv"]),
+    ]
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listings
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show", monitor=_Monitor(), requested_episode=(1, 1)
+        )
+
+    assert url == "smb://host/Show/Show.S01E01.mkv"
 
 
 def test_resolve_smb_video_explicit_episode_rejects_multiple_generic_videos():
@@ -355,6 +394,69 @@ def test_resolve_smb_video_reports_reachable_empty_inventory_at_deadline():
     assert url is None
     assert len(seen) == 1
     assert seen[0].files == ()
+
+
+def test_resolve_smb_video_plays_visible_exact_episode_from_partial_tree():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def listdir(path):
+        if path == "smb://host/Show":
+            return ["unreadable"], ["Show.S01E01.mkv"]
+        raise OSError("child unavailable")
+
+    seen = []
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listdir
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url == "smb://host/Show/Show.S01E01.mkv"
+    assert not seen
+
+
+def test_resolve_smb_video_rejects_generic_explicit_fallback_from_partial_tree():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def listdir(path):
+        if path == "smb://host/Show":
+            return ["unreadable"], ["video.mkv"]
+        raise OSError("child unavailable")
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listdir
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            budget=0,
+            requested_episode=(1, 1),
+        )
+
+    assert url is None
+
+
+def test_smb_inventory_rejects_partial_tree_even_with_visible_exact_episode():
+    from resources.lib.nzbget_resolver import _smb_inventory
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def listdir(path):
+        if path == "smb://host/Show":
+            return ["unreadable"], ["Show.S01E01.mkv"]
+        raise OSError("child unavailable")
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=listdir
+    ), patch.object(xbmcvfs, "Stat", MagicMock()):
+        inventory = _smb_inventory("smb://host/Show", requested_episode=(1, 1))
+
+    assert inventory is None
 
 
 def test_resolve_completed_smb_forwards_episode_and_inventory_callback():

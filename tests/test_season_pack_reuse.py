@@ -50,6 +50,29 @@ class _Inventory:  # pylint: disable=too-few-public-methods
         self.pack_season = pack_season
 
 
+def test_stale_removal_failure_is_transient():
+    record = _record()
+    with patch(
+        "resources.lib.season_pack_reuse.season_pack.remove", return_value=False
+    ) as remove:
+        result = season_pack_reuse._stale(record)
+
+    assert result.state == "transient"
+    remove.assert_called_once_with("nzbget", "41")
+
+
+def test_stale_removal_exception_is_transient_without_escaping():
+    record = _record()
+    with patch(
+        "resources.lib.season_pack_reuse.season_pack.remove",
+        side_effect=OSError("catalog unavailable"),
+    ) as remove:
+        result = season_pack_reuse._stale(record)
+
+    assert result.state == "transient"
+    remove.assert_called_once_with("nzbget", "41")
+
+
 def test_nzbget_valid_exact_job_reuses_requested_episode_without_submit():
     record = _record()
     inventory = _Inventory("smb://box/done/show/Spider-Noir.S01E01.mkv")
@@ -247,6 +270,42 @@ def test_nzbget_cached_mapping_accepts_canonical_posix_and_windows_children(
         return_value=completed_base,
     ):
         assert season_pack_reuse._nzbget_folder_for_record(record, getter) == expected
+
+
+def test_nzbget_cached_mapping_deduplicates_category_with_exact_evidence():
+    record = _record(folder="/srv/base/movies/Show")
+
+    def getter(key, default=""):
+        return {
+            "nzbget_smb_root": "smb://box/movies",
+            "nzbget_category": "movies",
+        }.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value="/srv/base",
+    ):
+        mapped = season_pack_reuse._nzbget_folder_for_record(record, getter)
+
+    assert mapped == "smb://box/movies/Show"
+
+
+def test_nzbget_cached_mapping_preserves_coincidental_tail_on_category_mismatch():
+    record = _record(folder="/srv/base/movies/Show")
+
+    def getter(key, default=""):
+        return {
+            "nzbget_smb_root": "smb://box/movies",
+            "nzbget_category": "shows",
+        }.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value="/srv/base",
+    ):
+        mapped = season_pack_reuse._nzbget_folder_for_record(record, getter)
+
+    assert mapped == "smb://box/movies/movies/Show"
 
 
 _AMBIGUOUS_SMB_ROOTS = (

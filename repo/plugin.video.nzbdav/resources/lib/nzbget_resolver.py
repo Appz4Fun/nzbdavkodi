@@ -69,6 +69,7 @@ from resources.lib.nzbget_resolver_smb import (  # noqa: E402,F401
     _smb_file_size,
     _smb_inventory,
     _smb_video_candidates_in_tree,
+    _smb_video_scan_in_tree,
     nzbget_smb_target,
     pick_largest_video,
     resolve_smb_video,

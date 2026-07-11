@@ -711,6 +711,78 @@ def test_folder_video_inventory_selects_nested_spider_noir_explicit_episode(
 
 @patch("resources.lib.webdav._get_settings")
 @patch("resources.lib.webdav.urlopen")
+def test_explicit_inventory_recurses_with_reverse_proxy_base_prefix_once(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = {
+        "webdav_url": "http://host/dav",
+        "nzbdav_url": "",
+        "username": "",
+        "password": "",
+    }
+    root = _propfind_listing(
+        [
+            ("/dav/content/Show/", True, None),
+            ("/dav/content/Show/Season%201/", True, None),
+        ]
+    )
+    season = _propfind_listing(
+        [
+            ("/dav/content/Show/Season%201/", True, None),
+            ("/dav/content/Show/Season%201/Show.S01E01.mkv", False, 8_000),
+        ]
+    )
+    requested_urls = []
+
+    def propfind(req, **_kwargs):
+        requested_urls.append(req.full_url)
+        if req.full_url == "http://host/dav/content/Show/":
+            return _propfind_resp(root)
+        if req.full_url == "http://host/dav/content/Show/Season%201/":
+            return _propfind_resp(season)
+        raise AssertionError("unexpected PROPFIND URL: {}".format(req.full_url))
+
+    mock_urlopen.side_effect = propfind
+
+    path, stream_url, _headers = find_video_stream_for_folder(
+        "/content/Show/", requested_episode=(1, 1)
+    )
+
+    assert path == "/dav/content/Show/Season%201/Show.S01E01.mkv"
+    assert stream_url == "http://host/dav/content/Show/Season%201/Show.S01E01.mkv"
+    assert requested_urls == [
+        "http://host/dav/content/Show/",
+        "http://host/dav/content/Show/Season%201/",
+    ]
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_reverse_proxy_inventory_keeps_out_of_tree_href_incomplete(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = {
+        "webdav_url": "http://host/dav",
+        "nzbdav_url": "",
+        "username": "",
+        "password": "",
+    }
+    listing = _propfind_listing(
+        [
+            ("/dav/content/Show/", True, None),
+            ("/dav/content/Other/Show.S01E01.mkv", False, 8_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    inventory = folder_video_inventory("/content/Show/", requested=(1, 1))
+
+    assert inventory is None
+    assert mock_urlopen.call_count == 1
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
 def test_find_video_stream_explicit_episode_rejects_named_wrong_fallback(
     mock_urlopen, mock_settings
 ):
@@ -816,6 +888,30 @@ def test_find_video_stream_inventory_callback_receives_confirmed_inventory(
     assert path == "/downloads/Show/Show.S01E01.mkv"
     assert len(seen) == 1
     assert seen[0].episodes == (1, 2)
+
+
+@patch("resources.lib.webdav._get_settings")
+@patch("resources.lib.webdav.urlopen")
+def test_find_video_stream_explicit_episode_uses_one_inventory_walk(
+    mock_urlopen, mock_settings
+):
+    mock_settings.return_value = _SETTINGS_WITH_AUTH
+    listing = _propfind_listing(
+        [
+            ("/downloads/Show/", True, None),
+            ("/downloads/Show/Show.S01E01.mkv", False, 8_000),
+        ]
+    )
+    mock_urlopen.return_value = _propfind_resp(listing)
+
+    with patch("resources.lib.webdav.find_video_file") as legacy_find:
+        path, _url, _headers = find_video_stream_for_folder(
+            "/downloads/Show/", requested_episode=(1, 1)
+        )
+
+    assert path == "/downloads/Show/Show.S01E01.mkv"
+    legacy_find.assert_not_called()
+    assert mock_urlopen.call_count == 1
 
 
 @patch("resources.lib.webdav._get_settings")

@@ -188,44 +188,59 @@ def _largest_video_in_tree(folder, depth=_SMB_MAX_DEPTH):
     return inventory.selected_path, inventory.selected_size
 
 
-def _smb_video_candidates_in_tree(folder, depth=_SMB_MAX_DEPTH):
-    """Return playable ``(path, size)`` rows below a reachable SMB folder.
-
-    ``None`` means the tree could not be confirmed reachable/listable and the
-    caller should retry. An empty list means the folder was positively
-    reachable but currently contained no playable files.
-    """
+def _smb_video_scan_in_tree(folder, depth=_SMB_MAX_DEPTH):
+    """Return ``(visible video rows, complete)`` for one SMB tree scan."""
     try:
         # Kodi Omega treats SMB directory exists probes as directories only
         # when their URL ends in a slash. Keep listdir and child URLs stable.
         if not xbmcvfs.exists(folder.rstrip("/") + "/"):
-            return None
+            return [], False
         dirs, files = xbmcvfs.listdir(folder)
     except Exception:  # pylint: disable=broad-except
-        return None
+        return [], False
 
     rows = []
+    complete = True
     for name in sorted(files, key=str.casefold):
         if _core._is_video_name(name):
             path = "{}/{}".format(folder, name)
             rows.append((path, _core._smb_file_size(path)))
     if depth > 0:
         for subdir in sorted(dirs, key=str.casefold):
-            child_rows = _core._smb_video_candidates_in_tree(
+            child_rows, child_complete = _smb_video_scan_in_tree(
                 "{}/{}".format(folder, subdir), depth - 1
             )
-            if child_rows is None:
-                return None
             rows.extend(child_rows)
-    return rows
+            if not child_complete:
+                complete = False
+    return rows, complete
+
+
+def _smb_video_candidates_in_tree(folder, depth=_SMB_MAX_DEPTH):
+    """Return complete playable rows, or ``None`` for an incomplete tree."""
+    rows, complete = _smb_video_scan_in_tree(folder, depth=depth)
+    return rows if complete else None
 
 
 def _smb_inventory(folder, requested_episode=None, depth=_SMB_MAX_DEPTH):
     """Build an episode-aware inventory for one reachable SMB folder tree."""
-    rows = _core._smb_video_candidates_in_tree(folder, depth=depth)
-    if rows is None:
+    rows, complete = _smb_video_scan_in_tree(folder, depth=depth)
+    if not complete:
         return None
     return build_video_inventory(rows, requested=requested_episode)
+
+
+def _partial_smb_selection_is_safe(inventory, requested_episode):
+    """Whether visible partial rows prove a safe playable selection."""
+    if inventory.selected_path is None:
+        return False
+    if requested_episode is None:
+        return True
+    for video_file in inventory.files:
+        if video_file.path != inventory.selected_path:
+            continue
+        return not video_file.auxiliary and requested_episode in video_file.episode_tags
+    return False
 
 
 def _report_smb_inventory(callback, inventory):
@@ -288,13 +303,16 @@ def resolve_smb_video(
     deadline = time.monotonic() + budget
     last_complete_inventory = None
     while True:
-        inventory = _core._smb_inventory(
-            smb_folder, requested_episode=requested_episode
-        )
-        if inventory is not None:
+        rows, complete = _smb_video_scan_in_tree(smb_folder)
+        inventory = build_video_inventory(rows, requested=requested_episode)
+        if complete:
             last_complete_inventory = inventory
-        if inventory is not None and inventory.files:
+        if complete and inventory.selected_path:
             _core._report_smb_inventory(on_inventory, inventory)
+            return inventory.selected_path
+        if not complete and _partial_smb_selection_is_safe(
+            inventory, requested_episode
+        ):
             return inventory.selected_path
         now = time.monotonic()
         if now >= deadline:

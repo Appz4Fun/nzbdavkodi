@@ -225,10 +225,14 @@ def _script_play_filter_autoselect_tag(
         )
     )
 
-    if not filtered and pack_result is None:
-        filtered = _script_play_filtered_or_prompt(loading, all_parsed, title, notify)
-        if not filtered:
+    if not filtered:
+        if all_parsed or pack_result is None:
+            filtered = _script_play_filtered_or_prompt(
+                loading, all_parsed, title, notify
+            )
+        if not filtered and pack_result is None:
             return None
+        filtered = filtered or []
 
     provider_row_count = len(filtered)
     filtered = _router._prepend_pack(filtered, pack_result)

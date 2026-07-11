@@ -308,6 +308,20 @@ def _folder_total_path_is_contained(resource_path, request_path):
     return resource_key == request_key or resource_key.startswith(prefix)
 
 
+def _webdav_url_for_path(base, resource_path, already_encoded=False):
+    """Join a WebDAV path without duplicating a reverse-proxy base prefix."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    encoded_path = resource_path if already_encoded else quote(resource_path, safe="/")
+    base_parts = urlsplit(base)
+    base_path = base_parts.path.rstrip("/") or "/"
+    if encoded_path.startswith("/") and _folder_total_path_is_contained(
+        encoded_path, base_path
+    ):
+        return urlunsplit((base_parts.scheme, base_parts.netloc, encoded_path, "", ""))
+    return "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
+
+
 def _folder_total_enter(folder_path, depth, visited):
     """Apply the depth cap and cycle guard; return ``(visited, skip_reason)``.
 
@@ -336,11 +350,7 @@ def _folder_total_resolve_url(settings_getter, settings, folder_path, already_en
     """
     settings = _read_settings(settings_getter) if settings is None else settings
     base = settings["webdav_url"] or settings["nzbdav_url"]
-    if already_encoded:
-        encoded_path = folder_path
-    else:
-        encoded_path = quote(folder_path, safe="/")
-    url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
+    url = _webdav_url_for_path(base, folder_path, already_encoded=already_encoded)
     if not url.endswith("/"):
         url += "/"
     return settings, url
@@ -572,7 +582,13 @@ def folder_video_total_bytes(
     versus a real sibling (the folder total can clear the floor on a sibling's
     bytes while ``video_path`` is still the job-start stub -- #355 review).
     """
-    _visited, skip_reason = _folder_total_enter(folder_path, _depth, _visited)
+    from urllib.parse import urlsplit
+
+    settings, url = _folder_total_resolve_url(
+        settings_getter, _settings, folder_path, _already_encoded
+    )
+    request_path = urlsplit(url).path
+    _visited, skip_reason = _folder_total_enter(request_path, _depth, _visited)
     if skip_reason == "depth":
         return _FOLDER_TOTAL_INCOMPLETE
     if skip_reason:
@@ -580,17 +596,13 @@ def folder_video_total_bytes(
     if _seen_resources is None:
         _seen_resources = set()
     _seen_resources.add(
-        _folder_total_resource_key(_folder_total_absolute_path(folder_path))
-    )
-
-    settings, url = _folder_total_resolve_url(
-        settings_getter, _settings, folder_path, _already_encoded
+        _folder_total_resource_key(_folder_total_absolute_path(request_path))
     )
 
     try:
         root = _folder_total_fetch_root(url, settings["username"], settings["password"])
         total, incomplete, subdirs = _folder_total_scan_entries(
-            root, folder_path, _stats, _seen_resources
+            root, request_path, _stats, _seen_resources
         )
     except Exception as error:  # pylint: disable=broad-except
         # A PROPFIND/parse failure means we cannot trust the total; signal
@@ -770,7 +782,7 @@ def _get_webdav_stream_url_for_path_with_settings(file_path, settings):
     # response is *supposed* to hand us an absolute path with a leading
     # slash, but nothing enforces that on the server side.
     encoded_path = quote(file_path, safe="/%")
-    url = "{}/{}".format(base.rstrip("/"), encoded_path.lstrip("/"))
+    url = _webdav_url_for_path(base, encoded_path, already_encoded=True)
     headers = _build_auth_headers(settings["username"], settings["password"])
     return url, headers
 
@@ -811,30 +823,33 @@ def find_video_stream_for_folder(
     full-tree inventory; callback failures never block playback.
     """
     settings = _read_settings(settings_getter)
-    explicit_tags = (
-        frozenset((requested_episode,)) if requested_episode is not None else None
-    )
-    video_path = find_video_file(
-        folder_path,
-        hints=TitleHints(title_hint=title_hint, episode_tags=explicit_tags),
-        min_video_size=min_video_size,
-        _state=(0, None, False, settings),
-    )
     inventory = None
-    if requested_episode is not None or on_inventory is not None:
+    if requested_episode is not None:
         inventory = folder_video_inventory(
             folder_path,
             requested=requested_episode,
             settings_getter=settings_getter,
             _settings=settings,
         )
-        if requested_episode is not None:
-            # Explicit route identity is authoritative. A named different
-            # episode, or an incomplete scan, must never degrade to the
-            # title-derived/legacy candidate from find_video_file().
-            video_path = inventory.selected_path if inventory is not None else None
-            if inventory is not None and video_path:
-                _remember_video_file_size_hint(video_path, inventory.selected_size)
+        # Explicit route identity is authoritative and the complete inventory
+        # is the sole traversal. A named different episode or incomplete scan
+        # must never degrade to title-derived/legacy discovery.
+        video_path = inventory.selected_path if inventory is not None else None
+        if inventory is not None and video_path:
+            _remember_video_file_size_hint(video_path, inventory.selected_size)
+    else:
+        video_path = find_video_file(
+            folder_path,
+            hints=TitleHints(title_hint=title_hint),
+            min_video_size=min_video_size,
+            _state=(0, None, False, settings),
+        )
+        if on_inventory is not None:
+            inventory = folder_video_inventory(
+                folder_path,
+                settings_getter=settings_getter,
+                _settings=settings,
+            )
     if on_inventory is not None and inventory is not None:
         try:
             on_inventory(inventory)

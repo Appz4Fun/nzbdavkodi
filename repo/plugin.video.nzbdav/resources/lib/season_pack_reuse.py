@@ -23,7 +23,12 @@ class ReuseResult(NamedTuple):
 
 
 def _stale(record):
-    season_pack.remove(record.get("backend"), record.get("job_id"))
+    try:
+        removed = season_pack.remove(record.get("backend"), record.get("job_id"))
+    except Exception:  # pylint: disable=broad-except
+        return ReuseResult("transient", None, None)
+    if removed is False:
+        return ReuseResult("transient", None, None)
     return ReuseResult("stale", None, None)
 
 
@@ -149,7 +154,7 @@ def _ambiguous_url_component(value):
     )
 
 
-def _exact_cached_smb_mapping(smb_root, native_folder, completed_base):
+def _exact_cached_smb_mapping(smb_root, native_folder, completed_base, category=""):
     """Map a canonical strict completed-base child without path traversal."""
     target = _canonical_native_path(native_folder)
     base = _canonical_native_path(completed_base)
@@ -170,6 +175,16 @@ def _exact_cached_smb_mapping(smb_root, native_folder, completed_base):
     relative = list(target_segments[len(base_segments) :])
     if not relative:
         return None
+    category = str(category or "").strip()
+    root_tail = unquote(urlsplit(smb_root).path.rstrip("/").rsplit("/", 1)[-1])
+    if (
+        category
+        and relative[0].casefold() == category.casefold()
+        and root_tail.casefold() == category.casefold()
+    ):
+        relative = relative[1:]
+    if not relative:
+        return None
     return "{}/{}".format(smb_root, "/".join(relative))
 
 
@@ -180,11 +195,13 @@ def _nzbget_folder_for_record(record, settings_getter=None):
     # same-tail folder to a remembered job.
     getter = _bound_setting_getter(settings_getter)
     smb_root = getter("nzbget_smb_root", "").strip()
+    _url, _user, _password, category = nzbget_api._get_settings(settings_getter)
     completed_base = nzbget_api.completed_base_dir(settings_getter=settings_getter)
     return _exact_cached_smb_mapping(
         smb_root,
         record.get("folder"),
         completed_base,
+        category=category,
     )
 
 

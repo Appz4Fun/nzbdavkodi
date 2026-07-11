@@ -1759,6 +1759,96 @@ def test_script_play_picker_total_includes_synthetic_pack_row():
     assert total_count == 4
 
 
+def test_handle_play_pack_keeps_unfiltered_providers_separately_selectable():
+    from resources.lib.router_play import _handle_play_filter_and_select
+
+    providers = _three_provider_rows()
+    with patch(
+        "resources.lib.filter.filter_results", return_value=([], providers)
+    ), patch("resources.lib.router_play.xbmcgui.Dialog") as prompt, patch(
+        "resources.lib.router._tag_available"
+    ), patch(
+        "resources.lib.results_dialog.show_results_dialog", return_value=None
+    ) as dialog, patch(
+        "xbmcaddon.Addon"
+    ) as addon:
+        prompt.return_value.yesno.return_value = True
+        addon.return_value.getSetting.return_value = "false"
+        _handle_play_filter_and_select(
+            7,
+            providers,
+            "Show",
+            "2026",
+            MagicMock(),
+            pack_result=_local_pack_row(),
+        )
+
+    displayed = dialog.call_args.args[0]
+    assert displayed[0]["_season_pack"]["job_id"] == "41"
+    assert displayed[1:] == providers
+    prompt.return_value.yesno.assert_called_once()
+
+
+def test_handle_search_pack_keeps_unfiltered_providers_separately_selectable():
+    from resources.lib.router_play import _handle_search_filter_and_select
+
+    providers = _three_provider_rows()
+    with patch(
+        "resources.lib.filter.filter_results", return_value=([], providers)
+    ), patch("resources.lib.router_play.xbmcgui.Dialog") as prompt, patch(
+        "resources.lib.router._tag_available"
+    ), patch(
+        "resources.lib.results_dialog.show_results_dialog", return_value=None
+    ) as dialog, patch(
+        "xbmcaddon.Addon"
+    ) as addon, patch(
+        "xbmcplugin.endOfDirectory"
+    ):
+        prompt.return_value.yesno.return_value = True
+        addon.return_value.getSetting.return_value = "false"
+        _handle_search_filter_and_select(
+            7,
+            {},
+            providers,
+            "Show",
+            "2026",
+            MagicMock(),
+            pack_result=_local_pack_row(),
+        )
+
+    displayed = dialog.call_args.args[0]
+    assert displayed[0]["_season_pack"]["job_id"] == "41"
+    assert displayed[1:] == providers
+    prompt.return_value.yesno.assert_called_once()
+
+
+def test_script_play_pack_keeps_unfiltered_providers_separately_selectable():
+    from resources.lib.router_scriptplay import _script_play_filter_autoselect_tag
+
+    providers = _three_provider_rows()
+    with patch(
+        "resources.lib.filter.filter_results", return_value=([], providers)
+    ), patch("resources.lib.router_scriptplay.xbmcgui.Dialog") as prompt, patch(
+        "resources.lib.router._get_script_setting", return_value="false"
+    ), patch(
+        "resources.lib.router_scriptplay._script_play_tag_available"
+    ):
+        prompt.return_value.yesno.return_value = True
+        filtered, total_count, _completed = _script_play_filter_autoselect_tag(
+            MagicMock(),
+            {},
+            providers,
+            "Show",
+            MagicMock(),
+            pack_result=_local_pack_row(),
+        )
+
+    assert filtered[0]["_season_pack"]["job_id"] == "41"
+    assert filtered[1:] == providers
+    assert total_count == 4
+    prompt.return_value.yesno.assert_called_once()
+
+
 @patch("xbmcaddon.Addon")
 @patch("resources.lib.resolver.resolve")
 @patch("resources.lib.results_dialog.show_results_dialog")

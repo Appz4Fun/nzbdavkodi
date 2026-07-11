@@ -329,11 +329,13 @@ def _handle_play_filter_and_select(
     total_count = len(results)
     filtered, all_parsed = filter_results(results)
 
-    if not filtered and pack_result is None:
-        filtered = _filtered_or_prompt(all_parsed, title, notify)
-        if not filtered:
+    if not filtered:
+        if all_parsed or pack_result is None:
+            filtered = _filtered_or_prompt(all_parsed, title, notify)
+        if not filtered and pack_result is None:
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
+        filtered = filtered or []
 
     provider_row_count = len(filtered)
     filtered = _prepend_pack(filtered, pack_result)
@@ -777,11 +779,13 @@ def _handle_search_filter_and_select(
     )
     filtered, all_parsed = filter_results(results)
 
-    if not filtered and pack_result is None:
-        filtered = _filtered_or_prompt(all_parsed, title, notify)
-        if not filtered:
+    if not filtered:
+        if all_parsed or pack_result is None:
+            filtered = _filtered_or_prompt(all_parsed, title, notify)
+        if not filtered and pack_result is None:
             xbmcplugin.endOfDirectory(handle, succeeded=False)
             return
+        filtered = filtered or []
 
     provider_row_count = len(filtered)
     filtered = _prepend_pack(filtered, pack_result)
