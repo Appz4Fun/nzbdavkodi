@@ -261,24 +261,48 @@ def _nzbget_folder_for_record(record, settings_getter=None):
 
 
 def _smb_inventory(folder, requested_episode=None):
-    from resources.lib.nzbget_resolver_smb import _smb_inventory as build_inventory
+    # Import via nzbget_resolver, never nzbget_resolver_smb directly: the
+    # split-out SMB module imports nzbget_resolver at module level, so
+    # loading it first hits that cycle while partially initialized and
+    # raises ImportError. nzbget_resolver re-exports every helper.
+    from resources.lib.nzbget_resolver import _smb_inventory as build_inventory
 
     return build_inventory(folder, requested_episode=requested_episode)
 
 
-def _smb_selection_readable(path):
-    """Probe that the selected video reads through Kodi's VFS; warn if not.
+# One-shot readability blips happen (a share waking up, a pack recorded from
+# a completion still settling), and a pack row is an explicit selection that
+# fails closed -- so probe a few times, mirroring _reuse_completed_job's
+# short resolve budget, before declaring the selection unreadable.
+_SMB_READ_PROBE_ATTEMPTS = 3
+_SMB_READ_PROBE_RETRY_SECONDS = 1.0
+
+
+def _smb_selection_readable(path, monitor=None):
+    """Probe (with brief retries) that the video reads through Kodi's VFS.
 
     The SMB analogue of the WebDAV path's ``_stream_body_available`` gate: a
     cached reuse must not hand the player a URL that lists but cannot open.
+    Waits between attempts via ``Monitor.waitForAbort`` so Kodi shutdown
+    stays honored; warns (log + toast) only once the retries are exhausted.
     """
-    from resources.lib.nzbget_resolver_smb import (
+    import xbmc
+
+    # Same cycle-safe import direction as _smb_inventory above.
+    from resources.lib.nzbget_resolver import (
         _smb_video_is_readable,
         _warn_unreadable_smb_video,
     )
 
-    if _smb_video_is_readable(path):
-        return True
+    if monitor is None:
+        monitor = xbmc.Monitor()
+    for attempt in range(_SMB_READ_PROBE_ATTEMPTS):
+        if _smb_video_is_readable(path):
+            return True
+        if attempt + 1 < _SMB_READ_PROBE_ATTEMPTS and monitor.waitForAbort(
+            _SMB_READ_PROBE_RETRY_SECONDS
+        ):
+            break
     _warn_unreadable_smb_video(path)
     return False
 

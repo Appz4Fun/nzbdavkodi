@@ -527,6 +527,51 @@ def test_resolve_smb_video_unreadable_does_not_record_inventory():
     assert not seen
 
 
+def test_resolve_smb_video_unreadable_then_cleaned_up_is_ordinary_miss():
+    # A file that probed unreadable once but then vanished (concurrent
+    # cleanup) must report an ordinary miss at the deadline -- not the
+    # SMB_UNREADABLE sentinel, which would make the completed-reuse caller
+    # fail closed instead of falling back to a fresh submit.
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    listings = iter([([], ["movie.mkv"])])
+
+    def fake_listdir(_folder):
+        try:
+            return next(listings)
+        except StopIteration:
+            return ([], [])
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=fake_listdir
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        url = resolve_smb_video(
+            "smb://host/completed/The.Movie",
+            monitor=_Monitor(aborts_after=10**9),
+            interval=0,
+            budget=0.05,
+            on_inventory=seen.append,
+        )
+
+    assert url is None
+    notify.assert_not_called()  # no restart hint for a vanished file
+    assert len(seen) == 1 and seen[0].files == ()  # deadline miss reported
+
+
 def test_resolve_smb_video_does_not_report_unreachable_empty_inventory():
     xbmcvfs = sys.modules["xbmcvfs"]
     seen = []

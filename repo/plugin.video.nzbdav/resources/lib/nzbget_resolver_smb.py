@@ -397,6 +397,12 @@ def resolve_smb_video(
                     _core.xbmc.LOGINFO,
                 )
             unreadable_path = selected
+        else:
+            # The earlier unreadable selection is no longer selected (e.g.
+            # the files were cleaned up mid-wait): forget it, so the deadline
+            # reports an ordinary miss and completed-reuse callers keep their
+            # submit fallback instead of failing closed on a stale sentinel.
+            unreadable_path = None
         now = time.monotonic()
         if now >= deadline:
             if unreadable_path is not None:
