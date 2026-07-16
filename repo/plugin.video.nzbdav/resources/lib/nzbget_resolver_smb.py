@@ -278,7 +278,9 @@ def _warn_unreadable_smb_video(path):
     """
     _core.xbmc.log(
         "NZB-DAV: video is listable but not readable over SMB: {} -- if "
-        "this persists, restart Kodi to reset its cached SMB session".format(path),
+        "this persists, restart Kodi to reset its cached SMB session".format(
+            _core._redact_text(path)
+        ),
         _core.xbmc.LOGERROR,
     )
     try:
@@ -371,7 +373,7 @@ def resolve_smb_video(
             if selected != unreadable_path:
                 _core.xbmc.log(
                     "NZB-DAV: selected video listed but not readable yet, "
-                    "waiting: {}".format(selected),
+                    "waiting: {}".format(_core._redact_text(selected)),
                     _core.xbmc.LOGINFO,
                 )
             unreadable_path = selected

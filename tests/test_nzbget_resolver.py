@@ -429,6 +429,41 @@ def test_resolve_smb_video_unreadable_selection_fails_with_restart_hint():
     )
 
 
+def test_resolve_smb_video_unreadable_logs_redact_smb_credentials():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["movie.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ), patch(
+        "resources.lib.nzbget_resolver.xbmc"
+    ) as kodi:
+        url = resolve_smb_video(
+            "smb://user:hunter2@host/completed/The.Movie",
+            monitor=_Monitor(),
+            interval=0,
+            budget=0.0,
+        )
+
+    assert url is None
+    logged = " ".join(str(call.args[0]) for call in kodi.log.call_args_list)
+    assert "hunter2" not in logged  # both the waiting and deadline logs redact
+    assert "REDACTED" in logged
+
+
 def test_resolve_smb_video_open_error_counts_as_unreadable():
     xbmcvfs = sys.modules["xbmcvfs"]
 
