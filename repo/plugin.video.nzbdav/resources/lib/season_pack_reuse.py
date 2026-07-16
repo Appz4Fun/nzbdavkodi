@@ -302,7 +302,9 @@ def _smb_selection_readable(path, monitor=None):
         if attempt + 1 < _SMB_READ_PROBE_ATTEMPTS and monitor.waitForAbort(
             _SMB_READ_PROBE_RETRY_SECONDS
         ):
-            break
+            # Kodi is shutting down: bail quietly instead of diagnosing a
+            # stale SMB session on the way out.
+            return False
     _warn_unreadable_smb_video(path)
     return False
 
@@ -362,7 +364,11 @@ def _reuse_nzbget(record, requested, episode_context, settings_getter):
     if not inventory.files or not _inventory_selected_exact(inventory, requested):
         return _stale(record)
     if not _smb_selection_readable(inventory.selected_path):
-        return ReuseResult("transient", None, None)
+        # Listable but not readable: the probe's own restart-Kodi warning
+        # already fired, so return the distinct state the caller uses to
+        # suppress the generic no-video toast (mirroring the completed-job
+        # paths' SMB_UNREADABLE handling).
+        return ReuseResult("unreadable", None, None)
     _refresh_inventory(record, episode_context, inventory)
     return ReuseResult("valid", inventory.selected_path, {})
 

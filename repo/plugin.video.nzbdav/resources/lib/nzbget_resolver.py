@@ -630,9 +630,13 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
                 # Kodi rejecting the toast must not interrupt failure handling.
                 pass
         # A pack row is one explicit selection, never shorthand for an online
-        # provider. Stale and transient validation both fail closed; the user
-        # can choose an ordinary result separately.
-        failure_message = None if pack_reuse.state == "stale" else _string(30223)
+        # provider. Stale, transient, and unreadable validation all fail
+        # closed; the user can choose an ordinary result separately. Stale
+        # and unreadable already showed their own specific toast, so only
+        # transient failures get the generic one.
+        failure_message = (
+            None if pack_reuse.state in ("stale", "unreadable") else _string(30223)
+        )
         ctx.on_failure(failure_message)
         return False
 

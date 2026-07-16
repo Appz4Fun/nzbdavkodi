@@ -107,6 +107,28 @@ def test_handle_stale_pack_shows_one_notice_and_resolves_false():
     submit.assert_not_called()
 
 
+def test_handle_unreadable_pack_fails_closed_without_generic_toast():
+    # The probe layer already toasted the specific restart-Kodi warning; the
+    # pack failure path must not stack the generic no-video message on top,
+    # and must not fall through to a submit.
+    from resources.lib import nzbget_resolver, season_pack_reuse
+
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("unreadable", None, None),
+    ), patch("resources.lib.nzbget_resolver._notify") as notify, patch(
+        "resources.lib.nzbget_resolver.xbmcplugin.setResolvedUrl"
+    ) as resolved, patch.object(
+        nzbget_resolver.nzbget_api, "append_nzb"
+    ) as submit:
+        resolve_and_play_nzbget(7, _season_pack_params(), _full_settings())
+
+    notify.assert_not_called()
+    assert resolved.call_count == 1
+    assert resolved.call_args.args[:2] == (7, False)
+    submit.assert_not_called()
+
+
 def test_handleless_stale_pack_shows_one_notice_without_starting_player():
     from resources.lib import nzbget_resolver, season_pack_reuse
 
@@ -618,6 +640,55 @@ def test_resolve_smb_video_share_blip_keeps_unreadable_state():
 
     assert url is SMB_UNREADABLE
     assert not seen  # stale complete inventory never reaches the catalog
+    notify.assert_called_once()  # restart hint fired
+
+
+def test_resolve_smb_video_ambiguous_scan_keeps_unreadable_state():
+    # After the selection probes unreadable, a second untagged video appears
+    # (complete scan, selection fails closed as ambiguous) while the
+    # unreadable file is still listed. The state must survive: fail closed
+    # at the deadline, don't catalog the ambiguous inventory, and don't let
+    # the reuse caller resubmit while the unreadable file still exists.
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    listings = iter([([], ["movie.mkv"])])
+
+    def fake_listdir(_folder):
+        try:
+            return next(listings)
+        except StopIteration:
+            return ([], ["movie.mkv", "other.mkv"])
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=fake_listdir
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(aborts_after=10**9),
+            interval=0,
+            budget=0.05,
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url is SMB_UNREADABLE
+    assert not seen  # ambiguous inventory never reaches the catalog
     notify.assert_called_once()  # restart hint fired
 
 

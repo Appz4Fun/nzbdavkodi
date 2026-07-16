@@ -397,15 +397,23 @@ def resolve_smb_video(
                     _core.xbmc.LOGINFO,
                 )
             unreadable_path = selected
-        elif complete:
-            # Only a COMPLETE scan with no selection proves the earlier
-            # unreadable file is really gone (cleanup): forget it, so the
-            # deadline reports an ordinary miss and completed-reuse callers
-            # keep their submit fallback. An incomplete scan (a share blip
-            # mid-wait) proves nothing -- keep the unreadable state so the
-            # deadline still fails closed and, crucially, does not report
-            # the stale last_complete_inventory into the season-pack
-            # catalog as if the pack were playable.
+        elif (
+            complete
+            and unreadable_path is not None
+            and all(
+                video_file.path != unreadable_path for video_file in inventory.files
+            )
+        ):
+            # Only a COMPLETE scan that no longer lists the unreadable file
+            # proves it is really gone (cleanup): forget it, so the deadline
+            # reports an ordinary miss and completed-reuse callers keep
+            # their submit fallback. Everything else -- an incomplete scan
+            # (share blip), or a complete scan where the file persists but
+            # selection went ambiguous (e.g. a second untagged video
+            # appeared) -- keeps the unreadable state, so the deadline still
+            # fails closed and never reports the stale
+            # last_complete_inventory into the season-pack catalog as if
+            # the pack were playable.
             unreadable_path = None
         now = time.monotonic()
         if now >= deadline:

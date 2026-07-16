@@ -154,6 +154,25 @@ def test_pack_probe_warns_once_after_exhausting_retries():
     warn.assert_called_once_with("smb://box/done/show/e1.mkv")
 
 
+def test_pack_probe_abort_bails_quietly_without_warning():
+    # waitForAbort returning True means Kodi shutdown/cancel: no stale-SMB
+    # diagnosis toast on the way out.
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = True
+    with patch(
+        "resources.lib.nzbget_resolver._smb_video_is_readable", return_value=False
+    ) as probe, patch(
+        "resources.lib.nzbget_resolver._warn_unreadable_smb_video"
+    ) as warn:
+        ok = season_pack_reuse._smb_selection_readable(
+            "smb://box/done/show/e1.mkv", monitor=monitor
+        )
+
+    assert ok is False
+    probe.assert_called_once()
+    warn.assert_not_called()
+
+
 def test_readability_probe_does_not_require_prior_resolver_import():
     # Regression: the lazy import must go through nzbget_resolver. Importing
     # nzbget_resolver_smb first trips its module-level import cycle while
@@ -183,7 +202,7 @@ def test_readability_probe_does_not_require_prior_resolver_import():
     assert ok is True
 
 
-def test_nzbget_unreadable_selection_is_transient_without_reuse():
+def test_nzbget_unreadable_selection_fails_closed_without_reuse():
     record = _record()
     inventory = _Inventory("smb://box/done/show/Spider-Noir.S01E01.mkv")
     with patch(
@@ -204,7 +223,9 @@ def test_nzbget_unreadable_selection_is_transient_without_reuse():
     ) as upsert:
         result = season_pack_reuse.reuse_exact_job(record, _context(), "nzbget")
 
-    assert result.state == "transient"
+    # Distinct state: the probe already toasted the restart-Kodi warning, so
+    # the caller suppresses the generic no-video message.
+    assert result.state == "unreadable"
     assert result.stream_url is None
     probe.assert_called_once_with("smb://box/done/show/Spider-Noir.S01E01.mkv")
     upsert.assert_not_called()
