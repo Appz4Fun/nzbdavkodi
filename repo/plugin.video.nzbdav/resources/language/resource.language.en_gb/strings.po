@@ -1425,3 +1425,7 @@ msgstr "Already downloaded season pack - Episodes {}"
 msgctxt "#30365"
 msgid "The downloaded season pack is no longer available. Choose another result."
 msgstr "The downloaded season pack is no longer available. Choose another result."
+
+msgctxt "#30366"
+msgid "Video is not readable over SMB. If this persists, restart Kodi."
+msgstr "Video is not readable over SMB. If this persists, restart Kodi."

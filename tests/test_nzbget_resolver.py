@@ -361,6 +361,97 @@ def test_resolve_smb_video_retries_transient_list_error_without_empty_callback()
     assert seen[0].files
 
 
+def _stat_9000(path):  # pylint: disable=unused-argument
+    stat = MagicMock()
+    stat.st_size.return_value = 9_000
+    return stat
+
+
+def test_resolve_smb_video_waits_until_selection_is_readable():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    reads = [b"", b"", b"\x00" * 16]
+
+    class _SettlingFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return reads.pop(0)
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["movie.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _SettlingFile
+    ):
+        url = resolve_smb_video(
+            "smb://host/completed/The.Movie", monitor=_Monitor(), interval=0
+        )
+
+    assert url == "smb://host/completed/The.Movie/movie.mkv"
+    assert not reads  # two unreadable probes were retried, third succeeded
+
+
+def test_resolve_smb_video_unreadable_selection_fails_with_restart_hint():
+    from resources.lib import nzbget_resolver
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["movie.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        url = resolve_smb_video(
+            "smb://host/completed/The.Movie",
+            monitor=_Monitor(),
+            interval=0,
+            budget=0.0,
+        )
+
+    assert url is None
+    notify.assert_called_once_with(
+        nzbget_resolver._addon_name(), nzbget_resolver._string(30366), 7000
+    )
+
+
+def test_resolve_smb_video_open_error_counts_as_unreadable():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def _raise(path, *args):
+        raise OSError("open denied")
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["movie.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _raise
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ):
+        url = resolve_smb_video(
+            "smb://host/completed/The.Movie",
+            monitor=_Monitor(),
+            interval=0,
+            budget=0.0,
+        )
+
+    assert url is None
+
+
 def test_resolve_smb_video_does_not_report_unreachable_empty_inventory():
     xbmcvfs = sys.modules["xbmcvfs"]
     seen = []

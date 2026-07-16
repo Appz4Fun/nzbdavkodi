@@ -266,6 +266,23 @@ def _smb_inventory(folder, requested_episode=None):
     return build_inventory(folder, requested_episode=requested_episode)
 
 
+def _smb_selection_readable(path):
+    """Probe that the selected video reads through Kodi's VFS; warn if not.
+
+    The SMB analogue of the WebDAV path's ``_stream_body_available`` gate: a
+    cached reuse must not hand the player a URL that lists but cannot open.
+    """
+    from resources.lib.nzbget_resolver_smb import (
+        _smb_video_is_readable,
+        _warn_unreadable_smb_video,
+    )
+
+    if _smb_video_is_readable(path):
+        return True
+    _warn_unreadable_smb_video(path)
+    return False
+
+
 def _webdav_folder_for_record(record):
     from resources.lib.resolver_poll import _storage_to_webdav_path
 
@@ -320,6 +337,8 @@ def _reuse_nzbget(record, requested, episode_context, settings_getter):
         return ReuseResult("transient", None, None)
     if not inventory.files or not _inventory_selected_exact(inventory, requested):
         return _stale(record)
+    if not _smb_selection_readable(inventory.selected_path):
+        return ReuseResult("transient", None, None)
     _refresh_inventory(record, episode_context, inventory)
     return ReuseResult("valid", inventory.selected_path, {})
 

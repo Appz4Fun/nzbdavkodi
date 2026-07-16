@@ -57,6 +57,7 @@ from resources.lib.nzbget_resolver_dupes import (  # noqa: E402,F401
 from resources.lib.nzbget_resolver_smb import (  # noqa: E402,F401
     _SMB_LIST_RETRY_INTERVAL,
     _SMB_MAX_DEPTH,
+    _SMB_READ_PROBE_BYTES,
     _SMB_RESOLVE_BUDGET,
     VIDEO_EXTENSIONS,
     _drive_resolve_dialog,
@@ -69,7 +70,9 @@ from resources.lib.nzbget_resolver_smb import (  # noqa: E402,F401
     _smb_file_size,
     _smb_inventory,
     _smb_video_candidates_in_tree,
+    _smb_video_is_readable,
     _smb_video_scan_in_tree,
+    _warn_unreadable_smb_video,
     nzbget_smb_target,
     pick_largest_video,
     resolve_smb_video,

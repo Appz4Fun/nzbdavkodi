@@ -120,6 +120,33 @@ def test_nzbget_valid_exact_job_reuses_requested_episode_without_submit():
     assert upsert.call_args.args[0]["episodes"] == [1, 2]
 
 
+def test_nzbget_unreadable_selection_is_transient_without_reuse():
+    record = _record()
+    inventory = _Inventory("smb://box/done/show/Spider-Noir.S01E01.mkv")
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/downloads/show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse._nzbget_folder_for_record",
+        return_value="smb://box/done/show",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory", return_value=inventory
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_selection_readable",
+        return_value=False,
+    ) as probe, patch(
+        "resources.lib.season_pack_reuse.season_pack.upsert"
+    ) as upsert:
+        result = season_pack_reuse.reuse_exact_job(record, _context(), "nzbget")
+
+    assert result.state == "transient"
+    assert result.stream_url is None
+    probe.assert_called_once_with("smb://box/done/show/Spider-Noir.S01E01.mkv")
+    upsert.assert_not_called()
+
+
 def test_nzbget_reuse_missing_completed_base_is_transient_without_scanning():
     record = _record(folder="/srv/downloads/show")
 
