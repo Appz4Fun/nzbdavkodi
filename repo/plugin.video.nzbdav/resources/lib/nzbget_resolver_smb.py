@@ -152,6 +152,22 @@ _SMB_MAX_DEPTH = 3
 _SMB_READ_PROBE_BYTES = 8192
 
 
+class _UnreadableSelection:  # pylint: disable=too-few-public-methods
+    """Falsy sentinel: a video was selected but never became readable."""
+
+    def __bool__(self):
+        return False
+
+
+# Distinct deadline result for "selected but never readable". Falsy, so a
+# caller that only truth-tests keeps its ordinary miss behavior; the
+# completed-reuse callers test ``is SMB_UNREADABLE`` to fail closed instead
+# of falling through to a re-submit -- NZBGet would just dupe-delete a
+# re-submission of the already-SUCCESS row, burying the restart-Kodi hint
+# under an unrelated failure.
+SMB_UNREADABLE = _UnreadableSelection()
+
+
 def _smb_file_size(path):
     try:
         return xbmcvfs.Stat(path).st_size()
@@ -346,7 +362,11 @@ def resolve_smb_video(
     returned only once it also *reads* through Kodi's VFS (see
     ``_smb_video_is_readable``); until then the same retry budget keeps
     absorbing files that are listed before they are readable. Returns None if
-    no playable selection appears (or becomes readable) within the budget.
+    no playable selection appears within the budget, or the falsy
+    ``SMB_UNREADABLE`` sentinel when a selection stayed visible but never
+    became readable -- in that case the inventory callback is deliberately
+    NOT invoked, so an unplayable completion cannot enter the season-pack
+    catalog and shadow future picks.
     """
     if monitor is None:
         monitor = _core.xbmc.Monitor()
@@ -381,6 +401,7 @@ def resolve_smb_video(
         if now >= deadline:
             if unreadable_path is not None:
                 _core._warn_unreadable_smb_video(unreadable_path)
+                return SMB_UNREADABLE
             if last_complete_inventory is not None:
                 _core._report_smb_inventory(on_inventory, last_complete_inventory)
             return None

@@ -59,6 +59,7 @@ from resources.lib.nzbget_resolver_smb import (  # noqa: E402,F401
     _SMB_MAX_DEPTH,
     _SMB_READ_PROBE_BYTES,
     _SMB_RESOLVE_BUDGET,
+    SMB_UNREADABLE,
     VIDEO_EXTENSIONS,
     _drive_resolve_dialog,
     _is_video_name,
@@ -453,8 +454,10 @@ def _reuse_completed_job(completed_job, ctx, requested_episode=None, on_inventor
     """Probe an already-completed history match's SMB folder.
 
     Returns the playable video URL when the corroborated ``completed_job``
-    still holds a video over SMB (the picker-reuse fast path), else ``None``
-    so the caller proceeds to the normal submit flow.
+    still holds a video over SMB (the picker-reuse fast path), ``None`` so
+    the caller proceeds to the normal submit flow, or the falsy
+    ``SMB_UNREADABLE`` sentinel when the video is visible but never became
+    readable (the caller must fail closed rather than re-submit).
     """
     if not (isinstance(completed_job, dict) and completed_job.get("dest_dir")):
         return None
@@ -531,9 +534,11 @@ def _resolve_completed_smb(
 ):
     """Map a completed job's DestDir onto SMB and find the playable video.
 
-    Returns the video URL, or ``None`` when the mapping yields no folder or
-    no video appears within the resolve budget (both the same caller-facing
-    failure, error string 30223).
+    Returns the video URL, ``None`` when the mapping yields no folder or no
+    video appears within the resolve budget (both the same caller-facing
+    failure, error string 30223), or the falsy ``SMB_UNREADABLE`` sentinel
+    when the video stayed visible but unreadable (its own toast already
+    fired).
     """
     smb_folder = nzbget_smb_target(
         ctx.smb_root, dest_dir, ctx.category, ctx.completed_base
@@ -637,6 +642,13 @@ def _reuse_or_submit(ctx, nzb_url, title, completed_job, meta):
     )
     if reuse_url:
         ctx.on_success(reuse_url)
+        return False
+    if reuse_url is SMB_UNREADABLE:
+        # The completed files are visible but never became readable (the
+        # stale-SMB-session case). Re-submitting the SUCCESS row would only
+        # get dupe-deleted and bury the restart-Kodi hint that already
+        # toasted, so fail closed without a second notification.
+        ctx.on_failure(None)
         return False
     if not nzb_url:
         ctx.on_failure(_string(30223))
@@ -818,6 +830,12 @@ def _play_completed_download(
             "folder": dest_dir,
         },
     )
+    if video_url is SMB_UNREADABLE:
+        # Downloaded fine but never became readable over SMB: the specific
+        # restart-Kodi toast already fired, so skip the misleading generic
+        # "No video file found" one.
+        ctx.on_failure(None)
+        return
     if not video_url:
         ctx.on_failure(_string(30223))
         return

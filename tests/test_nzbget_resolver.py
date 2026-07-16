@@ -423,7 +423,8 @@ def test_resolve_smb_video_unreadable_selection_fails_with_restart_hint():
             budget=0.0,
         )
 
-    assert url is None
+    assert url is nzbget_resolver.SMB_UNREADABLE
+    assert not url  # falsy: unaware truth-testing callers still see a miss
     notify.assert_called_once_with(
         nzbget_resolver._addon_name(), nzbget_resolver._string(30366), 7000
     )
@@ -458,7 +459,7 @@ def test_resolve_smb_video_unreadable_logs_redact_smb_credentials():
             budget=0.0,
         )
 
-    assert url is None
+    assert not url
     logged = " ".join(str(call.args[0]) for call in kodi.log.call_args_list)
     assert "hunter2" not in logged  # both the waiting and deadline logs redact
     assert "REDACTED" in logged
@@ -484,7 +485,46 @@ def test_resolve_smb_video_open_error_counts_as_unreadable():
             budget=0.0,
         )
 
-    assert url is None
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE
+
+    assert url is SMB_UNREADABLE
+
+
+def test_resolve_smb_video_unreadable_does_not_record_inventory():
+    # An unplayable completion must not enter the season-pack catalog: a
+    # recorded row would shadow every later episode pick with the same
+    # unreadable transient failure.
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["Show.S01E01.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            interval=0,
+            budget=0.0,
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert not url
+    assert not seen
 
 
 def test_resolve_smb_video_does_not_report_unreachable_empty_inventory():
@@ -1865,6 +1905,55 @@ def test_resolve_reuse_probe_miss_falls_back_to_submit():
 
     append.assert_called_once()
     assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_resolve_reuse_unreadable_fails_closed_without_resubmit():
+    # Visible-but-unreadable completed files (stale Kodi SMB session): the
+    # SUCCESS row must NOT be re-submitted -- NZBGet would dupe-delete the
+    # re-submission and bury the restart-Kodi hint that already toasted.
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE
+
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+
+    with patch("resources.lib.nzbget_resolver.nzbget_api.append_nzb") as append, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value="/dl",
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value=SMB_UNREADABLE,
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_nzbget_completed_job": _COMPLETED_JOB,
+            },
+            settings_getter=_full_settings(),
+        )
+
+    append.assert_not_called()
+    assert plugin.setResolvedUrl.call_args[0][1] is False
+    # No second toast: the unreadable warning fired inside resolve_smb_video
+    # (patched out here), and the fail-closed path passes message=None.
+    notify.assert_not_called()
+
+
+def test_play_completed_download_unreadable_skips_no_video_toast():
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE, _play_completed_download
+
+    ctx = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver._resolve_completed_smb",
+        return_value=SMB_UNREADABLE,
+    ), patch("resources.lib.nzbget_resolver.record_download"):
+        _play_completed_download(ctx, "/dl/movies/The.Movie", "The.Movie", 0, 0)
+
+    ctx.on_failure.assert_called_once_with(None)
+    ctx.on_success.assert_not_called()
 
 
 def test_play_nzbget_reuses_completed_job():
