@@ -107,6 +107,28 @@ def test_handle_stale_pack_shows_one_notice_and_resolves_false():
     submit.assert_not_called()
 
 
+def test_handle_unreadable_pack_fails_closed_without_generic_toast():
+    # The probe layer already toasted the specific restart-Kodi warning; the
+    # pack failure path must not stack the generic no-video message on top,
+    # and must not fall through to a submit.
+    from resources.lib import nzbget_resolver, season_pack_reuse
+
+    with patch(
+        "resources.lib.season_pack_reuse.reuse_exact_job",
+        return_value=season_pack_reuse.ReuseResult("unreadable", None, None),
+    ), patch("resources.lib.nzbget_resolver._notify") as notify, patch(
+        "resources.lib.nzbget_resolver.xbmcplugin.setResolvedUrl"
+    ) as resolved, patch.object(
+        nzbget_resolver.nzbget_api, "append_nzb"
+    ) as submit:
+        resolve_and_play_nzbget(7, _season_pack_params(), _full_settings())
+
+    notify.assert_not_called()
+    assert resolved.call_count == 1
+    assert resolved.call_args.args[:2] == (7, False)
+    submit.assert_not_called()
+
+
 def test_handleless_stale_pack_shows_one_notice_without_starting_player():
     from resources.lib import nzbget_resolver, season_pack_reuse
 
@@ -359,6 +381,315 @@ def test_resolve_smb_video_retries_transient_list_error_without_empty_callback()
     assert listdir.call_count == 2
     assert len(seen) == 1
     assert seen[0].files
+
+
+def _stat_9000(path):  # pylint: disable=unused-argument
+    stat = MagicMock()
+    stat.st_size.return_value = 9_000
+    return stat
+
+
+def test_resolve_smb_video_waits_until_selection_is_readable():
+    xbmcvfs = sys.modules["xbmcvfs"]
+    reads = [b"", b"", b"\x00" * 16]
+
+    class _SettlingFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return reads.pop(0)
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["movie.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _SettlingFile
+    ):
+        url = resolve_smb_video(
+            "smb://host/completed/The.Movie", monitor=_Monitor(), interval=0
+        )
+
+    assert url == "smb://host/completed/The.Movie/movie.mkv"
+    assert not reads  # two unreadable probes were retried, third succeeded
+
+
+def test_resolve_smb_video_unreadable_selection_fails_with_restart_hint():
+    from resources.lib import nzbget_resolver
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["movie.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        url = resolve_smb_video(
+            "smb://host/completed/The.Movie",
+            monitor=_Monitor(),
+            interval=0,
+            budget=0.0,
+        )
+
+    assert url is nzbget_resolver.SMB_UNREADABLE
+    assert not url  # falsy: unaware truth-testing callers still see a miss
+    notify.assert_called_once_with(
+        nzbget_resolver._addon_name(), nzbget_resolver._string(30366), 7000
+    )
+
+
+def test_resolve_smb_video_unreadable_logs_redact_smb_credentials():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["movie.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ), patch(
+        "resources.lib.nzbget_resolver.xbmc"
+    ) as kodi:
+        url = resolve_smb_video(
+            "smb://user:hunter2@host/completed/The.Movie",
+            monitor=_Monitor(),
+            interval=0,
+            budget=0.0,
+        )
+
+    assert not url
+    logged = " ".join(str(call.args[0]) for call in kodi.log.call_args_list)
+    assert "hunter2" not in logged  # both the waiting and deadline logs redact
+    assert "REDACTED" in logged
+
+
+def test_resolve_smb_video_open_error_counts_as_unreadable():
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def _raise(path, *args):
+        raise OSError("open denied")
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["movie.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _raise
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ):
+        url = resolve_smb_video(
+            "smb://host/completed/The.Movie",
+            monitor=_Monitor(),
+            interval=0,
+            budget=0.0,
+        )
+
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE
+
+    assert url is SMB_UNREADABLE
+
+
+def test_resolve_smb_video_unreadable_does_not_record_inventory():
+    # An unplayable completion must not enter the season-pack catalog: a
+    # recorded row would shadow every later episode pick with the same
+    # unreadable transient failure.
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", return_value=([], ["Show.S01E01.mkv"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ):
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(),
+            interval=0,
+            budget=0.0,
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert not url
+    assert not seen
+
+
+def test_resolve_smb_video_unreadable_then_cleaned_up_is_ordinary_miss():
+    # A file that probed unreadable once but then vanished (concurrent
+    # cleanup) must report an ordinary miss at the deadline -- not the
+    # SMB_UNREADABLE sentinel, which would make the completed-reuse caller
+    # fail closed instead of falling back to a fresh submit.
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    listings = iter([([], ["movie.mkv"])])
+
+    def fake_listdir(_folder):
+        try:
+            return next(listings)
+        except StopIteration:
+            return ([], [])
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=fake_listdir
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        url = resolve_smb_video(
+            "smb://host/completed/The.Movie",
+            monitor=_Monitor(aborts_after=10**9),
+            interval=0,
+            budget=0.05,
+            on_inventory=seen.append,
+        )
+
+    assert url is None
+    notify.assert_not_called()  # no restart hint for a vanished file
+    assert len(seen) == 1 and seen[0].files == ()  # deadline miss reported
+
+
+def test_resolve_smb_video_share_blip_keeps_unreadable_state():
+    # A pack whose selection probed unreadable, followed by an INCOMPLETE
+    # scan (share blip) until the deadline: the blip proves nothing, so the
+    # resolve must still fail closed as unreadable and must NOT report the
+    # stale complete inventory -- recording it would catalog an unplayable
+    # pack that shadows future episode picks.
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    listings = iter([([], ["Show.S01E01.mkv"])])
+
+    def fake_listdir(_folder):
+        try:
+            return next(listings)
+        except StopIteration as exc:
+            raise OSError("share blip") from exc
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=fake_listdir
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(aborts_after=10**9),
+            interval=0,
+            budget=0.05,
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url is SMB_UNREADABLE
+    assert not seen  # stale complete inventory never reaches the catalog
+    notify.assert_called_once()  # restart hint fired
+
+
+def test_resolve_smb_video_ambiguous_scan_keeps_unreadable_state():
+    # After the selection probes unreadable, a second untagged video appears
+    # (complete scan, selection fails closed as ambiguous) while the
+    # unreadable file is still listed. The state must survive: fail closed
+    # at the deadline, don't catalog the ambiguous inventory, and don't let
+    # the reuse caller resubmit while the unreadable file still exists.
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE
+
+    xbmcvfs = sys.modules["xbmcvfs"]
+    seen = []
+    listings = iter([([], ["movie.mkv"])])
+
+    def fake_listdir(_folder):
+        try:
+            return next(listings)
+        except StopIteration:
+            return ([], ["movie.mkv", "other.mkv"])
+
+    class _DeniedFile:  # pylint: disable=too-few-public-methods
+        def __init__(self, path, *args):
+            self.path = path
+
+        def readBytes(self, _num):
+            return b""
+
+        def close(self):
+            pass
+
+    with patch.object(xbmcvfs, "exists", return_value=True), patch.object(
+        xbmcvfs, "listdir", side_effect=fake_listdir
+    ), patch.object(xbmcvfs, "Stat", side_effect=_stat_9000), patch.object(
+        xbmcvfs, "File", _DeniedFile
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        url = resolve_smb_video(
+            "smb://host/Show",
+            monitor=_Monitor(aborts_after=10**9),
+            interval=0,
+            budget=0.05,
+            requested_episode=(1, 1),
+            on_inventory=seen.append,
+        )
+
+    assert url is SMB_UNREADABLE
+    assert not seen  # ambiguous inventory never reaches the catalog
+    notify.assert_called_once()  # restart hint fired
 
 
 def test_resolve_smb_video_does_not_report_unreachable_empty_inventory():
@@ -1739,6 +2070,55 @@ def test_resolve_reuse_probe_miss_falls_back_to_submit():
 
     append.assert_called_once()
     assert plugin.setResolvedUrl.call_args[0][1] is True
+
+
+def test_resolve_reuse_unreadable_fails_closed_without_resubmit():
+    # Visible-but-unreadable completed files (stale Kodi SMB session): the
+    # SUCCESS row must NOT be re-submitted -- NZBGet would dupe-delete the
+    # re-submission and bury the restart-Kodi hint that already toasted.
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE
+
+    plugin = sys.modules["xbmcplugin"]
+    plugin.setResolvedUrl = MagicMock()
+
+    with patch("resources.lib.nzbget_resolver.nzbget_api.append_nzb") as append, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.completed_base_dir",
+        return_value="/dl",
+    ), patch(
+        "resources.lib.nzbget_resolver.resolve_smb_video",
+        return_value=SMB_UNREADABLE,
+    ), patch(
+        "resources.lib.nzbget_resolver._notify"
+    ) as notify:
+        resolve_and_play_nzbget(
+            7,
+            {
+                "nzburl": "http://i/x.nzb",
+                "title": "The.Movie",
+                "_nzbget_completed_job": _COMPLETED_JOB,
+            },
+            settings_getter=_full_settings(),
+        )
+
+    append.assert_not_called()
+    assert plugin.setResolvedUrl.call_args[0][1] is False
+    # No second toast: the unreadable warning fired inside resolve_smb_video
+    # (patched out here), and the fail-closed path passes message=None.
+    notify.assert_not_called()
+
+
+def test_play_completed_download_unreadable_skips_no_video_toast():
+    from resources.lib.nzbget_resolver import SMB_UNREADABLE, _play_completed_download
+
+    ctx = MagicMock()
+    with patch(
+        "resources.lib.nzbget_resolver._resolve_completed_smb",
+        return_value=SMB_UNREADABLE,
+    ), patch("resources.lib.nzbget_resolver.record_download"):
+        _play_completed_download(ctx, "/dl/movies/The.Movie", "The.Movie", 0, 0)
+
+    ctx.on_failure.assert_called_once_with(None)
+    ctx.on_success.assert_not_called()
 
 
 def test_play_nzbget_reuses_completed_job():

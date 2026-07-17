@@ -142,6 +142,30 @@ _SMB_RESOLVE_BUDGET = 60.0
 # layout are common; descend a few levels (like the WebDAV resolver) so they
 # still resolve. Bounded to keep a pathological tree from stalling playback.
 _SMB_MAX_DEPTH = 3
+# Bytes to read when probing that a selected video actually opens for
+# reading. Listable is not readable: a file still settling after NZBGet's
+# move — or a poisoned cached Kodi SMB session — can list and stat fine
+# while open() fails with "Permission denied", which otherwise surfaces
+# only after the player handoff as a silent playback failure. The probe
+# goes through xbmcvfs, i.e. the exact same cached libsmbclient session
+# VideoPlayer will use.
+_SMB_READ_PROBE_BYTES = 8192
+
+
+class _UnreadableSelection:  # pylint: disable=too-few-public-methods
+    """Falsy sentinel: a video was selected but never became readable."""
+
+    def __bool__(self):
+        return False
+
+
+# Distinct deadline result for "selected but never readable". Falsy, so a
+# caller that only truth-tests keeps its ordinary miss behavior; the
+# completed-reuse callers test ``is SMB_UNREADABLE`` to fail closed instead
+# of falling through to a re-submit -- NZBGet would just dupe-delete a
+# re-submission of the already-SUCCESS row, burying the restart-Kodi hint
+# under an unrelated failure.
+SMB_UNREADABLE = _UnreadableSelection()
 
 
 def _smb_file_size(path):
@@ -243,6 +267,45 @@ def _partial_smb_selection_is_safe(inventory, requested_episode):
     return False
 
 
+def _smb_video_is_readable(path):
+    """True when ``path`` opens and yields data through Kodi's VFS.
+
+    Exercises the same cached SMB session VideoPlayer will use, so a
+    listable-but-unreadable selection is caught before the player handoff
+    instead of failing playback with no user-visible explanation.
+    """
+    try:
+        handle = xbmcvfs.File(path)
+        try:
+            return bool(handle.readBytes(_SMB_READ_PROBE_BYTES))
+        finally:
+            handle.close()
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
+def _warn_unreadable_smb_video(path):
+    """Log + toast that a visible video never became readable over SMB.
+
+    A selection that stays listable-but-unreadable past the resolve budget
+    is the stuck-session signature (Kodi's cached SMB session gets
+    "Permission denied" while fresh sessions read the same file fine), so
+    name the fix instead of leaving only the generic no-video message.
+    """
+    _core.xbmc.log(
+        "NZB-DAV: video is listable but not readable over SMB: {} -- if "
+        "this persists, restart Kodi to reset its cached SMB session".format(
+            _core._redact_text(path)
+        ),
+        _core.xbmc.LOGERROR,
+    )
+    try:
+        _core._notify(_core._addon_name(), _core._string(30366), 7000)
+    except Exception:  # pylint: disable=broad-except
+        # A rejected toast must not break the resolve failure path.
+        pass
+
+
 def _report_smb_inventory(callback, inventory):
     """Invoke an optional inventory callback without breaking playback."""
     if callback is None:
@@ -295,27 +358,68 @@ def resolve_smb_video(
     progress bar over the wait and its Cancel button aborts the search.
     With episode context, an exact tagged episode beats larger pack members;
     named wrong episodes and multiple untagged videos fail closed, while one
-    untagged video retains the ordinary single-file fallback. Returns None if
-    no playable selection appears within the budget.
+    untagged video retains the ordinary single-file fallback. A selection is
+    returned only once it also *reads* through Kodi's VFS (see
+    ``_smb_video_is_readable``); until then the same retry budget keeps
+    absorbing files that are listed before they are readable. Returns None if
+    no playable selection appears within the budget, or the falsy
+    ``SMB_UNREADABLE`` sentinel when a selection stayed visible but never
+    became readable -- in that case the inventory callback is deliberately
+    NOT invoked, so an unplayable completion cannot enter the season-pack
+    catalog and shadow future picks.
     """
     if monitor is None:
         monitor = _core.xbmc.Monitor()
     deadline = time.monotonic() + budget
     last_complete_inventory = None
+    unreadable_path = None
     while True:
         rows, complete = _smb_video_scan_in_tree(smb_folder)
         inventory = build_video_inventory(rows, requested=requested_episode)
         if complete:
             last_complete_inventory = inventory
+        selected = None
         if complete and inventory.selected_path:
-            _core._report_smb_inventory(on_inventory, inventory)
-            return inventory.selected_path
-        if not complete and _partial_smb_selection_is_safe(
+            selected = inventory.selected_path
+        elif not complete and _partial_smb_selection_is_safe(
             inventory, requested_episode
         ):
-            return inventory.selected_path
+            selected = inventory.selected_path
+        if selected is not None:
+            if _core._smb_video_is_readable(selected):
+                if complete:
+                    _core._report_smb_inventory(on_inventory, inventory)
+                return selected
+            if selected != unreadable_path:
+                _core.xbmc.log(
+                    "NZB-DAV: selected video listed but not readable yet, "
+                    "waiting: {}".format(_core._redact_text(selected)),
+                    _core.xbmc.LOGINFO,
+                )
+            unreadable_path = selected
+        elif (
+            complete
+            and unreadable_path is not None
+            and all(
+                video_file.path != unreadable_path for video_file in inventory.files
+            )
+        ):
+            # Only a COMPLETE scan that no longer lists the unreadable file
+            # proves it is really gone (cleanup): forget it, so the deadline
+            # reports an ordinary miss and completed-reuse callers keep
+            # their submit fallback. Everything else -- an incomplete scan
+            # (share blip), or a complete scan where the file persists but
+            # selection went ambiguous (e.g. a second untagged video
+            # appeared) -- keeps the unreadable state, so the deadline still
+            # fails closed and never reports the stale
+            # last_complete_inventory into the season-pack catalog as if
+            # the pack were playable.
+            unreadable_path = None
         now = time.monotonic()
         if now >= deadline:
+            if unreadable_path is not None:
+                _core._warn_unreadable_smb_video(unreadable_path)
+                return SMB_UNREADABLE
             if last_complete_inventory is not None:
                 _core._report_smb_inventory(on_inventory, last_complete_inventory)
             return None

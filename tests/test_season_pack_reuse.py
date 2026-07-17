@@ -120,6 +120,117 @@ def test_nzbget_valid_exact_job_reuses_requested_episode_without_submit():
     assert upsert.call_args.args[0]["episodes"] == [1, 2]
 
 
+def test_pack_probe_retries_transient_blip_before_succeeding():
+    reads = iter([False, True])
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+    with patch(
+        "resources.lib.nzbget_resolver._smb_video_is_readable",
+        side_effect=lambda _path: next(reads),
+    ), patch("resources.lib.nzbget_resolver._warn_unreadable_smb_video") as warn:
+        ok = season_pack_reuse._smb_selection_readable(
+            "smb://box/done/show/e1.mkv", monitor=monitor
+        )
+
+    assert ok is True
+    warn.assert_not_called()
+    monitor.waitForAbort.assert_called_once()  # one blip, one wait, no toast
+
+
+def test_pack_probe_warns_once_after_exhausting_retries():
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = False
+    with patch(
+        "resources.lib.nzbget_resolver._smb_video_is_readable", return_value=False
+    ) as probe, patch(
+        "resources.lib.nzbget_resolver._warn_unreadable_smb_video"
+    ) as warn:
+        ok = season_pack_reuse._smb_selection_readable(
+            "smb://box/done/show/e1.mkv", monitor=monitor
+        )
+
+    assert ok is False
+    assert probe.call_count == season_pack_reuse._SMB_READ_PROBE_ATTEMPTS
+    warn.assert_called_once_with("smb://box/done/show/e1.mkv")
+
+
+def test_pack_probe_abort_bails_quietly_without_warning():
+    # waitForAbort returning True means Kodi shutdown/cancel: no stale-SMB
+    # diagnosis toast on the way out.
+    monitor = MagicMock()
+    monitor.waitForAbort.return_value = True
+    with patch(
+        "resources.lib.nzbget_resolver._smb_video_is_readable", return_value=False
+    ) as probe, patch(
+        "resources.lib.nzbget_resolver._warn_unreadable_smb_video"
+    ) as warn:
+        ok = season_pack_reuse._smb_selection_readable(
+            "smb://box/done/show/e1.mkv", monitor=monitor
+        )
+
+    assert ok is False
+    probe.assert_called_once()
+    warn.assert_not_called()
+
+
+def test_readability_probe_does_not_require_prior_resolver_import():
+    # Regression: the lazy import must go through nzbget_resolver. Importing
+    # nzbget_resolver_smb first trips its module-level import cycle while
+    # partially initialized (ImportError), which broke this module when the
+    # resolver had not been imported yet (e.g. running this file alone).
+    import sys
+
+    saved = {}
+    for name in (
+        "resources.lib.nzbget_resolver",
+        "resources.lib.nzbget_resolver_smb",
+        "resources.lib.nzbget_resolver_dupes",
+    ):
+        saved[name] = sys.modules.pop(name, None)
+    try:
+        ok = season_pack_reuse._smb_selection_readable(
+            "smb://box/done/show/e1.mkv", monitor=MagicMock()
+        )
+    finally:
+        for name, module in saved.items():
+            if module is not None:
+                sys.modules[name] = module
+            else:
+                sys.modules.pop(name, None)
+    # Default xbmcvfs mock reads truthy data, so a clean import chain
+    # resolves readable; the point is that no ImportError was raised.
+    assert ok is True
+
+
+def test_nzbget_unreadable_selection_fails_closed_without_reuse():
+    record = _record()
+    inventory = _Inventory("smb://box/done/show/Spider-Noir.S01E01.mkv")
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/downloads/show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse._nzbget_folder_for_record",
+        return_value="smb://box/done/show",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory", return_value=inventory
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_selection_readable",
+        return_value=False,
+    ) as probe, patch(
+        "resources.lib.season_pack_reuse.season_pack.upsert"
+    ) as upsert:
+        result = season_pack_reuse.reuse_exact_job(record, _context(), "nzbget")
+
+    # Distinct state: the probe already toasted the restart-Kodi warning, so
+    # the caller suppresses the generic no-video message.
+    assert result.state == "unreadable"
+    assert result.stream_url is None
+    probe.assert_called_once_with("smb://box/done/show/Spider-Noir.S01E01.mkv")
+    upsert.assert_not_called()
+
+
 def test_nzbget_reuse_missing_completed_base_is_transient_without_scanning():
     record = _record(folder="/srv/downloads/show")
 
