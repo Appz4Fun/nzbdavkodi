@@ -47,6 +47,7 @@ OUT_DIR = Path(os.environ.get("CINEFILE_OUT_DIR", "/tmp/cinefile_loop")).resolve
 
 
 def redact_url(url: str) -> str:
+    """Strip userinfo/query/fragment from a URL, leaving host and path."""
     parts = urllib.parse.urlsplit(url)
     if not parts.netloc:
         return url
@@ -78,6 +79,7 @@ def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
 
 
 def list_completed_cinefile_storages() -> list[str]:
+    """Return storage paths for completed CiNEFiLE history slots."""
     qs = urllib.parse.urlencode(
         {
             "mode": "history",
@@ -161,6 +163,7 @@ def storage_to_stream_url(storage: str) -> str:
 
 
 def schedule_fault(at_seconds: float, fault_type: str = "connection_reset"):
+    """Schedule a fault-proxy fault event at the given offset."""
     body = json.dumps(
         {"events": [{"at_seconds": at_seconds, "fault_type": fault_type}]}
     ).encode("utf-8")
@@ -191,6 +194,7 @@ def clear_fault_schedule():
 
 
 def stop_player():
+    """Stop any active Kodi player, ignoring errors."""
     try:
         resp = _kodi_rpc("Player.GetActivePlayers")
         for p in resp.get("result", []) or []:
@@ -224,6 +228,7 @@ def play_via_direct_play(primary_url: str, fallback_urls: list[str]):
 
 
 def player_status() -> dict:
+    """Return the active Kodi player's id and playback properties."""
     try:
         active = _kodi_rpc("Player.GetActivePlayers").get("result", []) or []
         if not active:
@@ -242,6 +247,7 @@ def player_status() -> dict:
 
 
 def time_to_seconds(time_obj) -> float:
+    """Convert a Kodi Player.GetProperties time dict to total seconds."""
     if not isinstance(time_obj, dict):
         return 0.0
     return (
@@ -253,6 +259,7 @@ def time_to_seconds(time_obj) -> float:
 
 
 def run_iteration(iteration: int, urls: list[str], log: Path) -> dict:
+    """Play one primary/fallback cutover iteration and log its timeline."""
     primary = urls[iteration % len(urls)]
     fallback_pool = [u for u in urls if u != primary]
     summary = {
@@ -264,6 +271,7 @@ def run_iteration(iteration: int, urls: list[str], log: Path) -> dict:
     }
 
     def record(event_type: str, **kw):
+        """Append a timestamped event to the summary and the JSONL log."""
         rec = {"t": time.time(), "type": event_type, **kw}
         summary["events"].append(rec)
         with log.open("a") as fh:
@@ -332,6 +340,7 @@ def run_iteration(iteration: int, urls: list[str], log: Path) -> dict:
 
 
 def main():
+    """Discover CiNEFiLE storages and run all fallback-cutover iterations."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     log = OUT_DIR / "cinefile_loop.jsonl"
     if log.exists():

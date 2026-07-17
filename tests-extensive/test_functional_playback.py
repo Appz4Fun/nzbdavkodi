@@ -44,7 +44,8 @@ class KodiJSONRPC:
             {"window": "addonbrowser", "parameters": [f"addonid={addon_id}"]},
         )
 
-    def wait_for_property(self, check_fn, timeout=30, interval=0.5):
+    @staticmethod
+    def wait_for_property(check_fn, timeout=30, interval=0.5):
         """Wait for a property condition to be true."""
         start = time.time()
         while time.time() - start < timeout:

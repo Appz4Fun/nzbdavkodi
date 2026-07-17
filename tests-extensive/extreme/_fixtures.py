@@ -127,6 +127,7 @@ def compose_up(env_loaded, run_dir):
 
 @pytest.fixture(scope="session")
 def nzbdav_seeded(compose_up):
+    """Seed nzbdav by running the seed_nzbdav.sh script."""
     seed = EXTREME_DIR / "scripts" / "seed_nzbdav.sh"
     env = os.environ.copy()
     env["NZBDAV_URL"] = f"http://localhost:{NZBDAV_HOST_PORT}"
@@ -163,18 +164,21 @@ def kodi_ready(compose_up, nzbdav_seeded):
 
 @pytest.fixture(scope="session")
 def jurialmunkey_repo_added(kodi_ready):
+    """Install the jurialmunkey Kodi repo into the running container."""
     script = EXTREME_DIR / "scripts" / "install_jurialmunkey_repo.sh"
     _run(["bash", str(script), "nzbdav-extreme-kodi"])
 
 
 @pytest.fixture(scope="session")
 def tmdbhelper_installed(jurialmunkey_repo_added):
+    """Install TMDBHelper from the jurialmunkey repo."""
     script = EXTREME_DIR / "scripts" / "install_tmdbhelper.sh"
     _run(["bash", str(script), f"http://localhost:{KODI_HOST_PORT}", "kodi:kodi"])
 
 
 @pytest.fixture(scope="session")
 def nzbdav_addon_installed(tmdbhelper_installed):
+    """Install the nzbdav addon using the settings template."""
     script = EXTREME_DIR / "scripts" / "install_nzbdav_addon.sh"
     template = EXTREME_DIR / "fixtures" / "addon-settings-template.xml"
     _run(
@@ -191,6 +195,7 @@ def nzbdav_addon_installed(tmdbhelper_installed):
 
 @pytest.fixture(scope="session")
 def tmdbhelper_player_added(nzbdav_addon_installed):
+    """Copy the nzbdav player file into TMDBHelper's players directory."""
     src = EXTREME_DIR / "fixtures" / "nzbdav-player.json"
     _run(
         [

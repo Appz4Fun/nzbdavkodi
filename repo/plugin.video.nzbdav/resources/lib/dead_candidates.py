@@ -34,9 +34,11 @@ class DeadCandidates:
             self._nzo_ids.add(nzo_id)
 
     def has_url(self, nzb_url):
+        """Return True when ``nzb_url`` is a recorded dead candidate."""
         return bool(nzb_url) and nzb_url in self._urls
 
     def has_nzo(self, nzo_id):
+        """Return True when ``nzo_id`` is a recorded dead candidate."""
         return bool(nzo_id) and nzo_id in self._nzo_ids
 
 

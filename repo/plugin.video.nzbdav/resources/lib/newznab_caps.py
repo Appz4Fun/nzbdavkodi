@@ -43,6 +43,7 @@ def normalize_api_endpoint(api_url):
 
 
 def build_caps_url(api_url, api_key):
+    """Build the Newznab ``t=caps`` URL for ``api_url`` with ``api_key``."""
     parts = urlsplit(normalize_api_endpoint(api_url))
     query = [
         (key, value)
@@ -78,6 +79,7 @@ def _params(value):
 
 
 def parse_caps(xml_text):
+    """Parse Newznab caps XML into search types, supported params, and categories."""
     try:
         root = _safe_fromstring(xml_text)
     except (_XmlParseError, _UnsafeXmlError, TypeError):
@@ -108,6 +110,7 @@ def parse_caps(xml_text):
 
 
 def fetch_caps(api_url, api_key, timeout=15):
+    """Fetch and parse Newznab caps, returning ``(caps, error)``."""
     url = build_caps_url(api_url, api_key)
     try:
         response = _http_get(url, timeout=timeout, max_bytes=CAPS_MAX_BYTES)

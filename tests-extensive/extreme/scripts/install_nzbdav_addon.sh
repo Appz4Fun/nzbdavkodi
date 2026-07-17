@@ -40,8 +40,15 @@ kodi_version_supported() {
 echo "[nzbdav-addon] just release"
 ( cd "$REPO_ROOT" && just release )
 
-# `just release` writes the addon zip to the repository root; find the latest.
-ZIP="$(ls -t "$REPO_ROOT"/plugin.video.nzbdav-*.zip 2>/dev/null | head -n1)"
+# `just release` writes the addon zip to the repository root; find the latest
+# by mtime with a glob + `-nt` so odd filenames can't break word splitting.
+ZIP=""
+for zip_candidate in "$REPO_ROOT"/plugin.video.nzbdav-*.zip; do
+    [[ -e "$zip_candidate" ]] || continue
+    if [[ -z "$ZIP" || "$zip_candidate" -nt "$ZIP" ]]; then
+        ZIP="$zip_candidate"
+    fi
+done
 if [[ -z "$ZIP" ]]; then
     echo "[nzbdav-addon] FATAL: no zip found in $REPO_ROOT/"
     exit 1
@@ -74,6 +81,7 @@ RENDERED="$WORKDIR/settings.xml"
 # bypasses OrbStack's transparent proxy for RFC1918 destinations via
 # NO_PROXY (set on the kodi-desktop service in docker-compose.yml), so
 # LAN-hosted Hydra URLs work without rewriting.
+# shellcheck disable=SC2016  # envsubst needs the ${VAR} tokens literal
 SUBST_VARS='${HYDRA_URL} ${HYDRA_API_KEY} ${NZBDAV_API_KEY} ${WEBDAV_USERNAME} ${WEBDAV_PASSWORD}'
 for var_name in HYDRA_URL HYDRA_API_KEY NZBDAV_API_KEY WEBDAV_USERNAME WEBDAV_PASSWORD; do
     if [[ -z "${!var_name:-}" ]]; then

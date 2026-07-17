@@ -39,6 +39,7 @@ _MULTIPLE_UNDERSCORES_RE = re.compile(r"_+")
 
 
 def slugify_preset_id(name):
+    """Return a slug: ``name`` lowercased with non-alphanumerics as underscores."""
     value = _NON_ALPHANUMERIC_RE.sub("_", name).strip("_").lower()
     return _MULTIPLE_UNDERSCORES_RE.sub("_", value)
 
@@ -48,6 +49,7 @@ def _preset(indexer_id, name, api_url):
 
 
 def list_newznab_presets():
+    """Return all Newznab presets as dicts, sorted by display name."""
     return [
         _preset(indexer_id, name, api_url)
         for indexer_id, name, api_url in sorted(
@@ -58,6 +60,7 @@ def list_newznab_presets():
 
 
 def get_preset(indexer_id):
+    """Return the preset dict for ``indexer_id``, or None if unknown."""
     for preset in list_newznab_presets():
         if preset["id"] == indexer_id:
             return preset
@@ -65,5 +68,6 @@ def get_preset(indexer_id):
 
 
 def host_contains(host, needles):
+    """Return True when ``host`` contains any of ``needles`` (case-insensitive)."""
     lowered = str(host or "").lower()
     return any(str(needle).lower() in lowered for needle in needles)

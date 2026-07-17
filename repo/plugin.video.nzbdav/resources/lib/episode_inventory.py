@@ -26,6 +26,8 @@ _AMBIGUOUS_LEADING_MARKERS = frozenset(("extra", "extras", "trailer", "trailers"
 
 
 class VideoFile(NamedTuple):
+    """One candidate video file with its episode tags and auxiliary flag."""
+
     path: str
     size: int
     episode_tags: frozenset
@@ -33,6 +35,8 @@ class VideoFile(NamedTuple):
 
 
 class VideoInventory(NamedTuple):
+    """Result of episode-aware selection over a set of video files."""
+
     selected_path: Optional[str]
     selected_size: int
     files: tuple

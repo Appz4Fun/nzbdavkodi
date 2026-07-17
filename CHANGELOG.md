@@ -61,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [2.0.0-beta.1] — 2026-07-09
+## [2.0.0-beta.1][] — 2026-07-09
 
 > **The big one.** Two months of accumulated work since 1.2.3, released together
 > as a beta: a new NZBGet backend with automatic duplicate-fleet failover, a
@@ -262,7 +262,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vendored PTT parser), so defended-but-flagged patterns and test-only code
   stop generating false-positive CI noise.
 
-## [1.2.3] — 2026-05-08
+## [1.2.3][] — 2026-05-08
 
 > **Proxy fallback and repository-install hardening.** This release keeps
 > fallback rescue paths active for MKV playback, avoids unsafe service-thread
@@ -296,7 +296,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RunScript settings paths, WebDAV path encoding, and Docker/VNC functional
   playback scaffolding.
 
-## [1.2.2] — 2026-05-07
+## [1.2.2][] — 2026-05-07
 
 > **Hotfix for Kodi/CoreELEC freezes when opening the NZB-DAV add-on info
 > dialog.** The published `v1.2.1` release asset still carried the full
@@ -308,7 +308,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shipped package, matching the repository-side metadata guard and preventing
   the oversized add-on info dialog path from being republished.
 
-## [1.2.1] — 2026-05-07
+## [1.2.1][] — 2026-05-07
 
 > **Fallback selection handles more real-world NZBs and avoids more wasted
 > manifest fetches.** Parser-unsupported candidates can now use conservative
@@ -345,7 +345,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synthesis, cached prefetch proof size-gate enforcement, raw NZB fetch caching
   with fresh health-check parsing, and failed-history polling precedence.
 
-## [1.2.0] — 2026-05-07
+## [1.2.0][] — 2026-05-07
 
 > **RunScript playback now gets the same fallback discovery as plugin-handle
 > playback.** TMDBHelper script-mode picks were previously skipping standby
@@ -382,7 +382,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `settings_getter` plumbing through fallback discovery and submission, and
   probe-thread starvation during submit.
 
-## [1.1.0] — 2026-05-07
+## [1.1.0][] — 2026-05-07
 
 > **Playback starts sooner and avoids the post-picker freeze.** TMDBHelper now
 > enters the addon through a script-mode player path, and already-ready MKV
@@ -421,7 +421,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   faster provider/search handoff, nonblocking submit and poll loops, direct MKV
   playback handoff, 99% completed-history races, and rate-limit submit errors.
 
-## [1.0.9] — 2026-05-06
+## [1.0.9][] — 2026-05-06
 
 > **Fallback discovery and failover are faster.** This batch keeps the same
 > conservative fallback safety chain while moving expensive work out of the
@@ -474,7 +474,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.8] — 2026-05-05
+## [1.0.8][] — 2026-05-05
 
 > **Fallback manifest hardening.** This release tightens the v1.0.7 manifest
 > grouping path so malformed metadata fails closed and NZB downloads use the
@@ -496,7 +496,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.7] — 2026-05-04
+## [1.0.7][] — 2026-05-04
 
 > **Fallback streams are on by default.** Standby fallback submits now default
 > to 5 per primary result, stay on the pass-through proxy path, and replace
@@ -525,7 +525,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.6] — 2026-05-04
+## [1.0.6][] — 2026-05-04
 
 > **Live fallback streams on a pass-through-first proxy.** Duplicate releases
 > can now be attached as standby sources for the same playback session, while
@@ -568,7 +568,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.5] — 2026-05-04
+## [1.0.5][] — 2026-05-04
 
 > **Direct Newznab indexers and repository update hardening.** Users who do
 > not run NZBHydra2 or Prowlarr can now configure Newznab-compatible
@@ -617,7 +617,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.4] — 2026-04-25
+## [1.0.4][] — 2026-04-25
 
 > **Pass-through stall watchdog closes the playback wedge.** Live triage on
 > the CoreELEC test box on 2026-04-25 produced a complete repro: a 4K HDR
@@ -747,7 +747,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.3] — 2026-04-23
+## [1.0.3][] — 2026-04-23
 
 > **Hotfix for "Refusing to start unsafe ffmpeg command" HTTP 500 on every
 > auth'd force-remux stream.** `_is_safe_ffmpeg_cmd` (PR #83 security
@@ -775,7 +775,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.2] — 2026-04-23
+## [1.0.2][] — 2026-04-23
 
 > **Hotfix for `Completed but no video found` on reverse-proxied nzbdav
 > setups.** `v1.0.0-pre-alpha` added a cross-origin host check on every
@@ -802,7 +802,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.1] — 2026-04-23
+## [1.0.1][] — 2026-04-23
 
 > **Source-data Dolby Vision classifier.** The ffmpeg-stderr DV probe shipped
 > with `1.0.0-pre-alpha` is retired in favour of a pure-Python RPU parser
@@ -871,7 +871,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.0-pre-alpha] — 2026-04-15
+## [1.0.0-pre-alpha][] — 2026-04-15
 
 > **First major rewrite milestone — tagged on the spike/hls-fmp4 branch as a pre-release before merging to main.** Big-file force-remux on by default, the fmp4 HLS spike landed and self-heals on failure, the submit pipeline stops freezing on slow nzbdav, the resolver hardens against typo'd settings, and `PROXY.md` documents the proxy subsystem end-to-end. 100 GB DV REMUXes now force-remux through ffmpeg instead of crashing 32-bit Kodi on pass-through, and the experimental fragmented-MP4 HLS branch (opt-in via Advanced settings) automatically falls back to the known-good piped-Matroska path before Kodi ever sees a broken URL when ffmpeg can't produce output. Verified on a CoreELEC ARM64 test box against multiple UHD remuxes — fmp4 HLS gives full random seek for non-DV-Profile-7 sources, matroska fallback covers the DV P7 case.
 
@@ -920,7 +920,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.21] — 2026-04-13
+## [0.6.21][] — 2026-04-13
 
 > **Two `submit_nzb` lifecycle fixes.** The addon now tells nzbdav to cancel an in-flight job when it gives up on a download, so re-submitting the same NZB doesn't get blocked by stale duplicates. And when nzbdav rejects a submit, the dialog now shows the actual server message instead of a generic "check your settings" string.
 
@@ -930,7 +930,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.20] — 2026-04-13
+## [0.6.20][] — 2026-04-13
 
 > **Two resolve-loop fixes.** Kodi's UI no longer briefly freezes during resolve polling when nzbdav is momentarily unreachable, and an invalid WebDAV password now surfaces as the "Authentication failed" dialog within a poll iteration instead of being silently masked until the download timeout fires.
 
@@ -940,7 +940,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.19] — 2026-04-12
+## [0.6.19][] — 2026-04-12
 
 > **Documentation refresh.** Nothing user-visible. The README finally catches up with how the stream proxy has actually worked since v0.6.14.
 
@@ -952,7 +952,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.18] — 2026-04-12
+## [0.6.18][] — 2026-04-12
 
 > **Big MKVs now play, seek, and recover from bad Usenet articles — without ffmpeg in the loop.** Pass-through is finally the default on 32-bit Kodi, which gives you native scrubbing through the source file's real Cues plus v0.6.15's zero-fill recovery on missing articles. If huge remuxes ever felt fragile, this is the release you want.
 
@@ -966,7 +966,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.17] — 2026-04-12
+## [0.6.17][] — 2026-04-12
 
 > **Kill the zombie.** Fixes a nasty bug where a stalled playback would leave an ffmpeg remux process behind, so the next time you hit Play the addon hung with "Playback never started after 70 s". Restarts just work again.
 
@@ -977,7 +977,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.16] — 2026-04-12
+## [0.6.16][] — 2026-04-12
 
 > **First attempt at fixing huge MKVs on 32-bit Kodi.** Force-remuxes anything over 4 GB through ffmpeg so Kodi never sees an overflowing Content-Length. **Superseded by v0.6.18** — the real root cause turned out to be elsewhere (already fixed in v0.6.14). The setting is still available if your platform needs it.
 
@@ -990,7 +990,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.15] — 2026-04-12
+## [0.6.15][] — 2026-04-12
 
 > **Your stream no longer dies on a single bad Usenet article.** The proxy probes forward to find a readable offset, fills the gap with zeros, and keeps playing. Retries for up to 30 seconds in case the backend is just briefly unhappy.
 
@@ -1000,7 +1000,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.14] — 2026-04-12
+## [0.6.14][] — 2026-04-12
 
 > **Fixes "Playback failed to start" on MKV files** by routing every format through the local stream proxy. Kodi no longer pokes the WebDAV server directly, which was triggering a PROPFIND cascade that broke playback on some setups.
 
@@ -1010,7 +1010,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.13] — 2026-04-12
+## [0.6.13][] — 2026-04-12
 
 > **NZB submit timeout is now configurable.** Large NZBs can take longer than 15 seconds for nzbdav to parse; the default is now 30 seconds and you can tune it in settings.
 
@@ -1019,7 +1019,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.12] — 2026-04-12
+## [0.6.12][] — 2026-04-12
 
 > **Fixes "Playback failed to start" when you replay the same NZB.** Kodi was auto-resuming from stale bookmarks on plugin URLs; those are now wiped before each play.
 
@@ -1028,7 +1028,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.11] — 2026-04-12
+## [0.6.11][] — 2026-04-12
 
 > **Error messages stop getting truncated.** NZBHydra failures and invalid responses pop up in proper modal dialogs with the full text, and duplicate results across indexers stay visible instead of being merged.
 
@@ -1041,7 +1041,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.10] — 2026-04-12
+## [0.6.10][] — 2026-04-12
 
 > **Every playback failure gets a real dialog now.** Toast notifications were too easy to miss, especially for late failures like missing articles or auth rejection mid-stream.
 
@@ -1054,7 +1054,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.9] — 2026-04-12
+## [0.6.9][] — 2026-04-12
 
 > **Duplicate results from multiple indexers collapse into one row.** Also, the **Max results** setting actually limits NZBHydra2 queries now — it was previously hardcoded to 100.
 
@@ -1066,7 +1066,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.8] — 2026-04-12
+## [0.6.8][] — 2026-04-12
 
 > **Fixes playback failing because Kodi was mangling the auth header.** URL-encoded `=` characters in pipe-syntax auth were being eaten. Download failures also get a modal dialog instead of a toast now.
 
@@ -1079,7 +1079,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.7] — 2026-04-10
+## [0.6.7][] — 2026-04-10
 
 > **Internal cleanup.** No user-visible changes.
 
@@ -1088,7 +1088,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.6] — 2026-04-10
+## [0.6.6][] — 2026-04-10
 
 > **Security hardening.** API keys and auth credentials are now redacted from debug logs, and the stream proxy rejects non-HTTP URLs. Includes several internal cleanups to clear code-scanning alerts.
 
@@ -1107,7 +1107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.5] — 2026-04-10
+## [0.6.5][] — 2026-04-10
 
 > **The addon actually tells you when something goes wrong.** Download failures, missing video files, stream errors — all surfaced to the user instead of silently eaten. Also fixes a playback freeze when ffmpeg's stderr buffer filled up.
 
@@ -1121,7 +1121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.2] — 2026-04-10
+## [0.6.2][] — 2026-04-10
 
 > **Flaky test fix.** No user-visible changes.
 
@@ -1130,7 +1130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.1] — 2026-04-10
+## [0.6.1][] — 2026-04-10
 
 > **Internal cleanup.** No user-visible changes.
 
@@ -1140,7 +1140,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.0] — 2026-04-07
+## [0.6.0][] — 2026-04-07
 
 > **A huge one.** MP4 files now get native Kodi seeking, pause, and Dolby Vision support via a **pure-Python proxy that rewrites the MP4's internal chunk offsets on the fly** — no ffmpeg re-encode. Files over 4 GB work too. There's a three-tier fallback if the fast path fails, and a new "container" column in the results list makes MP4 vs MKV obvious at a glance.
 
@@ -1165,7 +1165,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.0] — 2026-04-06
+## [0.5.0][] — 2026-04-06
 
 > **Settings are simpler.** The WebDAV URL field is gone (it defaults to the nzbdav URL automatically), and release-group fields became proper multi-select dialogs with 93 known groups pre-loaded. The TMDBHelper installer no longer prompts — it just installs.
 
@@ -1187,7 +1187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.3] — 2026-04-06
+## [0.4.3][] — 2026-04-06
 
 > **First cut of the stream proxy.** MP4 files get remuxed to MKV on the fly via ffmpeg to work around a 32-bit Kodi `CFileCache` bug, subtitles are converted from `mov_text` to SRT, and seeking works with a real progress bar. The proxy now lives in the background service, so it survives script exit and can auto-recover on playback failure.
 
@@ -1207,7 +1207,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.1] — 2026-04-06
+## [0.4.1][] — 2026-04-06
 
 > **Security review fixes.** Addressed HIGH/MEDIUM findings from code review. No user-visible behaviour changes.
 
@@ -1216,7 +1216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.0] — 2026-04-06
+## [0.4.0][] — 2026-04-06
 
 > **Spot instant plays at a glance.** NZBs that are already downloaded in nzbdav now get a lightning-bolt indicator in the results list. Also silences some noisy log spam when you stop playback.
 
@@ -1228,7 +1228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.3.0] — 2026-04-05
+## [0.3.0][] — 2026-04-05
 
 > **WebDAV streaming works reliably on CoreELEC** via an MP4 faststart proxy. Adds Test Connection buttons for NZBHydra2 and nzbdav in settings, skips re-downloading NZBs that are already complete, and TV show search finally uses IMDb ID so it finds the right show every time.
 
@@ -1254,7 +1254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.2.0] — 2026-04-05
+## [0.2.0][] — 2026-04-05
 
 > **Kodi localization support.** The addon UI and settings labels are now driven through Kodi's standard string system, so translations are possible.
 
@@ -1268,7 +1268,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.1.0] — 2026-04-05
+## [0.1.0][] — 2026-04-05
 
 > **Initial release.** Search NZBHydra2, submit to nzbdav, stream via WebDAV — all wrapped in a TMDBHelper player.
 
@@ -1286,6 +1286,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[2.0.0-beta.1]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.3...v2.0.0-beta.1
+[1.2.3]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.2...v1.2.3
+[1.2.2]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.0.9...v1.1.0

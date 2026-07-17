@@ -35,6 +35,8 @@ _NLQ_NUM_PIVOTS = 2
 
 @dataclass
 class DolbyVisionRpuInfo:
+    """Structured DV classification: detected profile and optional EL type."""
+
     profile: int
     el_type: Optional[str] = None
 
@@ -52,6 +54,7 @@ class _BitReader:
         self.bit_pos = 0
 
     def read_bit(self):
+        """Read and return the next bit MSB-first; raise ValueError if truncated."""
         byte_index = self.bit_pos // 8
         if byte_index >= len(self.data):
             # Truncated payload — caller (`parse_unspec62_nalu`) wraps
@@ -67,12 +70,14 @@ class _BitReader:
         return (self.data[byte_index] >> bit_index) & 1
 
     def read_bits(self, count):
+        """Read ``count`` bits MSB-first and return them as an unsigned integer."""
         value = 0
         for _ in range(count):
             value = (value << 1) | self.read_bit()
         return value
 
     def read_ue(self):
+        """Read and return an unsigned Exp-Golomb ``ue(v)`` value."""
         zeros = 0
         while self.read_bit() == 0:
             zeros += 1
@@ -86,12 +91,14 @@ class _BitReader:
         return (1 << zeros) - 1 + self.read_bits(zeros)
 
     def read_se(self):
+        """Read and return a signed Exp-Golomb ``se(v)`` value."""
         value = self.read_ue()
         if value % 2 == 0:
             return -(value // 2)
         return (value + 1) // 2
 
     def read_var(self, bit_count):
+        """Read ``bit_count`` bits; alias for read_bits kept for dovi_tool parity."""
         # Alias for read_bits, preserved for grep parity with dovi_tool's
         # `read_var` naming in rpu_data_mapping.rs / rpu_data_nlq.rs.
         return self.read_bits(bit_count)
@@ -113,6 +120,7 @@ class _RpuHeader:
     use_prev_vdr_rpu_flag: bool
 
     def get_dovi_profile(self):
+        """Return the Dolby Vision profile derived from the header fields."""
         if self.vdr_rpu_profile == 0:
             return 5 if self.bl_video_full_range_flag else 0
         if self.vdr_rpu_profile == 1:
@@ -137,6 +145,7 @@ class _RpuNlq:
     linear_deadzone_threshold: list
 
     def is_mel(self):
+        """Return True when the NLQ fields match the MEL pattern (not FEL)."""
         # MEL has every NLQ field zeroed except vdr_in_max_int, which is all
         # ones. Each (values, expected) pair must hold across all components.
         checks = (
@@ -151,6 +160,7 @@ class _RpuNlq:
         return all(all(v == expected for v in values) for values, expected in checks)
 
     def el_type(self):
+        """Return ``"MEL"`` or ``"FEL"`` from the NLQ classification."""
         return "MEL" if self.is_mel() else "FEL"
 
 

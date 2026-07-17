@@ -142,9 +142,9 @@ if [[ $fail -ne 0 ]]; then
     docker exec "$CONTAINER" ls -la /root/.kodi/addons || true
     echo "[tmdbhelper] tail of kodi.log (broken/install/dependency):"
     docker exec "$CONTAINER" sh -c \
-      'log=$(ls /root/.kodi/temp/kodi*.log 2>/dev/null | head -1); \
-       if [ -n "$log" ]; then \
-         grep -iE "broken|missing|depend|install|themoviedb|tmdbhelper" "$log" | tail -80; \
+      'log=$(ls /root/.kodi/temp/kodi*.log 2>/dev/null | head -1)
+       if [ -n "$log" ]; then
+         grep -iE "broken|missing|depend|install|themoviedb|tmdbhelper" "$log" | tail -80
        else echo "(no kodi.log)"; fi' || true
     exit 1
 fi
@@ -164,6 +164,6 @@ echo "[tmdbhelper] FATAL: $ADDON_ID not in installed+enabled state within 60s"
 echo "$state"
 echo "[tmdbhelper] --- diagnostics ---"
 docker exec "$CONTAINER" sh -c \
-  'log=$(ls /root/.kodi/temp/kodi*.log 2>/dev/null | head -1); \
+  'log=$(ls /root/.kodi/temp/kodi*.log 2>/dev/null | head -1)
    [ -n "$log" ] && grep -iE "broken|missing|depend|themoviedb|tmdbhelper" "$log" | tail -80'
 exit 1
