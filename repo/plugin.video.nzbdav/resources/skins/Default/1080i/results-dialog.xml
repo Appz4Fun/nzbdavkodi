@@ -185,21 +185,25 @@
           <left>1190</left><top>4</top><width>120</width><height>30</height>
           <font>font13</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(size)]</label><aligny>center</aligny><align>right</align>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>1320</left><top>4</top><width>140</width><height>30</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(age)]</label><aligny>center</aligny><align>right</align>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>1470</left><top>4</top><width>200</width><height>30</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(indexer)]</label><aligny>center</aligny><align>right</align>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>1680</left><top>4</top><width>220</width><height>30</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(group)]</label><aligny>center</aligny><align>right</align>
+          <scroll>true</scroll>
         </control>
 
         <!-- LINE 2: Res + HDR + Codec + Audio + Source -->
@@ -207,31 +211,37 @@
           <left>20</left><top>34</top><width>100</width><height>26</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(resolution)]</label><aligny>center</aligny>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>120</left><top>34</top><width>200</width><height>26</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(hdr)]</label><aligny>center</aligny>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>320</left><top>34</top><width>150</width><height>26</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(codec)]</label><aligny>center</aligny>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>470</left><top>34</top><width>250</width><height>26</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(audio)]</label><aligny>center</aligny>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>720</left><top>34</top><width>150</width><height>26</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(quality)]</label><aligny>center</aligny>
+          <scroll>true</scroll>
         </control>
         <control type="label">
           <left>870</left><top>34</top><width>80</width><height>26</height>
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(container)]</label><aligny>center</aligny>
+          <scroll>true</scroll>
         </control>
 
         <!-- Row separator -->
