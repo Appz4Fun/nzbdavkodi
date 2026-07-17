@@ -9,6 +9,10 @@ from typing import NamedTuple, Optional
 
 from resources.lib.webdav_match import _resolve_file_episode_tags
 
+# Pre-compiled to avoid re.split() caching overhead in classification loops
+_PATH_SEP_RE = re.compile(r"[/\\]+")
+_WORD_SEP_RE = re.compile(r"[. _-]+")
+
 _AUXILIARY_RE = re.compile(
     r"(?:^|[. _-])(samples?|trailers?|featurettes?|extras?)(?:[. _-]|$)",
     re.IGNORECASE,
@@ -48,13 +52,13 @@ def _coerce_size(value):
 def _auxiliary_parent_markers(parent):
     return tuple(
         item
-        for item in re.split(r"[/\\]+", parent)
+        for item in _PATH_SEP_RE.split(parent)
         if item and _AUXILIARY_TOKEN_RE.fullmatch(item)
     )
 
 
 def _has_different_auxiliary_parent(name, auxiliary_parents):
-    leading_name = re.split(r"[. _-]+", name, maxsplit=1)[0]
+    leading_name = _WORD_SEP_RE.split(name, 1)[0]
     return any(leading_name.casefold() != item.casefold() for item in auxiliary_parents)
 
 
@@ -124,7 +128,7 @@ def _leading_auxiliary_context(path):
     if not match:
         return None
     remainder = name[match.end() :].lstrip(". _-")
-    parts = tuple(item for item in re.split(r"[. _-]+", remainder) if item)
+    parts = tuple(item for item in _WORD_SEP_RE.split(remainder) if item)
     for count in range(1, len(parts) + 1):
         probe = ".".join(parts[:count])
         if _resolve_file_episode_tags(probe, ""):
@@ -134,8 +138,8 @@ def _leading_auxiliary_context(path):
 
 def _release_folder_matches_marker(path, marker):
     parent = path.rsplit("/", 1)[0] if "/" in path else ""
-    for segment in (item for item in re.split(r"[/\\]+", parent) if item):
-        leading_segment = re.split(r"[. _-]+", segment, maxsplit=1)[0]
+    for segment in (item for item in _PATH_SEP_RE.split(parent) if item):
+        leading_segment = _WORD_SEP_RE.split(segment, 1)[0]
         if leading_segment.casefold() == marker:
             return True
     return False
