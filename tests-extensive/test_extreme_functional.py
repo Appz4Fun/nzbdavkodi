@@ -260,13 +260,26 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
                 last_error = f"E{ep:02d}: search failed: {error}"
                 continue
             filtered, _all = filter_results(results, settings_getter=getter)
-            by_size = {}
-            for r in filtered:
-                by_size.setdefault(str(r.get("size", "")), []).append(r)
+            # Same-release reposts report NEAR-identical indexer sizes
+            # (the underlying mkv is byte-identical; posting overhead
+            # shifts the reported NZB size by a few KB), so match with a
+            # tolerance instead of exact equality — the addon's cutover
+            # validation probes the INGESTED file's length and digests,
+            # which are exact for true reposts.
+            sized = sorted(
+                (
+                    (int(r.get("size") or 0), r)
+                    for r in filtered
+                    if str(r.get("size", "")).isdigit()
+                ),
+                key=lambda x: x[0],
+            )
             has_mirror = any(
-                len({r.get("link") for r in rows}) >= 2
-                and len({str(r.get("pubdate", "")).strip() for r in rows}) >= 2
-                for rows in by_size.values()
+                b[0] - a[0] <= max(1_000_000, a[0] // 1000)
+                and a[1].get("link") != b[1].get("link")
+                and str(a[1].get("pubdate", "")).strip()
+                != str(b[1].get("pubdate", "")).strip()
+                for a, b in zip(sized, sized[1:])
             )
             if not has_mirror or len(filtered) < 3:
                 last_error = f"E{ep:02d}: filtered={len(filtered)} mirror={has_mirror}"
