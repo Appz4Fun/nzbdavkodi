@@ -52,25 +52,31 @@ _AUDIO_MAP = {
     "AAC": "AAC",
 }
 
+# Keys are lowercased with "." / "-" stripped; look up via _map_codec so
+# every spelling variant PTT emits ("H.264", "h.264", "h264", "AVC", ...)
+# lands on one canonical filter label. A literal-key map silently missed
+# lowercase dotted forms ("h.264"), so an enabled AVC filter dropped
+# every release titled "H.264" — including byte-identical WEB-DL reposts
+# the fallback pipeline needs as cutover standbys.
 _CODEC_MAP = {
     "x265": "x265/HEVC",
-    "HEVC": "x265/HEVC",
-    "H.265": "x265/HEVC",
-    "h265": "x265/HEVC",
     "hevc": "x265/HEVC",
+    "h265": "x265/HEVC",
     "x264": "x264/AVC",
-    "AVC": "x264/AVC",
-    "H.264": "x264/AVC",
-    "h264": "x264/AVC",
     "avc": "x264/AVC",
-    "AV1": "AV1",
+    "h264": "x264/AVC",
     "av1": "AV1",
-    "VP9": "VP9",
     "vp9": "VP9",
-    "MPEG2": "MPEG-2",
-    "MPEG-2": "MPEG-2",
     "mpeg2": "MPEG-2",
 }
+
+
+def _map_codec(raw):
+    """Map a raw PTT codec string onto its canonical filter label."""
+    if not isinstance(raw, str) or not raw:
+        return raw or ""
+    key = raw.lower().replace(".", "").replace("-", "")
+    return _CODEC_MAP.get(key, raw)
 
 
 def _as_list(value):
@@ -103,8 +109,7 @@ def _normalize_parsed_meta(parsed):
     raw_audio = _as_list(parsed.get("audio", []))
     audio_list = list(dict.fromkeys(_AUDIO_MAP.get(a, a) for a in raw_audio if a))
 
-    raw_codec = parsed.get("codec", "") or ""
-    codec = _CODEC_MAP.get(raw_codec, raw_codec)
+    codec = _map_codec(parsed.get("codec", "") or "")
 
     raw_langs = _as_list(parsed.get("languages", []))
     raw_langs = list(dict.fromkeys(raw_langs))  # dedup, preserve order
@@ -152,7 +157,7 @@ def _normalize_fallback_meta(parsed):
     resolution = _RESOLUTION_MAP.get(raw_res, raw_res)
     hdr_list = _mapped_str_list(parsed, "hdr", _HDR_MAP)
     audio_list = _mapped_str_list(parsed, "audio", _AUDIO_MAP)
-    codec = _CODEC_MAP.get(parsed.get("codec", ""), parsed.get("codec", ""))
+    codec = _map_codec(parsed.get("codec", "") or "")
     raw_langs = _as_list(parsed.get("languages", []) or [])
     raw_channels = _as_list(parsed.get("channels", []) or [])
     channels = raw_channels[0] if raw_channels else ""

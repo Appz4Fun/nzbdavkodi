@@ -98,6 +98,22 @@ def test_parse_title_metadata_720p_web():
     assert meta["resolution"] == "720p"
 
 
+def test_parse_title_metadata_dotted_h264_maps_to_avc_label():
+    """PTT emits lowercase dotted codecs ("h.264"); the canonical label
+    must still come out, or an enabled AVC filter drops every release
+    titled "H.264" (hit live: byte-identical NF WEB-DL reposts vanished
+    from the fallback pool while an "AVC"-titled sibling passed)."""
+    meta = parse_title_metadata(
+        "The.Good.the.Bad.and.the.Ugly.2025.S01E14.1080p.NF.WEB-DL.H.264.AAC-UBWEB"
+    )
+    assert meta["codec"] == "x264/AVC"
+
+
+def test_parse_title_metadata_dotted_h265_maps_to_hevc_label():
+    meta = parse_title_metadata("The.Odyssey.2026.2160p.IQ.WEB-DL.H.265.AAC-ADWeb")
+    assert meta["codec"] == "x265/HEVC"
+
+
 def test_parse_title_metadata_4k_hdr():
     meta = parse_title_metadata(
         "Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX"
