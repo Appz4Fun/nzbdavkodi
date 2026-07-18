@@ -45,6 +45,8 @@ _EBML_ID_BLOCK = 0xA1
 
 @dataclass
 class DolbyVisionSourceResult:
+    """Structured DV source probe result driving fMP4 vs Matroska routing."""
+
     classification: str
     reason: str
     profile: Optional[int] = None

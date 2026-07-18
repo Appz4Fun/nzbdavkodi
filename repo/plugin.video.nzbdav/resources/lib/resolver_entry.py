@@ -45,6 +45,7 @@ class _ResolveSideEffects:
         self.fallback_state = None
 
     def start_cleanup_once(self):
+        """Start the playback-state cleanup once, memoizing ``cleanup_state``."""
         if self.cleanup_state is None:
             self.cleanup_state = _resolver._start_playback_state_cleanup(self._params)
 
@@ -61,6 +62,7 @@ class _ResolveSideEffects:
         )
 
     def start_fallback_after_primary(self, _nzo_id):
+        """Start cleanup, then the fallback submit worker once after primary submit."""
         self.start_cleanup_once()
         if self.fallback_state is None:
             kwargs = {

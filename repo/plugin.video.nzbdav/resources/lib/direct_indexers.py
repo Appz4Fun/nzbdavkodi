@@ -136,6 +136,7 @@ def _configured_json_indexer(item):
 
 
 def get_legacy_configured_indexers(addon=None):
+    """Return the legacy settings.xml preset and custom-slot direct indexers."""
     addon = addon or xbmcaddon.Addon("plugin.video.nzbdav")
     configured = []
     for indexer_id, label, default_url in PRESET_INDEXERS:

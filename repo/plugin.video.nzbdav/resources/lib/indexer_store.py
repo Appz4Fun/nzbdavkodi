@@ -26,10 +26,12 @@ def _profile_path():
 
 
 def default_indexers_path():
+    """Return the default filesystem path to the indexers JSON file."""
     return os.path.join(_profile_path(), INDEXERS_FILENAME)
 
 
 def default_provider_caps_path():
+    """Return the default filesystem path to the provider caps JSON file."""
     return os.path.join(_profile_path(), PROVIDER_CAPS_FILENAME)
 
 
@@ -54,6 +56,7 @@ def _bool_setting(value, default=False):
 
 
 def normalize_caps(caps):
+    """Return a normalized copy of a caps dict, coercing known field types."""
     if not isinstance(caps, dict):
         return {}
 
@@ -72,6 +75,7 @@ def normalize_caps(caps):
 
 
 def normalize_indexer(item):
+    """Return a normalized indexer dict with defaulted fields and enabled flag."""
     item = item if isinstance(item, dict) else {}
     deleted = bool(item.get("deleted"))
     if deleted:
@@ -110,6 +114,7 @@ def _ensure_parent_dir(path):
 
 
 def load_indexers(path=None):
+    """Load and normalize the stored indexers from ``path`` (default profile path)."""
     path = path or default_indexers_path()
     data = _read_json(path, {}, "NZB-DAV: Failed to read indexers JSON")
     indexers = data.get("indexers", []) if isinstance(data, dict) else []
@@ -119,6 +124,7 @@ def load_indexers(path=None):
 
 
 def save_indexers(indexers, path=None):
+    """Write ``indexers`` as normalized JSON to ``path`` (default profile path)."""
     path = path or default_indexers_path()
     _ensure_parent_dir(path)
     payload = {
@@ -145,6 +151,7 @@ def _normalize_provider_caps(data):
 
 
 def load_provider_caps(path=None):
+    """Load and normalize the stored provider caps from ``path``."""
     path = path or default_provider_caps_path()
     data = _read_json(path, {}, "NZB-DAV: Failed to read provider caps JSON")
     if not isinstance(data, dict):
@@ -153,6 +160,7 @@ def load_provider_caps(path=None):
 
 
 def save_provider_caps(providers, path=None):
+    """Write ``providers`` caps as normalized JSON to ``path``."""
     path = path or default_provider_caps_path()
     _ensure_parent_dir(path)
     payload = {

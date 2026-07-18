@@ -155,20 +155,25 @@ class ReadAheadBuffer:
             self.served_high_water = max(self.served_high_water, new_start)
 
     def space_remaining(self):
+        """Return the free bytes left before the window reaches ``cap_bytes`` (>= 0)."""
         with self._lock:
             remaining = self.cap_bytes - len(self.data)
         return remaining if remaining > 0 else 0
 
     def next_fetch_offset(self):
+        """Return the offset just past the buffered window (where prefetch resumes)."""
         with self._lock:
             return self.base_offset + len(self.data)
 
     def is_full(self):
+        """Return True when the buffered window has reached ``cap_bytes``."""
         with self._lock:
             return len(self.data) >= self.cap_bytes
 
     def stop(self):
+        """Signal the prefetch thread to stop."""
         self._stop.set()
 
     def should_stop(self):
+        """Return True once ``stop`` has been called."""
         return self._stop.is_set()

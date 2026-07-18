@@ -343,7 +343,8 @@ class NzbdavPlayer(xbmc.Player):
         except _PLAYER_RUNTIME_ERRORS:
             pass
 
-    def _clear_stable_resume(self, resume_key):
+    @staticmethod
+    def _clear_stable_resume(resume_key):
         if not resume_key:
             return
         try:

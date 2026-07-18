@@ -13,7 +13,7 @@ See TODO.md §D.2.3 (advancedsettings bypass) and §D.5.1 (Phase 1 plan).
 """
 
 import os
-from xml.etree import ElementTree as ET
+from xml.etree import ElementTree
 
 import xbmcvfs
 
@@ -53,7 +53,7 @@ def has_cache_memorysize_zero():
         return False
     try:
         root = _parse_local_xml_root(path)
-    except (ET.ParseError, OSError, ValueError):
+    except (ElementTree.ParseError, OSError, ValueError):
         return False
     cache = root.find("cache")
     if cache is None:

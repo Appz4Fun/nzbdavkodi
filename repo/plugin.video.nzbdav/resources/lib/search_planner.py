@@ -30,6 +30,8 @@ class SearchQuery(NamedTuple):
 
 @dataclass(frozen=True)
 class NewznabSearchPlan:
+    """A planned Newznab search: primary params, fallback params, and reason."""
+
     primary: dict
     fallback: dict
     reason: str
@@ -43,6 +45,7 @@ def plan_newznab_search(
     api_key="",
     max_results=25,
 ):
+    """Return a NewznabSearchPlan for one search request, honoring advertised caps."""
     search_type = query.search_type
     title = query.title
     year = query.year

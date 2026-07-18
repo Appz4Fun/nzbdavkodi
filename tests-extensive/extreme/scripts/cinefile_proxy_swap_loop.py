@@ -80,6 +80,7 @@ def _kodi_rpc(method: str, params: dict | None = None, timeout: int = 10):
 
 
 def url_with_auth(host: str, path: str) -> str:
+    """Build a WebDAV URL with basic-auth credentials embedded."""
     return "http://{}:{}@{}{}".format(
         urllib.parse.quote(WEBDAV_USERNAME, safe=""),
         urllib.parse.quote(WEBDAV_PASSWORD, safe=""),
@@ -89,6 +90,7 @@ def url_with_auth(host: str, path: str) -> str:
 
 
 def redact_url(url: str) -> str:
+    """Strip userinfo/query/fragment from a URL, leaving host and path."""
     parts = urllib.parse.urlsplit(url)
     if not parts.netloc:
         return url
@@ -101,6 +103,7 @@ def redact_url(url: str) -> str:
 
 
 def schedule_fault(at_seconds: float, fault_type: str = "connection_reset"):
+    """Schedule a fault-proxy fault event at the given offset."""
     body = json.dumps(
         {"events": [{"at_seconds": at_seconds, "fault_type": fault_type}]}
     ).encode("utf-8")
@@ -115,6 +118,7 @@ def schedule_fault(at_seconds: float, fault_type: str = "connection_reset"):
 
 
 def clear_fault_schedule():
+    """POST an empty schedule so prior iterations' faults don't fire."""
     body = json.dumps({"events": []}).encode("utf-8")
     req = urllib.request.Request(
         "{}/control/schedule".format(FAULT_PROXY_CONTROL),
@@ -130,6 +134,7 @@ def clear_fault_schedule():
 
 
 def stop_player():
+    """Stop any active Kodi player, ignoring errors."""
     try:
         for p in _kodi_rpc("Player.GetActivePlayers").get("result", []) or []:
             _kodi_rpc("Player.Stop", {"playerid": p.get("playerid", 1)})
@@ -155,6 +160,7 @@ def trigger_direct_play(primary_url: str, fallback_urls: list[str]):
 
 
 def player_status() -> dict:
+    """Return the active Kodi player's type and playback properties."""
     try:
         active = _kodi_rpc("Player.GetActivePlayers").get("result", []) or []
         if not active:
@@ -176,6 +182,7 @@ def player_status() -> dict:
 
 
 def time_to_seconds(time_obj) -> float:
+    """Convert a Kodi Player.GetProperties time dict to total seconds."""
     if not isinstance(time_obj, dict):
         return 0.0
     return (
@@ -187,6 +194,7 @@ def time_to_seconds(time_obj) -> float:
 
 
 def run_iteration(iteration: int, path_a: str, path_b: str, log: Path) -> dict:
+    """Play one alternating primary/fallback iteration and log its timeline."""
     primary_path = path_a if iteration % 2 == 0 else path_b
     fallback_path = path_b if iteration % 2 == 0 else path_a
     primary_url = url_with_auth(HOST_FAULTPROXY, primary_path)  # via fault-proxy
@@ -269,6 +277,7 @@ def _discover_paths() -> tuple[str, str]:
 
 
 def main():
+    """Discover storages and run all proxy-swap iterations."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     log = OUT_DIR / "proxy_swap.jsonl"
     if log.exists():

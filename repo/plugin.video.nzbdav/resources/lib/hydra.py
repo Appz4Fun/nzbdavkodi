@@ -4,7 +4,6 @@
 """NZBHydra2 Newznab API client."""
 
 from datetime import datetime, timezone
-from urllib.error import URLError
 from urllib.parse import urlencode, urlparse
 
 import xbmc
@@ -144,7 +143,8 @@ def _fetch_hydra_xml(request_url, error_prefix):
     """Fetch XML from Hydra and normalize network/runtime failures."""
     try:
         return _http_get(request_url, timeout=300), None
-    except (URLError,) + _HYDRA_REQUEST_ERRORS as error:
+    except _HYDRA_REQUEST_ERRORS as error:
+        # URLError falls under OSError in _HYDRA_REQUEST_ERRORS.
         # HTTPError/URLError str() can echo the failing URL (which embeds
         # the indexer's apikey query param) back into the log. Redact
         # before logging — same defense as the prowlarr fallback path.

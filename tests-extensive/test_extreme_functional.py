@@ -291,6 +291,7 @@ def _wait_for_player(timeout=30):
 
 
 def test_extreme_fallback_run(stack_ready, run_dir):
+    """Play a movie through TMDBHelper while faults trigger fallback cutover."""
     seed_value = _seed()
     rng = random.Random(seed_value)
 

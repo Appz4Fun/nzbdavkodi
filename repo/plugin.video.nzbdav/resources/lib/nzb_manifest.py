@@ -561,6 +561,8 @@ def _valid_nzb_url(url):
         parts = urlsplit(url)
         if not _safe_nzb_url_parts(parts):
             return False
+        # parts.port raises ValueError for out-of-range/non-numeric ports;
+        # the value itself is unused.
         _port = parts.port
     except ValueError:
         return False

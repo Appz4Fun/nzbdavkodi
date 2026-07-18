@@ -392,6 +392,7 @@ def _movie_search_pool(settings, movie, query_title=None, use_imdb=True):
 
 
 def test_movie_search_pool_passes_live_settings_to_hydra_search():
+    """Assert _movie_search_pool forwards live settings into search_hydra."""
     settings = {
         "hydra_url": "http://live-hydra:5076",
         "hydra_api_key": "live-key",
@@ -405,6 +406,7 @@ def test_movie_search_pool_passes_live_settings_to_hydra_search():
     captured = {}
 
     def fake_search(search_type, title, year="", imdb="", settings_getter=None, **_kw):
+        """Record the search args and settings passed by _movie_search_pool."""
         captured.update(
             {
                 "search_type": search_type,
@@ -900,9 +902,11 @@ class _FailingPrimaryWebdavHandler(BaseHTTPRequestHandler):
         return
 
     def do_HEAD(self):
+        """Serve a HEAD request for the primary stream, without a body."""
         self._send_primary(include_body=False)
 
     def do_GET(self):
+        """Serve a GET request for the primary stream, with a body."""
         self._send_primary(include_body=True)
 
     def _send_primary(self, include_body):
@@ -1157,6 +1161,7 @@ def _looks_like_availability_failure(error):
 
 
 def test_functional_matrix_fallback_playback_submits_to_nzbdav_and_switches():
+    """Exercise live fallback playback for The Matrix against real services."""
     env = _live_env()
     settings = _addon_settings(env)
     runtime = _functional_runtime_config()
@@ -1174,6 +1179,7 @@ def test_functional_matrix_fallback_playback_submits_to_nzbdav_and_switches():
 
 
 def test_functional_imdb_top50_random_sample_fallback_playback():
+    """Exercise live fallback playback across a random IMDb Top 50 sample."""
     env = _live_env()
     settings = _addon_settings(env)
     runtime = _functional_runtime_config()

@@ -230,6 +230,7 @@ def process_movie(movie: dict) -> dict:
 
 
 def main():
+    """Process every IMDB Top 50 movie in parallel and write a summary."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     started = time.time()
     summary = []

@@ -40,6 +40,7 @@ OUT_DIR = Path(os.environ.get("CINEFILE_OUT_DIR", "/tmp/cinefile_user_two")).res
 
 
 def redact_url(url: str) -> str:
+    """Strip userinfo/query/fragment from a URL, leaving host and path."""
     parts = urllib.parse.urlsplit(url)
     if not parts.netloc:
         return url
@@ -83,6 +84,7 @@ def _build_kodi_url(mkv_path: str) -> str:
 
 
 def player_status() -> dict:
+    """Return the active Kodi player's id, type, and playback properties."""
     try:
         active = _kodi_rpc("Player.GetActivePlayers").get("result", []) or []
         if not active:
@@ -104,6 +106,7 @@ def player_status() -> dict:
 
 
 def time_to_seconds(time_obj) -> float:
+    """Convert a Kodi Player.GetProperties time dict to total seconds."""
     if not isinstance(time_obj, dict):
         return 0.0
     return (
@@ -115,6 +118,7 @@ def time_to_seconds(time_obj) -> float:
 
 
 def stop_player():
+    """Stop any active Kodi player, ignoring errors."""
     try:
         for p in _kodi_rpc("Player.GetActivePlayers").get("result", []) or []:
             _kodi_rpc("Player.Stop", {"playerid": p.get("playerid", 1)})
@@ -123,10 +127,12 @@ def stop_player():
 
 
 def play(url: str):
+    """Tell Kodi to open and play the given URL."""
     return _kodi_rpc("Player.Open", {"item": {"file": url}})
 
 
 def play_window(url: str, label: str, log: Path, iteration: int) -> dict:
+    """Play url for PER_STREAM_PLAY_SECONDS and return its progress metrics."""
     play_resp = play(url)
     started_at = time.time()
     deadline = started_at + PER_STREAM_PLAY_SECONDS
@@ -176,6 +182,7 @@ def play_window(url: str, label: str, log: Path, iteration: int) -> dict:
 
 
 def main():
+    """Discover two CiNEFiLE storages and alternate playing them."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     log = OUT_DIR / "user_two.jsonl"
     if log.exists():

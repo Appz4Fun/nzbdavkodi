@@ -105,6 +105,7 @@ def _candidate_pool(results, title, pool_limit):
 
 
 def test_live_hydra_matrix_search_produces_fallback_candidates():
+    """Confirm a live Hydra search yields linked fallback candidates."""
     env = _live_env()
     search = _live_search_config()
     settings = _addon_settings(env)
@@ -142,6 +143,7 @@ def test_live_hydra_matrix_search_produces_fallback_candidates():
 
 
 def test_live_nzbdav_api_and_webdav_are_reachable():
+    """Confirm the live nzbdav queue API and WebDAV endpoint respond."""
     env = _live_env()
     settings = _addon_settings(env)
     params = {

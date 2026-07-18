@@ -19,18 +19,22 @@ class ExactJobLookup(NamedTuple):
 
     @property
     def state(self):
+        """Return the tri-state name: "transient", "valid", or "stale"."""
         if not self.lookup_done:
             return "transient"
         return "valid" if self.job is not None else "stale"
 
     @classmethod
     def valid(cls, job):
+        """Return a lookup holding the exact completed ``job``."""
         return cls(job, True)
 
     @classmethod
     def stale(cls):
+        """Return a lookup proving the exact job is absent or no longer completed."""
         return cls(None, True)
 
     @classmethod
     def transient(cls):
+        """Return a lookup marking the backend as inconclusive."""
         return cls(None, False)
