@@ -23,6 +23,7 @@ Follow these rules before making code, release, or deployment changes:
 - Only bump `repo/plugin.video.nzbdav/addon.xml` for add-on releases. This repo no longer contains a Kodi repository add-on.
 - Do not hand-edit the generated docs site under `site/`. The documentation source lives in `docs-site/` and is published to GitHub Pages by the Docs workflow.
 - Do not commit real API keys, WebDAV credentials, Kodi logs, copied crash logs, or local device artifacts.
+- Credentialed test recipes (`just extreme-tests` and the functional/live-service tests) read `.env` from the current directory by default. The canonical `.env` lives in the primary checkout's repo root (`/Users/allen/git/nzbdavkodi/.env`). When running from a git worktree, do not create a worktree-local `.env`; set `EXTREME_ENV_FILE=/Users/allen/git/nzbdavkodi/.env` instead.
 
 ## Critical Invariants
 
