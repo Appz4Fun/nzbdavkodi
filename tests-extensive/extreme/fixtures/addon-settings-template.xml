@@ -85,6 +85,13 @@
          posted on different days; submit them all so repeated
          source_dead cutovers never run out of promotable mirrors. -->
     <setting id="fallback_streams_max">10</setting>
+    <!-- Submit standbys 10s into playback (schema default: 120s). The
+         earliest source_dead slot is t+240s and a ~2 GB standby needs
+         1-2 min of nzbdav ingest before it is promotable; at +120s the
+         first kill races standby readiness (event-4 misses at 180.7s /
+         203.9s, runs 2026-07-18T21-48-42Z and 23-05-22Z) while the
+         later kill always finds a warm mirror and cuts over in <1s. -->
+    <setting id="fallback_submit_delay">10</setting>
     <setting id="proxy_convert_subs">true</setting>
     <setting id="force_remux_threshold_mb">15000</setting>
     <setting id="strict_contract_mode">1</setting>
