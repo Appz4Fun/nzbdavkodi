@@ -308,6 +308,7 @@ class _FakePassthroughHandler:
         self.wfile = _FakeWfile()
         self.connection = _FakeHandlerConn()
         self.close_connection = False
+        self.path = "/content/movie.mkv"
 
     def send_response(self, *_a, **_k):
         pass
@@ -392,6 +393,50 @@ def test_midstream_http_500_parks_pending_and_stops(monkeypatch):
     assert state.pending_fault is not None
     assert state.pending_fault.fault_type == "http_500"
     assert not handler.wfile.chunks
+
+
+def test_source_dead_kills_path_and_404s_subsequent_requests(proxy_with_upstream):
+    """source_dead 404s the current request AND every later request for
+    the same path, while other paths keep streaming — the addon must cut
+    over to a standby to keep playing."""
+    proxy_url, state, _ = proxy_with_upstream
+    state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, "source_dead")]
+    state.start_t = time.monotonic() - 1.0  # already due
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _request_large_range(proxy_url)
+    assert exc.value.code == 404
+    assert state.fired_events[0]["fault_type"] == "source_dead"
+
+    # Same path again: still dead, no schedule entry needed.
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _request_large_range(proxy_url)
+    assert exc.value.code == 404
+
+    # A different path (the standby) streams normally.
+    req = urllib.request.Request(
+        f"{proxy_url}/content/fallback.mkv",
+        headers={"Range": "bytes=2097152-"},
+    )
+    resp = urllib.request.urlopen(req, timeout=10)
+    assert resp.status == 206
+    resp.close()
+
+
+def test_midstream_source_dead_stops_and_kills_path(monkeypatch):
+    chunks = [b"A" * 65536, b"B" * 65536]
+    state = _due_state("source_dead")
+    handler = _run_passthrough(state, chunks, monkeypatch)
+    assert state.fired_events[0]["fault_type"] == "source_dead"
+    assert not handler.wfile.chunks  # stream cut before further bytes
+    assert state.is_dead_path(handler.path.split("?", 1)[0])
+
+
+def test_replace_schedule_clears_dead_paths(control_server):
+    _, state = control_server
+    state.kill_path("/content/old.mkv")
+    state.replace_schedule([fault_proxy.ScheduledEvent(5.0, "http_500")])
+    assert not state.is_dead_path("/content/old.mkv")
 
 
 def test_pending_http_500_served_on_next_request(proxy_with_upstream):

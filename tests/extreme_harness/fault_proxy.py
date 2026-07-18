@@ -65,6 +65,10 @@ VALID_FAULT_TYPES = {
     "slow_upstream",
     "truncated_response",
     "corrupted_bytes",
+    # Permanently 404s the file path being streamed when it fires,
+    # forcing the addon to promote a prevalidated standby (fallback
+    # cutover). Two per schedule walks the fallback chain.
+    "source_dead",
 }
 
 
@@ -102,6 +106,10 @@ class ProxyState:
         # request (http_500): parked here and consumed by the next
         # qualifying request instead.
         self.pending_fault: Optional[ScheduledEvent] = None
+        # File paths killed by source_dead faults: every later request
+        # for them gets an immediate 404, so the addon must cut over to
+        # a standby source to keep playing.
+        self.dead_paths: set = set()
 
     def reset_clock(self) -> None:
         with self.lock:
@@ -116,6 +124,16 @@ class ProxyState:
             self.start_t = time.monotonic()
             self.start_t_wall = time.time()
             self.fired_events.clear()
+            self.dead_paths.clear()
+            self.pending_fault = None
+
+    def kill_path(self, path: str) -> None:
+        with self.lock:
+            self.dead_paths.add(path)
+
+    def is_dead_path(self, path: str) -> bool:
+        with self.lock:
+            return path in self.dead_paths
 
     def next_due_fault(self) -> Optional[ScheduledEvent]:
         """Return and remove the next scheduled event whose at_seconds has elapsed."""
@@ -405,6 +423,32 @@ def _apply_corrupted_bytes(handler, resp, range_header, state) -> None:
     resp.close()
 
 
+def _apply_source_dead(handler, resp, range_header, state) -> None:
+    """Kill this request's file path permanently and 404 the request.
+
+    Every subsequent request for the same path also 404s (see the
+    dead-path gate in _forward), so the addon's retries fail fast and it
+    must promote a prevalidated standby — a real fallback cutover.
+    """
+    resp.close()
+    path = handler.path.split("?", 1)[0]
+    state.kill_path(path)
+    state.record_fired("source_dead", range_header)
+    _log_event(
+        {
+            "fault_type": "source_dead",
+            "t_wall": time.time(),
+            "range": range_header,
+            "path": path,
+        }
+    )
+    handler.send_response(404, "Not Found")
+    handler.send_header("Content-Length", "0")
+    handler.send_header("Connection", "close")
+    handler.close_connection = True
+    handler.end_headers()
+
+
 def _apply_midstream_fault(handler, due, range_header, state) -> Optional[str]:
     """Apply a due fault to an in-flight passthrough stream.
 
@@ -418,6 +462,22 @@ def _apply_midstream_fault(handler, due, range_header, state) -> Optional[str]:
         # Park the 500 for the next request and cut this stream short so
         # that request arrives promptly. Recorded when actually served.
         state.set_pending_fault(due)
+        return "stop"
+    if due.fault_type == "source_dead":
+        # Kill the path being streamed and cut the stream: the addon's
+        # re-request 404s via the dead-path gate and it must cut over.
+        path = handler.path.split("?", 1)[0]
+        state.kill_path(path)
+        state.record_fired("source_dead", range_header)
+        _log_event(
+            {
+                "fault_type": "source_dead",
+                "t_wall": time.time(),
+                "range": range_header,
+                "path": path,
+                "midstream": True,
+            }
+        )
         return "stop"
     payload = {
         "fault_type": due.fault_type,
@@ -448,6 +508,7 @@ def _apply_midstream_fault(handler, due, range_header, state) -> Optional[str]:
 
 
 _FAULT_DISPATCH = {
+    "source_dead": _apply_source_dead,
     "connection_reset": _apply_connection_reset,
     "http_500": _apply_http_500,
     "slow_upstream": _apply_slow_upstream,
@@ -546,6 +607,17 @@ class Handler(BaseHTTPRequestHandler):
         _log("REQUEST " + fmt % args)
 
     def _forward(self, head_only=False):
+        # Dead-path gate: a source_dead fault killed this file — 404
+        # immediately without touching the upstream so the addon's
+        # retries fail fast and promotion to a standby begins.
+        if self.state.is_dead_path(self.path.split("?", 1)[0]):
+            self.send_response(404, "Not Found")
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            # pylint: disable-next=attribute-defined-outside-init
+            self.close_connection = True
+            self.end_headers()
+            return
         method = "HEAD" if head_only else self.command
         conn = http.client.HTTPConnection(
             _upstream.hostname,

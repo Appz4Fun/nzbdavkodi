@@ -107,6 +107,13 @@ FAULT_TYPES = [
     "truncated_response",
     "corrupted_bytes",
 ]
+# Kills the currently-streaming file path permanently (404), forcing the
+# addon to promote a prevalidated standby. Two per schedule exercises
+# consecutive fallback cutovers (the pick guarantees >=2 standbys).
+_SOURCE_DEAD_COUNT = 2
+# source_dead slots must land after the prewarm burst has armed the
+# standbys (playback + 120s, plus submit/prevalidate time).
+_SOURCE_DEAD_MIN_AT = 240
 
 EXTREME_FILTER_SETTINGS = {
     "filter_2160p": "false",
@@ -183,16 +190,29 @@ def _kodi_rpc(method: str, params: dict | None = None, request_id: int = 1) -> d
 
 
 def _generate_fault_schedule(rng: random.Random) -> list[dict]:
-    """5 random times in [60, 1140], min 60s apart, with shuffled fault types."""
+    """5 events: 3 recoverable faults + 2 source_dead cutover forcers.
+
+    Times land in [60, 1020] with >=90s spacing (a source_dead cutover
+    needs runway to complete before the next event). source_dead events
+    only occupy slots past _SOURCE_DEAD_MIN_AT so the prewarm burst has
+    already armed the standbys they force promotion onto.
+    """
     while True:
-        candidates = sorted(rng.sample(range(60, 1140), 5))
-        if all(b - a >= 60 for a, b in zip(candidates, candidates[1:])):
-            break
-    types = FAULT_TYPES.copy()
-    rng.shuffle(types)
-    return [
-        {"at_seconds": float(t), "fault_type": ft} for t, ft in zip(candidates, types)
-    ]
+        candidates = sorted(rng.sample(range(60, 1020), 5))
+        if all(b - a >= 90 for a, b in zip(candidates, candidates[1:])):
+            late_slots = [t for t in candidates if t >= _SOURCE_DEAD_MIN_AT]
+            if len(late_slots) >= _SOURCE_DEAD_COUNT:
+                break
+    dead_slots = set(rng.sample(late_slots, _SOURCE_DEAD_COUNT))
+    recoverable = rng.sample(FAULT_TYPES, 5 - _SOURCE_DEAD_COUNT)
+    schedule = []
+    for t in candidates:
+        if t in dead_slots:
+            fault_type = "source_dead"
+        else:
+            fault_type = recoverable.pop(0)
+        schedule.append({"at_seconds": float(t), "fault_type": fault_type})
+    return schedule
 
 
 def _pick_movie_with_fallback_pool(rng: random.Random, settings, exclude=frozenset()):
