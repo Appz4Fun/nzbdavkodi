@@ -281,34 +281,47 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
         return str(settings.get(k, d))
 
     episodes = [e for e in _TV_SERIES["episodes"] if e not in exclude]
-    rng.shuffle(episodes)
     last_error = "no episodes left"
-    best = None  # (cluster_len, pool_len, ep, filtered)
-    for ep in episodes[:8]:
-        try:
-            results, error = search_hydra(
-                "episode",
-                _TV_SERIES["title"],
-                season=str(_TV_SERIES["season"]),
-                episode=str(ep),
-                settings_getter=getter,
+    # Indexers behind Hydra bounce transiently (rate-limit cooldowns,
+    # brief outages) and Hydra re-queries ALL of them on every search —
+    # so a thin scan is retried after a pause rather than failing the
+    # run on one bad window.
+    for scan_pass in range(1, 4):
+        rng.shuffle(episodes)
+        best = None  # (cluster_len, pool_len, ep, filtered)
+        for ep in episodes[:8]:
+            try:
+                results, error = search_hydra(
+                    "episode",
+                    _TV_SERIES["title"],
+                    season=str(_TV_SERIES["season"]),
+                    episode=str(ep),
+                    settings_getter=getter,
+                )
+                if error or not results:
+                    last_error = f"E{ep:02d}: search failed: {error}"
+                    continue
+                filtered, _all = filter_results(results, settings_getter=getter)
+                cluster = _mirror_cluster_len(filtered)
+                if cluster < 2 or len(filtered) < 3:
+                    last_error = f"E{ep:02d}: filtered={len(filtered)} cluster={cluster}"
+                    continue
+                print(
+                    f"[extreme] E{ep:02d}: pool={len(filtered)} mirror_cluster={cluster}"
+                )
+                if best is None or (cluster, len(filtered)) > (best[0], best[1]):
+                    best = (cluster, len(filtered), ep, filtered)
+            except Exception as exc:  # noqa: BLE001
+                last_error = f"E{ep:02d}: {exc}"
+                continue
+        if best is not None:
+            return best[2], best[3]
+        if scan_pass < 3:
+            print(
+                f"[extreme] scan pass {scan_pass}: no mirror pool "
+                f"({last_error}); retrying in 90s"
             )
-            if error or not results:
-                last_error = f"E{ep:02d}: search failed: {error}"
-                continue
-            filtered, _all = filter_results(results, settings_getter=getter)
-            cluster = _mirror_cluster_len(filtered)
-            if cluster < 2 or len(filtered) < 3:
-                last_error = f"E{ep:02d}: filtered={len(filtered)} cluster={cluster}"
-                continue
-            print(f"[extreme] E{ep:02d}: pool={len(filtered)} mirror_cluster={cluster}")
-            if best is None or (cluster, len(filtered)) > (best[0], best[1]):
-                best = (cluster, len(filtered), ep, filtered)
-        except Exception as exc:  # noqa: BLE001
-            last_error = f"E{ep:02d}: {exc}"
-            continue
-    if best is not None:
-        return best[2], best[3]
+            time.sleep(90)
     pytest.fail(f"no episode with a mirror pool: {last_error}")
 
 
