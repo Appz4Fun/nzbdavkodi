@@ -45,7 +45,7 @@ def test_extreme_addon_fixture_uses_upstream_webdav_root():
     assert "http://fault-proxy:8280/dav" not in template
 
 
-def test_extreme_addon_fixture_prefers_same_framestor_avc_profile_as_preflight():
+def test_extreme_addon_fixture_prefers_same_x264_encode_profile_as_preflight():
     template = ADDON_SETTINGS.read_text(encoding="utf-8")
     harness = (REPO_ROOT / "tests-extensive" / "test_extreme_functional.py").read_text(
         encoding="utf-8"
@@ -56,7 +56,7 @@ def test_extreme_addon_fixture_prefers_same_framestor_avc_profile_as_preflight()
         '<setting id="filter_720p">false</setting>',
         '<setting id="filter_avc">true</setting>',
         '<setting id="filter_av1">false</setting>',
-        '<setting id="filter_require_keywords">framestor,1080p,avc,remux</setting>',
+        '<setting id="filter_require_keywords">1080p,bluray,x264</setting>',
         '<setting id="max_results">250</setting>',
     ]:
         assert expected in template
@@ -68,7 +68,7 @@ def test_extreme_addon_fixture_prefers_same_framestor_avc_profile_as_preflight()
         '"filter_720p": "false"',
         '"filter_avc": "true"',
         '"filter_av1": "false"',
-        '"filter_require_keywords": "framestor,1080p,avc,remux"',
+        '"filter_require_keywords": "1080p,bluray,x264"',
         '"filter_release_group": ""',
         '"max_results": "250"',
     ]:

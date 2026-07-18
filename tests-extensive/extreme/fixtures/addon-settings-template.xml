@@ -38,16 +38,20 @@
     <setting id="filter_dd">true</setting>
     <setting id="filter_aac">true</setting>
     <setting id="filter_hevc">false</setting>
-    <!-- Require a known-simple 1080p AVC FraMeSToR remux profile. This
-         keeps the runtime TMDBHelper search aligned with the Python
-         preflight candidate and avoids WEB-DL/AV1/HEVC releases that are
-         unstable under the headless software-rendered Kodi container. -->
+    <!-- Require standard 1080p BluRay x264 ENCODES (not REMUXes): the
+         x264 token only appears on encode releases, so this keeps picks
+         at 2-4 MB/s bitrates that llvmpipe software decode sustains with
+         margin. 30-40 GB REMUX picks ran at the container's decode
+         capacity limit — one grain-heavy TrueHD REMUX starved the player
+         mid-soak while the proxy delivered at full rate (run
+         2026-07-18T12-11-02Z). Also keeps the runtime TMDBHelper search
+         aligned with the Python preflight candidate. -->
     <setting id="filter_avc">true</setting>
     <setting id="filter_av1">false</setting>
     <setting id="filter_vp9">false</setting>
     <setting id="filter_mpeg2">true</setting>
     <setting id="filter_english">true</setting>
-    <setting id="filter_require_keywords">framestor,1080p,avc,remux</setting>
+    <setting id="filter_require_keywords">1080p,bluray,x264</setting>
     <!-- Disable size filtering for the extreme test: the orchestrator
          picks random IMDB Top 50 movies whose releases vary widely in size
          (e.g. 1962's Harakiri ships well under 10 GB), and the test's

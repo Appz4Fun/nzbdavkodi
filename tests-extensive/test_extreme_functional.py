@@ -131,7 +131,7 @@ EXTREME_FILTER_SETTINGS = {
     "filter_vp9": "false",
     "filter_mpeg2": "true",
     "filter_english": "true",
-    "filter_require_keywords": "framestor,1080p,avc,remux",
+    "filter_require_keywords": "1080p,bluray,x264",
     "filter_release_group": "",
     "filter_exclude_keywords": "",
     "filter_exclude_release_group": "",
