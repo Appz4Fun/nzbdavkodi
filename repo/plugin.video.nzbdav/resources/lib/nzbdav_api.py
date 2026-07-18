@@ -12,6 +12,7 @@ import xbmcaddon  # noqa: F401  pylint: disable=unused-import  (module-scope Kod
 
 from resources.lib.exact_job import ExactJobLookup
 from resources.lib.http_util import http_get as _http_get
+from resources.lib.http_util import http_get_bytes as _http_get_bytes
 from resources.lib.http_util import http_post as _http_post
 from resources.lib.http_util import redact_text as _redact_text
 from resources.lib.nzbdav_api_parsing import (
@@ -119,22 +120,48 @@ def _get_submit_timeout(settings_getter=None):
 
 
 # NZB fetches from the indexer are quick (a few MB of XML at most), so
-# they get a flat timeout independent of the submit timeout.
+# they get a flat timeout independent of the submit timeout. The size cap
+# bounds memory if an indexer misbehaves: even a 100 GB release's NZB is
+# tens of MB of XML, so 128 MiB is generous headroom; anything larger
+# falls back to the server-side addurl fetch (the server owns its own
+# limits there).
 _NZB_FETCH_TIMEOUT = 30
+_NZB_FETCH_MAX_BYTES = 128 * 1024 * 1024
+
+
+def _looks_like_nzb_document(body):
+    """Return whether ``body`` parses as XML with an <nzb> document root.
+
+    A plain "starts with <" sniff accepted HTML error pages served with
+    HTTP 200; parse and check the root's local name instead (the newznab
+    namespace makes the tag '{...}nzb').
+    """
+    from resources.lib.xml_safety import ParseError, safe_fromstring
+
+    try:
+        root = safe_fromstring(body)
+    except (ParseError, ValueError):
+        return False
+    tag = root.tag if isinstance(root.tag, str) else ""
+    return tag.rsplit("}", 1)[-1].lower() == "nzb"
 
 
 def _fetch_nzb_body(nzb_url, nzb_name):
     """Fetch the NZB bytes from the indexer for an addfile submit.
 
-    Returns the body as bytes, or ``None`` on any failure (network error,
-    empty response, or a body that isn't XML — e.g. an indexer error page
-    served with HTTP 200). ``None`` makes ``submit_nzb`` fall back to the
+    Returns the RAW body bytes (no decode: a lossy UTF-8 round-trip
+    would corrupt non-UTF-8 NZBs before upload), or ``None`` on any
+    failure — network error, oversized response, or a body that isn't
+    an actual NZB document (e.g. an indexer HTML error page served with
+    HTTP 200). ``None`` makes ``submit_nzb`` fall back to the
     server-side ``addurl`` fetch, preserving the old behavior.
     """
     if not nzb_url:
         return None
     try:
-        body = _http_get(nzb_url, timeout=_NZB_FETCH_TIMEOUT)
+        body = _http_get_bytes(
+            nzb_url, timeout=_NZB_FETCH_TIMEOUT, max_bytes=_NZB_FETCH_MAX_BYTES
+        )
     except Exception as exc:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Local NZB fetch failed for '{}' ({}); falling back to "
@@ -142,14 +169,9 @@ def _fetch_nzb_body(nzb_url, nzb_name):
             xbmc.LOGWARNING,
         )
         return None
-    if isinstance(body, str):
-        body = body.encode("utf-8")
-    # An NZB is XML. Anything else (empty body, HTML error page with a
-    # 200 status) would just be rejected server-side with a confusing
-    # parse error, so treat it as a fetch failure instead.
-    if not body or not body.lstrip()[:1] == b"<":
+    if not body or not _looks_like_nzb_document(body):
         xbmc.log(
-            "NZB-DAV: Local NZB fetch for '{}' returned non-XML content; "
+            "NZB-DAV: Local NZB fetch for '{}' returned non-NZB content; "
             "falling back to server-side addurl".format(nzb_name),
             xbmc.LOGWARNING,
         )
@@ -303,7 +325,8 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
         Reads nzbdav settings from Kodi via xbmcaddon.Addon("plugin.video.nzbdav").
         Fetches the NZB from the indexer and POSTs it to nzbdav /api with
         mode=addfile; falls back to a GET with mode=addurl when the local
-        fetch fails (nzbdav then fetches the URL server-side — newer
+        fetch fails or the addfile upload is refused with a whole-request
+        4xx (nzbdav then fetches the URL server-side — newer
         nzbdav builds refuse this for private-IP indexer hosts, which is
         why addfile is the primary path).
         Logs submission URLs, successes, and errors to the Kodi log.
@@ -327,11 +350,33 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
         url, timeout = _build_addfile_request(
             base_url, api_key, nzb_name, settings_getter, submit_timeout
         )
-        return _execute_submit(url, timeout, nzb_name, nzb_body=nzb_body)
+        nzo_id, error = _execute_submit(url, timeout, nzb_name, nzb_body=nzb_body)
+        if not _addfile_refused(error):
+            return nzo_id, error
+        # A whole-request 4xx means the endpoint refused the multipart
+        # upload shape (older SAB-compatible servers without addfile) —
+        # the legacy server-side addurl fetch may still work. Timeouts
+        # and 5xx/status:false are NOT retried here: the server may have
+        # accepted the job, and the caller's queue-adoption probes own
+        # that ambiguity — a second submit would risk duplicates.
+        xbmc.log(
+            "NZB-DAV: addfile submit refused for '{}' (HTTP {}); retrying "
+            "via server-side addurl".format(nzb_name, error.get("status")),
+            xbmc.LOGWARNING,
+        )
     url, timeout = _build_submit_request(
         base_url, api_key, nzb_url, nzb_name, settings_getter, submit_timeout
     )
     return _execute_submit(url, timeout, nzb_name)
+
+
+def _addfile_refused(error):
+    """Whether an addfile submit error is a definitive whole-request 4xx."""
+    return (
+        isinstance(error, dict)
+        and isinstance(error.get("status"), int)
+        and 400 <= error["status"] < 500
+    )
 
 
 def _execute_submit(url, timeout, nzb_name, nzb_body=None):

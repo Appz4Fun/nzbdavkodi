@@ -141,3 +141,38 @@ def test_resolver_submit_timeout_read_from_disk():
         "resources.lib.router._get_script_setting", side_effect=_disk_getter
     ), _forbid_binding("resources.lib.resolver"):
         assert resolver._get_submit_timeout_seconds() == 120
+
+
+def test_disk_getter_falls_back_to_schema_defaults(tmp_path, monkeypatch):
+    """Kodi's profile XML omits settings left at their defaults; the
+    binding returned the SCHEMA default for those, so the disk reader
+    must too — otherwise default nzbdav URLs blank out and filter
+    toggles silently flip (PR #438 review findings)."""
+    from resources.lib import router
+
+    empty_profile = tmp_path / "settings.xml"
+    empty_profile.write_text('<settings version="2"></settings>')
+    monkeypatch.setattr(
+        "resources.lib.router._script_settings_paths",
+        lambda: [str(empty_profile)],
+    )
+    assert router._get_script_setting("nzbdav_url", "") == "http://localhost:3000"
+    assert router._get_script_setting("fallback_streams_enabled", "") == "true"
+    # Unknown key: caller default wins.
+    assert router._get_script_setting("no_such_setting", "zz") == "zz"
+
+
+def test_disk_getter_prefers_user_value_over_schema(tmp_path, monkeypatch):
+    from resources.lib import router
+
+    profile = tmp_path / "settings.xml"
+    profile.write_text(
+        '<settings version="2">'
+        '<setting id="nzbdav_url">http://server:9999</setting>'
+        "</settings>"
+    )
+    monkeypatch.setattr(
+        "resources.lib.router._script_settings_paths",
+        lambda: [str(profile)],
+    )
+    assert router._get_script_setting("nzbdav_url", "") == "http://server:9999"

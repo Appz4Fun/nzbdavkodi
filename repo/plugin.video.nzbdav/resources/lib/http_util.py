@@ -255,6 +255,31 @@ def http_get(url, timeout=15, headers=None, max_bytes=None):
         return body.decode("utf-8", errors="replace")
 
 
+def http_get_bytes(url, timeout=15, headers=None, max_bytes=None):
+    """Perform an HTTP GET and return the RAW response body bytes.
+
+    Like ``http_get`` (same scheme allowlist, status handling, and
+    ``max_bytes`` cap) but without the UTF-8-with-replacement decode:
+    used where the exact bytes matter, e.g. NZB payloads re-uploaded to
+    nzbdav — a lossy decode would corrupt non-UTF-8 documents.
+    """
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in _ALLOWED_HTTP_SCHEMES:
+        raise ValueError("unsupported URL scheme: {!r}".format(scheme))
+    request_headers = {"User-Agent": _HTTP_USER_AGENT}
+    if headers:
+        request_headers.update(headers)
+    req = Request(url, headers=request_headers)
+    # nosemgrep
+    with urlopen(  # nosec B310 — scheme allowlist enforced above
+        req, timeout=timeout
+    ) as resp:
+        status = _response_status(resp)
+        if status is not None and not 200 <= status < 300:
+            raise OSError("HTTP status {}".format(status))
+        return _read_capped_body(resp, max_bytes)
+
+
 def http_post(url, data, timeout=15, headers=None):
     """POST a pre-encoded ``bytes`` body and return the response text.
 

@@ -1042,13 +1042,14 @@ def test_get_filter_settings_int_fields_fall_back_on_non_numeric(mock_get):
     assert settings["max_results"] == 25
 
 
-@patch("xbmcaddon.Addon")
-def test_get_filter_settings_returns_empty_lists_when_nothing_enabled(mock_addon):
-    """All toggles "false" / unset must produce empty lists rather than
-    partial junk — this is the fresh-install shape."""
+@patch("resources.lib.router._get_script_setting")
+def test_get_filter_settings_returns_empty_lists_when_nothing_enabled(mock_get):
+    """All toggles explicitly empty must produce empty lists rather than
+    partial junk. (A REAL fresh install reads schema defaults instead —
+    the disk getter mirrors the binding's schema-default semantics.)"""
     from resources.lib.filter import _get_filter_settings
 
-    mock_addon.return_value.getSetting.side_effect = lambda k: ""
+    mock_get.side_effect = lambda k, d="": ""
 
     settings = _get_filter_settings()
 

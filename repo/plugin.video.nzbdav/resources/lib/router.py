@@ -369,7 +369,16 @@ def _attach_selected_result_metadata(resolver_params, selected):
 
 
 def _get_script_setting(key, default=""):
-    """Read this addon's setting from settings.xml without Kodi settings APIs."""
+    """Read this addon's setting from settings.xml without Kodi settings APIs.
+
+    Mirrors the ``xbmcaddon`` binding's semantics: the user-saved value
+    when present, else the SCHEMA default from resources/settings.xml —
+    Kodi's profile XML omits settings left at their displayed defaults,
+    so returning ``default`` for those would silently flip filter
+    toggles and blank out the default nzbdav URL on the disk-read
+    paths. ``default`` only applies when the key has no non-empty
+    schema default either.
+    """
     from resources.lib.xml_safety import ParseError, safe_fromstring
 
     for settings_path in _script_settings_paths():
@@ -385,7 +394,13 @@ def _get_script_setting(key, default=""):
                 continue
             value = setting.text
             return value if isinstance(value, str) else default
-    return default
+    try:
+        from resources.lib.fallback_streams import _schema_setting_default
+
+        schema_default = _schema_setting_default(key)
+    except Exception:  # pylint: disable=broad-except
+        schema_default = ""
+    return schema_default if schema_default else default
 
 
 def _script_completed_job_for_selection(selected):
