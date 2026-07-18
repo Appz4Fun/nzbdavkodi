@@ -75,6 +75,13 @@
     <setting id="proxy_convert_subs">true</setting>
     <setting id="force_remux_threshold_mb">15000</setting>
     <setting id="strict_contract_mode">1</setting>
+    <!-- Cap the readahead buffer well below the 256 MB schema default:
+         fault-induced reconnect storms can leave multiple pass-through
+         sessions alive at once, and N x 256 MB ballooned toward the VM
+         limit (kodi+gdb OOM group-killed with no signal record, run
+         2026-07-18T12-38-03Z). Readahead depth is a seek-smoothness
+         knob, not part of fault-recovery behaviour under test. -->
+    <setting id="readahead_buffer_mb">32</setting>
     <setting id="zero_fill_budget_enabled">true</setting>
     <setting id="retry_ladder_enabled">true</setting>
     <setting id="install_tmdbhelper" default="true">false</setting>

@@ -334,11 +334,27 @@ def test_extreme_fallback_run(stack_ready, run_dir):
         didn't start (crash, hang, timeout, dialog lockup) after the
         compose_up finalizer wipes the volumes.
         """
+        # Kernel ring buffer first: OOM kills leave their only trace here
+        # (SIGKILL bypasses gdb; a cgroup group-kill takes gdb down too).
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                "nzbdav-extreme-kodi",
+                "sh",
+                "-c",
+                "dmesg 2>/dev/null | tail -200 > /var/log/supervisor/dmesg.log"
+                " || true",
+            ],
+            check=False,
+        )
         for src, dst_name in [
             ("/root/.kodi/temp/kodi.log", "kodi.log"),
             ("/root/.kodi/temp/kodi.old.log", "kodi.old.log"),
             ("/var/log/supervisor/kodi.err.log", "kodi.err.log"),
             ("/var/log/supervisor/supervisord.log", "supervisord.log"),
+            ("/var/log/supervisor/memwatch.log", "memwatch.log"),
+            ("/var/log/supervisor/dmesg.log", "dmesg.log"),
             ("/var/log/kodi-gdb.log", "kodi-gdb.log"),
             ("/tmp/nzbdav-faulthandler.log", "nzbdav-faulthandler.log"),
             (
