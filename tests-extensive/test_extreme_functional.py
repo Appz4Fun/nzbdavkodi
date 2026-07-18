@@ -586,9 +586,27 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             if now - player_gone_since < 20 or relaunches >= 4:
                 continue
             relaunches += 1
+            # After two failed same-movie relaunches, fail over to a
+            # DIFFERENT movie: a source_dead may have killed a primary
+            # whose only standby is a poisoned release (a mislabeled NZB
+            # carrying different content — seen live: a 'Modern Times'
+            # post whose storage held Monsters University), which no
+            # amount of relaunching can fix. A fresh movie restores
+            # eligible traffic so the remaining faults still fire.
+            relaunch_movie = movie
+            if relaunches > 2:
+                try:
+                    relaunch_movie, _p, _f = _pick_movie_with_fallback_pool(
+                        rng, settings, exclude=frozenset(tried_imdb_ids)
+                    )
+                    tried_imdb_ids.add(relaunch_movie["imdb"])
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[extreme] failover pick failed: {exc}")
             print(
                 "[extreme] player gone {:.0f}s — relaunching playback "
-                "({} of 4)".format(now - player_gone_since, relaunches)
+                "({} of 4, movie: {})".format(
+                    now - player_gone_since, relaunches, relaunch_movie["title"]
+                )
             )
             _clear_kodi_dialogs()
             try:
@@ -599,7 +617,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                         "params": {
                             "info": "play",
                             "type": "movie",
-                            "imdb_id": movie["imdb"],
+                            "imdb_id": relaunch_movie["imdb"],
                         },
                     },
                 )

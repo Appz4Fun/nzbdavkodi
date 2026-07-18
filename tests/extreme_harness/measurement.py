@@ -254,7 +254,12 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
         seg_start = None
         for i in range(1, len(freeze_window)):
             cur, prev = freeze_window[i], freeze_window[i - 1]
-            stalled = (
+            # A tick is "stalled" when playing with no media progress, OR
+            # when there is no player at all (Kodi crashed/relaunching):
+            # a 20s+ outage the watchdog absorbs is user-visible downtime
+            # and must be counted, not reported as a small/zero freeze.
+            no_player = cur.get("active_player_id") is None
+            stalled = no_player or (
                 cur["speed"] == 1
                 and cur["time_sec"] - prev["time_sec"] < 0.05
                 and cur["t_wall"] - prev["t_wall"] < 1.0

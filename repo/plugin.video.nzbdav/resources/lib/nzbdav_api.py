@@ -173,11 +173,17 @@ def _fetch_nzb_body(nzb_url, nzb_name):
         # Hydra serves NZBs gzip-or-plain; urllib doesn't negotiate
         # encodings, so transparently decompress a gzip body before
         # validating — otherwise every gzipped NZB would needlessly fall
-        # back to the server-side addurl fetch.
+        # back to the server-side addurl fetch. Decompress through a
+        # bounded read: gzip.decompress would expand a gzip bomb fully in
+        # memory, so cap the INFLATED size at the same fetch limit and
+        # treat overflow as a fetch failure (addurl fallback).
         import gzip
+        import io
 
         try:
-            body = gzip.decompress(body)
+            with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz:
+                inflated = gz.read(_NZB_FETCH_MAX_BYTES + 1)
+            body = b"" if len(inflated) > _NZB_FETCH_MAX_BYTES else inflated
         except OSError:
             body = b""
     if not body or not _looks_like_nzb_document(body):
