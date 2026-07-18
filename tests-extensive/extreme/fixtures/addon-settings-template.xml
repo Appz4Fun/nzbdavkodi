@@ -66,10 +66,11 @@
          saw releases. Filter is a quality knob, not part of fault-recovery
          behaviour under test. -->
     <setting id="filter_min_size">0</setting>
-    <!-- 5 GB cap: episode-mode targets ~1-2.5 GB WEB-DL episodes whose
+    <!-- 3 GB cap: episode-mode targets ~1-2.5 GB WEB-DL episodes whose
          reposts are byte-identical mirrors (proxy-validatable cutover
-         standbys); the cap also keeps ingest fast and decode light. -->
-    <setting id="filter_max_size">5000</setting>
+         standbys); the cap keeps picks small (ideally ~2 GB), ingest
+         fast, and decode light. -->
+    <setting id="filter_max_size">3000</setting>
     <setting id="max_results">250</setting>
     <setting id="auto_select_best" default="true">true</setting>
     <setting id="poll_interval">1</setting>
@@ -80,7 +81,10 @@
     <setting id="stream_max_retries">3</setting>
     <setting id="stream_retry_delay">5</setting>
     <setting id="fallback_streams_enabled">true</setting>
-    <setting id="fallback_streams_max">8</setting>
+    <!-- 10 standbys: episode reposts give many byte-identical articles
+         posted on different days; submit them all so repeated
+         source_dead cutovers never run out of promotable mirrors. -->
+    <setting id="fallback_streams_max">10</setting>
     <setting id="proxy_convert_subs">true</setting>
     <setting id="force_remux_threshold_mb">15000</setting>
     <setting id="strict_contract_mode">1</setting>

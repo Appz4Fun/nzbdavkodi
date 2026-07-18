@@ -143,11 +143,11 @@ EXTREME_FILTER_SETTINGS = {
     "filter_exclude_keywords": "",
     "filter_exclude_release_group": "",
     "filter_min_size": "0",
-    "filter_max_size": "5000",
+    "filter_max_size": "3000",
     "max_results": "250",
     "auto_select_best": "true",
     "fallback_streams_enabled": "true",
-    "fallback_streams_max": "8",
+    "fallback_streams_max": "10",
 }
 
 
@@ -229,14 +229,50 @@ _TV_SERIES = {
 }
 
 
-def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozenset()):
-    """Pick an episode whose filtered pool has a byte-identical mirror.
+def _mirror_cluster_len(filtered):
+    """Size of the largest byte-identical mirror cluster in a pool.
 
-    Requires >=2 rows sharing an EXACT size with distinct pubdates and
-    links (the proxy cutover validates expected_length + range digest,
-    so only exact-size reposts are promotable standbys), plus >=3 rows
-    total so diverse cross-release standbys exist for the second
-    source_dead. Returns (episode_number, filtered_rows).
+    Same-release reposts report NEAR-identical indexer sizes (the
+    underlying mkv is byte-identical; posting overhead shifts the
+    reported NZB size by a few KB), so cluster with a tolerance of
+    max(1 MB, 0.1%) instead of exact equality — the addon's cutover
+    validation probes the INGESTED file's length and digests, which
+    are exact for true reposts. Only rows with distinct links count.
+    """
+    sized = sorted(
+        (
+            (int(r.get("size") or 0), r)
+            for r in filtered
+            if str(r.get("size", "")).isdigit()
+        ),
+        key=lambda x: x[0],
+    )
+    best = 0
+    cluster_links = set()
+    cluster_dates = set()
+    prev_size = None
+    for size, row in sized:
+        tolerance = max(1_000_000, (prev_size or size) // 1000)
+        if prev_size is None or size - prev_size > tolerance:
+            cluster_links = set()
+            cluster_dates = set()
+        cluster_links.add(row.get("link"))
+        cluster_dates.add(str(row.get("pubdate", "")).strip())
+        prev_size = size
+        if len(cluster_links) >= 2 and len(cluster_dates) >= 2:
+            best = max(best, len(cluster_links))
+    return best
+
+
+def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozenset()):
+    """Pick the episode with the LARGEST byte-identical mirror cluster.
+
+    Scans up to 8 seeded-random episodes and keeps the one whose
+    filtered pool clusters the most distinct-link, distinct-pubdate
+    reposts of one file (the proxy cutover's promotable standbys).
+    Requires a cluster of >=2 plus >=3 filtered rows total so diverse
+    cross-release standbys exist for the second source_dead. Returns
+    (episode_number, filtered_rows).
     """
     from resources.lib.filter import filter_results
     from resources.lib.hydra import search_hydra
@@ -247,6 +283,7 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
     episodes = [e for e in _TV_SERIES["episodes"] if e not in exclude]
     rng.shuffle(episodes)
     last_error = "no episodes left"
+    best = None  # (cluster_len, pool_len, ep, filtered)
     for ep in episodes[:8]:
         try:
             results, error = search_hydra(
@@ -260,34 +297,18 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
                 last_error = f"E{ep:02d}: search failed: {error}"
                 continue
             filtered, _all = filter_results(results, settings_getter=getter)
-            # Same-release reposts report NEAR-identical indexer sizes
-            # (the underlying mkv is byte-identical; posting overhead
-            # shifts the reported NZB size by a few KB), so match with a
-            # tolerance instead of exact equality — the addon's cutover
-            # validation probes the INGESTED file's length and digests,
-            # which are exact for true reposts.
-            sized = sorted(
-                (
-                    (int(r.get("size") or 0), r)
-                    for r in filtered
-                    if str(r.get("size", "")).isdigit()
-                ),
-                key=lambda x: x[0],
-            )
-            has_mirror = any(
-                b[0] - a[0] <= max(1_000_000, a[0] // 1000)
-                and a[1].get("link") != b[1].get("link")
-                and str(a[1].get("pubdate", "")).strip()
-                != str(b[1].get("pubdate", "")).strip()
-                for a, b in zip(sized, sized[1:])
-            )
-            if not has_mirror or len(filtered) < 3:
-                last_error = f"E{ep:02d}: filtered={len(filtered)} mirror={has_mirror}"
+            cluster = _mirror_cluster_len(filtered)
+            if cluster < 2 or len(filtered) < 3:
+                last_error = f"E{ep:02d}: filtered={len(filtered)} cluster={cluster}"
                 continue
-            return ep, filtered
+            print(f"[extreme] E{ep:02d}: pool={len(filtered)} mirror_cluster={cluster}")
+            if best is None or (cluster, len(filtered)) > (best[0], best[1]):
+                best = (cluster, len(filtered), ep, filtered)
         except Exception as exc:  # noqa: BLE001
             last_error = f"E{ep:02d}: {exc}"
             continue
+    if best is not None:
+        return best[2], best[3]
     pytest.fail(f"no episode with a mirror pool: {last_error}")
 
 
