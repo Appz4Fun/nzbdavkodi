@@ -4857,6 +4857,76 @@ def test_metadata_profiles_match_requires_same_release_group():
     )
 
 
+def test_cross_group_webdl_mirror_passes_same_group_gate():
+    """Live scenario: an HDSWEB-selected episode's UBWEB repost (same NF
+    WEB-DL file, sizes 2.4 KB apart) must survive require_same_group —
+    cross-poster WEB-DL reposts ARE the byte-identical standby pool, and
+    rejecting them left streaming sessions with zero cutover sources."""
+    from resources.lib import fallback_streams as fs
+
+    hdsweb = {
+        "title": (
+            "The.Good.the.Bad.and.the.Ugly.S01E23.2025.1080p.NF.WEB-DL.AAC.H.264-HDSWEB"
+        ),
+        "link": "https://idx/e23-hdsweb.nzb",
+        "size": 2226279285,
+    }
+    ubweb = {
+        "title": (
+            "The.Good.the.Bad.and.the.Ugly.2025.S01E23.1080p.NF.WEB-DL.H.264.AAC-UBWEB"
+        ),
+        "link": "https://idx/e23-ubweb.nzb",
+        "size": 2226276861,
+    }
+    assert fs._metadata_profiles_match(hdsweb, ubweb, require_same_group=True) is True
+
+
+def test_cross_group_webdl_distinct_encode_still_rejected():
+    """A different-group WEB-DL whose size is NOT near-exact is a distinct
+    encode and must still fail the same-group gate."""
+    from resources.lib import fallback_streams as fs
+
+    hdsweb = {
+        "title": (
+            "The.Good.the.Bad.and.the.Ugly.S01E23.2025.1080p.NF.WEB-DL.AAC.H.264-HDSWEB"
+        ),
+        "link": "https://idx/e23-hdsweb.nzb",
+        "size": 2226279285,
+    }
+    smaller = {
+        "title": (
+            "The.Good.the.Bad.and.the.Ugly.2025.S01E23.1080p.WEB-DL.H.264.AAC-UBWEB"
+        ),
+        "link": "https://idx/e23-small.nzb",
+        "size": 681688172,
+    }
+    assert (
+        fs._metadata_profiles_match(hdsweb, smaller, require_same_group=True) is False
+    )
+
+
+def test_cross_group_remux_rejected_even_at_equal_size():
+    """The WEB-DL scoping keeps the original user requirement intact: a
+    FraMeSToR REMUX must never pull a RU4HD REMUX as a backup, even at
+    byte-equal indexer sizes — different groups' REMUXes are different
+    author-produced files regardless of size proximity."""
+    from resources.lib import fallback_streams as fs
+
+    framestor = {
+        "title": "Goodfellas.1990.2160p.UHD.BluRay.REMUX.DV.HEVC.TrueHD.7.1-FraMeSToR",
+        "link": "https://idx/goodfellas-framestor.nzb",
+        "size": 60000000000,
+    }
+    ru4hd = {
+        "title": "Goodfellas.1990.2160p.UHD.BluRay.REMUX.DV.HEVC.TrueHD.7.1-RU4HD",
+        "link": "https://idx/goodfellas-ru4hd.nzb",
+        "size": 60000000000,
+    }
+    assert (
+        fs._metadata_profiles_match(framestor, ru4hd, require_same_group=True) is False
+    )
+
+
 def test_release_similarity_tiers():
     from resources.lib import fallback_streams as fs
 

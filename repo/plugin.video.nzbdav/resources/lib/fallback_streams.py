@@ -77,7 +77,11 @@ _SAFE_JOB_RE = re.compile(r"^[A-Za-z0-9._ \[\]-]+$")
 _NON_WORD_RE = re.compile(r"[\W_]+")
 _CONJUNCTION_TOKENS = frozenset(("and", "et", "und"))
 _INVALID_TITLE_RE = re.compile(r"[^A-Za-z0-9._ -]+")
-_MAX_FALLBACKS = 5
+# Ceiling for fallback_streams_max (schema default stays 5). Raised to 10:
+# episode WEB-DL repost pools legitimately offer ~10 same-file articles
+# posted on different days, and repeated source failures should be able
+# to consume them all as standbys.
+_MAX_FALLBACKS = 10
 _SAME_POST_WINDOW_SECONDS = 3600
 _FALLBACK_MANIFEST_STALL_SPECULATION_SECONDS = 0.05
 _FALLBACK_MANIFEST_OPTIONAL_TAIL_WAIT_SECONDS = 0.1
@@ -166,11 +170,13 @@ from resources.lib.fallback_streams_match import (  # noqa: F401,E402  pylint: d
     _SELECTION_POOL_FIRST_PEER_KEY,
     _TIER0_SIZE_FRACTION,
     _article_digest,
+    _cross_group_mirror_exception,
     _fallback_manifest_peer_matches,
     _fallback_peer_matches,
     _has_prefetch_gate_match,
     _hdr_audio_channels_match,
     _is_distinct_dict_peer,
+    _is_webdl_quality,
     _manifest_candidate_message_ids_are_healthy,
     _manifest_error,
     _manifest_group_bytes,
@@ -190,6 +196,7 @@ from resources.lib.fallback_streams_match import (  # noqa: F401,E402  pylint: d
     _metadata_profile_signature,
     _metadata_profiles_match,
     _multi_result_pool_has_no_distinct_peer,
+    _near_exact_size_match,
     _prefetch_gate_proof,
     _prefetch_peer_match,
     _prefetch_peer_match_meta_ready,

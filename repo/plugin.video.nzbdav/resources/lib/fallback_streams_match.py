@@ -295,13 +295,75 @@ def _metadata_profiles_match(
         primary_meta = _fs._result_meta(primary)
     if candidate_meta is None:
         candidate_meta = _fs._result_meta(candidate)
-    if require_same_group and not _fs._same_group_resolution_gate(
-        primary_meta, candidate_meta
+    if (
+        require_same_group
+        and not _fs._same_group_resolution_gate(primary_meta, candidate_meta)
+        and not _fs._cross_group_mirror_exception(
+            primary, candidate, primary_meta, candidate_meta
+        )
     ):
         return False
     if not _fs._shared_profile_fields_match(primary_meta, candidate_meta):
         return False
     return _fs._hdr_audio_channels_match(primary_meta, candidate_meta)
+
+
+_NEAR_EXACT_SIZE_TOLERANCE_FRACTION = 0.005
+_NEAR_EXACT_SIZE_TOLERANCE_FLOOR_BYTES = 4 * 1024 * 1024
+
+
+def _near_exact_size_match(primary, candidate):
+    """Return whether indexer sizes are near-identical (repost territory).
+
+    Cross-poster reposts of the SAME file report sizes differing only by
+    posting overhead (par2 sets, yEnc framing) — a fraction of a percent
+    at multi-GB scale — while distinct encodes essentially never land
+    within 0.5% of each other. Unknown sizes fail closed; contrast with
+    the ±25% _prefetch_size_gate_match, which fails open.
+    """
+    primary_size = _fs._result_indexer_size(primary)
+    candidate_size = _fs._result_indexer_size(candidate)
+    if primary_size <= 0 or candidate_size <= 0:
+        return False
+    tolerance = max(
+        _NEAR_EXACT_SIZE_TOLERANCE_FLOOR_BYTES,
+        int(primary_size * _NEAR_EXACT_SIZE_TOLERANCE_FRACTION),
+    )
+    return abs(primary_size - candidate_size) <= tolerance
+
+
+def _is_webdl_quality(meta):
+    """Return whether a parsed quality identifies a WEB-DL source."""
+    quality = _fs._meta_value_from_meta(meta, "quality") or ""
+    return quality.lower().replace("-", "").replace(" ", "") == "webdl"
+
+
+def _cross_group_mirror_exception(primary, candidate, primary_meta, candidate_meta):
+    """Allow a different-group WEB-DL standby for near-exact-size reposts.
+
+    The same-group gate exists because a different group's ENCODE is a
+    different file that can never byte-match — true for BluRay/REMUX,
+    where even near-equal sizes mean distinct author-produced files.
+    WEB-DL breaks that assumption: multiple posters ship the SAME
+    service file under their own group tags, and those cross-group
+    reposts are exactly the byte-identical mirrors the live-cutover
+    standby pool needs (hit live: an HDSWEB-selected episode rejected
+    its UBWEB repost 2.4 KB apart in size, leaving every session with
+    zero standby sources). So the exception requires: BOTH sides parse
+    as WEB-DL quality, near-exact indexer size, and parsed-equal
+    resolutions (each failing closed). The proxy's content-length +
+    fingerprint validation remains the authoritative check before any
+    cutover.
+    """
+    if not _fs._is_webdl_quality(primary_meta) or not _fs._is_webdl_quality(
+        candidate_meta
+    ):
+        return False
+    if not _fs._near_exact_size_match(primary, candidate):
+        return False
+    left_res = _fs._meta_value_from_meta(primary_meta, "resolution")
+    right_res = _fs._meta_value_from_meta(candidate_meta, "resolution")
+    return bool(left_res) and left_res == right_res
 
 
 def _same_group_resolution_gate(primary_meta, candidate_meta):
