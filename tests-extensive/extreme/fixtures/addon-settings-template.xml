@@ -30,10 +30,16 @@
     <setting id="filter_dolby_vision">false</setting>
     <setting id="filter_hlg">false</setting>
     <setting id="filter_sdr">true</setting>
-    <setting id="filter_atmos">true</setting>
-    <setting id="filter_truehd">true</setting>
+    <!-- No TrueHD/Atmos/DTS:X in the container: a mid-play fallback
+         cutover to a TrueHD release made the null-ALSA sink fail re-init
+         on the audio format switch and killed the player (CAESinkALSA
+         'failed to initialize device' — runs 2026-07-18T12-38-03Z and
+         13-04-38Z, both cutting over to the same TrueHD fallback).
+         Plain DTS(-HD MA core)/DD/AAC re-init cleanly. -->
+    <setting id="filter_atmos">false</setting>
+    <setting id="filter_truehd">false</setting>
     <setting id="filter_dtshd_ma">true</setting>
-    <setting id="filter_dtsx">true</setting>
+    <setting id="filter_dtsx">false</setting>
     <setting id="filter_ddplus">true</setting>
     <setting id="filter_dd">true</setting>
     <setting id="filter_aac">true</setting>
