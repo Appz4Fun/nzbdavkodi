@@ -229,7 +229,17 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
                     wall_delta <= 1.0
                     and time_delta >= wall_delta * 0.5  # at least half-speed
                     and time_delta > 0.05  # not frozen / catch-up noise
-                    and cur["time_sec"] > ref_time_sec  # past fault position
+                    # Past the fault position, OR a RESTARTED session: the
+                    # relaunch watchdog may recover by starting playback
+                    # over (same or different title), so a much-lower
+                    # media position that is advancing steadily is
+                    # recovery, not the stalled frame replaying. Only the
+                    # stalled neighbourhood just below the fault position
+                    # is excluded.
+                    and (
+                        cur["time_sec"] > ref_time_sec
+                        or cur["time_sec"] < ref_time_sec - 30.0
+                    )
                     and cur["speed"] == 1
                 )
                 if advancing:

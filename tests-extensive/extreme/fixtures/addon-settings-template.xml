@@ -57,7 +57,7 @@
     <setting id="filter_vp9">false</setting>
     <setting id="filter_mpeg2">true</setting>
     <setting id="filter_english">true</setting>
-    <setting id="filter_require_keywords">1080p,bluray,x264</setting>
+    <setting id="filter_require_keywords">1080p,web</setting>
     <!-- Disable size filtering for the extreme test: the orchestrator
          picks random IMDB Top 50 movies whose releases vary widely in size
          (e.g. 1962's Harakiri ships well under 10 GB), and the test's
@@ -66,7 +66,10 @@
          saw releases. Filter is a quality knob, not part of fault-recovery
          behaviour under test. -->
     <setting id="filter_min_size">0</setting>
-    <setting id="filter_max_size">0</setting>
+    <!-- 5 GB cap: episode-mode targets ~1-2.5 GB WEB-DL episodes whose
+         reposts are byte-identical mirrors (proxy-validatable cutover
+         standbys); the cap also keeps ingest fast and decode light. -->
+    <setting id="filter_max_size">5000</setting>
     <setting id="max_results">250</setting>
     <setting id="auto_select_best" default="true">true</setting>
     <setting id="poll_interval">1</setting>

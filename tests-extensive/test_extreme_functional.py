@@ -138,12 +138,12 @@ EXTREME_FILTER_SETTINGS = {
     "filter_vp9": "false",
     "filter_mpeg2": "true",
     "filter_english": "true",
-    "filter_require_keywords": "1080p,bluray,x264",
+    "filter_require_keywords": "1080p,web",
     "filter_release_group": "",
     "filter_exclude_keywords": "",
     "filter_exclude_release_group": "",
     "filter_min_size": "0",
-    "filter_max_size": "0",
+    "filter_max_size": "5000",
     "max_results": "250",
     "auto_select_best": "true",
     "fallback_streams_enabled": "true",
@@ -213,6 +213,69 @@ def _generate_fault_schedule(rng: random.Random) -> list[dict]:
             fault_type = recoverable.pop(0)
         schedule.append({"at_seconds": float(t), "fault_type": fault_type})
     return schedule
+
+
+# Episode mode (the soak default): a series whose WEB-DL episodes are
+# reposted byte-identically at different dates — every episode carries an
+# exact-size mirror pair (proxy-validatable cutover standby) plus smaller
+# distinct encodes (cross-release standbys), all under ~2.5 GB. Movie
+# mode remains available via EXTREME_TEST_IMDB_ID.
+_TV_SERIES = {
+    "title": "The Good the Bad and the Ugly",
+    "year": "2025",
+    "tmdb_id": "285768",
+    "season": 1,
+    "episodes": list(range(1, 25)),
+}
+
+
+def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozenset()):
+    """Pick an episode whose filtered pool has a byte-identical mirror.
+
+    Requires >=2 rows sharing an EXACT size with distinct pubdates and
+    links (the proxy cutover validates expected_length + range digest,
+    so only exact-size reposts are promotable standbys), plus >=3 rows
+    total so diverse cross-release standbys exist for the second
+    source_dead. Returns (episode_number, filtered_rows).
+    """
+    from resources.lib.filter import filter_results
+    from resources.lib.hydra import search_hydra
+
+    def getter(k, d=""):
+        return str(settings.get(k, d))
+
+    episodes = [e for e in _TV_SERIES["episodes"] if e not in exclude]
+    rng.shuffle(episodes)
+    last_error = "no episodes left"
+    for ep in episodes[:8]:
+        try:
+            results, error = search_hydra(
+                "episode",
+                _TV_SERIES["title"],
+                season=str(_TV_SERIES["season"]),
+                episode=str(ep),
+                settings_getter=getter,
+            )
+            if error or not results:
+                last_error = f"E{ep:02d}: search failed: {error}"
+                continue
+            filtered, _all = filter_results(results, settings_getter=getter)
+            by_size = {}
+            for r in filtered:
+                by_size.setdefault(str(r.get("size", "")), []).append(r)
+            has_mirror = any(
+                len({r.get("link") for r in rows}) >= 2
+                and len({str(r.get("pubdate", "")).strip() for r in rows}) >= 2
+                for rows in by_size.values()
+            )
+            if not has_mirror or len(filtered) < 3:
+                last_error = f"E{ep:02d}: filtered={len(filtered)} mirror={has_mirror}"
+                continue
+            return ep, filtered
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"E{ep:02d}: {exc}"
+            continue
+    pytest.fail(f"no episode with a mirror pool: {last_error}")
 
 
 def _pick_movie_with_fallback_pool(rng: random.Random, settings, exclude=frozenset()):
@@ -445,39 +508,58 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             pass  # best-effort input; Kodi may be mid-restart
         time.sleep(10)
 
-    # Launch playback via TMDBHelper, retrying with a DIFFERENT movie when
+    # Launch playback via TMDBHelper, retrying with a DIFFERENT target when
     # playback never starts: a release can be dead on the provider (missing
-    # articles — the 12.Angry.Men run-3 LOTR pick) and the addon fails fast
-    # by design, so one dead pick must not fail the whole 20-minute run.
-    # TMDBHelper accepts imdb_id, so the test exercises the full
-    # TMDBHelper -> player JSON -> nzbdav resolver path per attempt.
-    tried_imdb_ids = set()
-    movie = primary = fallbacks = None
+    # articles) and the addon fails fast by design, so one dead pick must
+    # not fail the whole 20-minute run. Episode mode (default) rotates
+    # mirror-rich episodes of _TV_SERIES; EXTREME_TEST_IMDB_ID pins a
+    # movie and restores the movie flow.
+    movie_pin = os.environ.get("EXTREME_TEST_IMDB_ID", "").strip()
+    episode_mode = not movie_pin
+
+    def _pick_target(exclude):
+        if episode_mode:
+            ep, pool = _pick_episode_with_mirror_pool(rng, settings, exclude=exclude)
+            return ep, f"{_TV_SERIES['title']} S01E{ep:02d}", pool
+        m, primary_pair, fb = _pick_movie_with_fallback_pool(
+            rng, settings, exclude=exclude
+        )
+        return m["imdb"], m["title"], (m, primary_pair, fb)
+
+    def _launch_params(target):
+        if episode_mode:
+            return {
+                "info": "play",
+                "tmdb_type": "tv",
+                "type": "episode",
+                "tmdb_id": _TV_SERIES["tmdb_id"],
+                "season": str(_TV_SERIES["season"]),
+                "episode": str(target),
+            }
+        return {"info": "play", "type": "movie", "imdb_id": target}
+
+    tried_targets = set()
+    target = None
+    target_label = ""
+    target_pool = None
     pid = None
     schedule_post_t_wall = time.time()
     for attempt in range(1, _MAX_PLAYBACK_ATTEMPTS + 1):
-        movie, primary, fallbacks = _pick_movie_with_fallback_pool(
-            rng, settings, exclude=frozenset(tried_imdb_ids)
-        )
-        tried_imdb_ids.add(movie["imdb"])
+        target, target_label, target_pool = _pick_target(frozenset(tried_targets))
+        tried_targets.add(target)
         rpc_resp = _kodi_rpc(
             "Addons.ExecuteAddon",
             {
                 "addonid": "plugin.video.themoviedb.helper",
-                "params": {
-                    "info": "play",
-                    "type": "movie",
-                    "imdb_id": movie["imdb"],
-                },
+                "params": _launch_params(target),
             },
         )
         print(
             "[extreme] attempt {}/{}: TMDBHelper playback launch "
-            "(imdb_id={}, {}) response: {}".format(
+            "({}) response: {}".format(
                 attempt,
                 _MAX_PLAYBACK_ATTEMPTS,
-                movie["imdb"],
-                movie["title"],
+                target_label,
                 rpc_resp,
             )
         )
@@ -499,8 +581,8 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             break
         print(
             "[extreme] attempt {}/{}: playback never started for '{}' "
-            "(dead release?); retrying with a different movie".format(
-                attempt, _MAX_PLAYBACK_ATTEMPTS, movie["title"]
+            "(dead release?); retrying with a different target".format(
+                attempt, _MAX_PLAYBACK_ATTEMPTS, target_label
             )
         )
         _clear_kodi_dialogs()
@@ -521,7 +603,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             {
                 "seed": seed_value,
                 "playback_started": False,
-                "attempted_imdb_ids": sorted(tried_imdb_ids),
+                "attempted_targets": sorted(str(t) for t in tried_targets),
             },
         )
         try:
@@ -532,19 +614,31 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             "playback never started after {} attempts".format(_MAX_PLAYBACK_ATTEMPTS)
         )
 
+    if episode_mode:
+        target_info = {
+            "series": _TV_SERIES["title"],
+            "tmdb_id": _TV_SERIES["tmdb_id"],
+            "season": _TV_SERIES["season"],
+            "episode": target,
+        }
+        pool_rows = target_pool or []
+        primary_title = pool_rows[0].get("title") if pool_rows else None
+        fallback_count = max(0, len(pool_rows) - 1)
+    else:
+        m, primary_pair, fb = target_pool
+        target_info = {"title": m["title"], "year": m["year"], "imdb": m["imdb"]}
+        primary_title = primary_pair[0].get("title") if primary_pair else None
+        fallback_count = len(fb)
     measurement.write_manifest(
         run_dir / "manifest.json",
         {
             "seed": seed_value,
-            "movie": {
-                "title": movie["title"],
-                "year": movie["year"],
-                "imdb": movie["imdb"],
-            },
-            "primary_nzb": primary[0].get("title") if primary else None,
-            "fallback_count": len(fallbacks),
+            "target": target_info,
+            "movie": target_info,  # legacy report tooling reads .movie
+            "primary_nzb": primary_title,
+            "fallback_count": fallback_count,
             "schedule": schedule,
-            "playback_attempts": len(tried_imdb_ids),
+            "playback_attempts": len(tried_targets),
             "started_at_wall": time.time(),
         },
     )
@@ -593,19 +687,20 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             # post whose storage held Monsters University), which no
             # amount of relaunching can fix. A fresh movie restores
             # eligible traffic so the remaining faults still fire.
-            relaunch_movie = movie
+            relaunch_target = target
+            relaunch_label = target_label
             if relaunches > 2:
                 try:
-                    relaunch_movie, _p, _f = _pick_movie_with_fallback_pool(
-                        rng, settings, exclude=frozenset(tried_imdb_ids)
+                    relaunch_target, relaunch_label, _pool = _pick_target(
+                        frozenset(tried_targets)
                     )
-                    tried_imdb_ids.add(relaunch_movie["imdb"])
+                    tried_targets.add(relaunch_target)
                 except Exception as exc:  # noqa: BLE001
                     print(f"[extreme] failover pick failed: {exc}")
             print(
                 "[extreme] player gone {:.0f}s — relaunching playback "
-                "({} of 4, movie: {})".format(
-                    now - player_gone_since, relaunches, relaunch_movie["title"]
+                "({} of 4, target: {})".format(
+                    now - player_gone_since, relaunches, relaunch_label
                 )
             )
             _clear_kodi_dialogs()
@@ -614,11 +709,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                     "Addons.ExecuteAddon",
                     {
                         "addonid": "plugin.video.themoviedb.helper",
-                        "params": {
-                            "info": "play",
-                            "type": "movie",
-                            "imdb_id": relaunch_movie["imdb"],
-                        },
+                        "params": _launch_params(relaunch_target),
                     },
                 )
                 _dismiss_tmdbhelper_player_choosers()

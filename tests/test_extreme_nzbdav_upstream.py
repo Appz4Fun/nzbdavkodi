@@ -56,7 +56,7 @@ def test_extreme_addon_fixture_prefers_same_x264_encode_profile_as_preflight():
         '<setting id="filter_720p">false</setting>',
         '<setting id="filter_avc">true</setting>',
         '<setting id="filter_av1">false</setting>',
-        '<setting id="filter_require_keywords">1080p,bluray,x264</setting>',
+        '<setting id="filter_require_keywords">1080p,web</setting>',
         '<setting id="max_results">250</setting>',
     ]:
         assert expected in template
@@ -68,7 +68,7 @@ def test_extreme_addon_fixture_prefers_same_x264_encode_profile_as_preflight():
         '"filter_720p": "false"',
         '"filter_avc": "true"',
         '"filter_av1": "false"',
-        '"filter_require_keywords": "1080p,bluray,x264"',
+        '"filter_require_keywords": "1080p,web"',
         '"filter_release_group": ""',
         '"max_results": "250"',
     ]:
