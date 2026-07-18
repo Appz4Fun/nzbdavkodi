@@ -212,11 +212,26 @@ def _addon_settings(env):
     }
 
 
+@contextlib.contextmanager
 def _patch_addon_settings(settings):
-    return patch(
+    """Route BOTH settings channels at the live-test settings dict.
+
+    No-getter branches read settings.xml from disk via
+    ``router._get_script_setting`` (thread-safety fix — the xbmcaddon
+    binding SIGSEGVs under concurrent lazy loads), so patching only the
+    binding no longer reaches ``filter_results``/``submit_nzb``/
+    ``find_*_by_name``/WebDAV helpers called without an explicit getter.
+    Patch the disk reader too so every bare call in the functional
+    helpers keeps seeing the live settings.
+    """
+    with patch(
         "xbmcaddon.Addon.return_value.getSetting",
         side_effect=lambda key: settings.get(key, ""),
-    )
+    ), patch(
+        "resources.lib.router._get_script_setting",
+        side_effect=lambda key, default="": settings.get(key, default),
+    ):
+        yield
 
 
 def _live_search_configs():

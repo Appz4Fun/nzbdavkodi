@@ -200,8 +200,9 @@ setup-extreme-functional-test:
     TMDB_API_KEY=$(ask_required "TMDB API key" secret)
 
     echo ""
-    echo "--- Misc ---"
-    NZBDAV_API_KEY=$(ask "nzbdav-rs API key (any string; must match docker-compose env)" "smokekey-dev-only")
+    echo "--- Live nzbdav (SAB-compatible API + WebDAV) ---"
+    NZBDAV_URL=$(ask_required "nzbdav URL (e.g. http://server:3000)")
+    NZBDAV_API_KEY=$(ask_required "nzbdav API key (from its web UI settings)" secret)
 
     # Build content in a tempfile, validate, then atomically move into place.
     tmpfile="$(mktemp)"
@@ -215,7 +216,8 @@ setup-extreme-functional-test:
         emit_env "HYDRA_URL" "$HYDRA_URL"
         emit_env "HYDRA_API_KEY" "$HYDRA_API_KEY"
         echo ""
-        echo "# nzbdav-rs API key (must match docker-compose env)"
+        echo "# Live LAN nzbdav instance and its real API key"
+        emit_env "NZBDAV_URL" "$NZBDAV_URL"
         emit_env "NZBDAV_API_KEY" "$NZBDAV_API_KEY"
         echo ""
         echo "# NNTP provider"

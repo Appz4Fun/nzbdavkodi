@@ -74,7 +74,7 @@ def test_submit_nzb_prefers_addfile_upload(mock_get, mock_post, mock_settings):
     assert content_type.startswith("multipart/form-data; boundary=")
     boundary = content_type.split("boundary=", 1)[1]
     assert boundary.encode("ascii") in body
-    assert b'name="nzbFile"' in body
+    assert b'name="name"' in body  # SAB-documented field; C# fork accepts both
     assert b'filename="The.Matrix.1999.nzb"' in body
     assert _NZB_XML.encode("utf-8") in body
     assert body.endswith("--{}--\r\n".format(boundary).encode("ascii"))

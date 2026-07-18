@@ -169,6 +169,17 @@ def _fetch_nzb_body(nzb_url, nzb_name):
             xbmc.LOGWARNING,
         )
         return None
+    if body[:2] == b"\x1f\x8b":
+        # Hydra serves NZBs gzip-or-plain; urllib doesn't negotiate
+        # encodings, so transparently decompress a gzip body before
+        # validating — otherwise every gzipped NZB would needlessly fall
+        # back to the server-side addurl fetch.
+        import gzip
+
+        try:
+            body = gzip.decompress(body)
+        except OSError:
+            body = b""
     if not body or not _looks_like_nzb_document(body):
         xbmc.log(
             "NZB-DAV: Local NZB fetch for '{}' returned non-NZB content; "
@@ -269,12 +280,16 @@ def _multipart_nzb_body(nzb_name, body):
     """Encode ``body`` as a multipart/form-data upload for mode=addfile.
 
     Returns ``(encoded_body, content_type)``. The file goes in the
-    ``nzbFile`` field, which both nzbdav (C#) and nzbdav-rs accept
-    (SABnzbd itself accepts ``nzbfile``/``name``).
+    ``name`` field — the SABnzbd-documented one — which nzbdav (C#,
+    ``Form.Files["nzbFile"] ?? Form.Files["name"]``), nzbdav-rs, and
+    SAB-compatible endpoints all accept.
     """
     import uuid
 
     filename = (nzb_name or "download").replace('"', "_").replace("\\", "_")
+    # Header-injection guard: a CR/LF in an indexer-supplied title would
+    # break the part header or smuggle extra headers into the form-data.
+    filename = filename.replace("\r", " ").replace("\n", " ")
     if not filename.lower().endswith(".nzb"):
         filename += ".nzb"
     boundary = uuid.uuid4().hex
@@ -283,7 +298,7 @@ def _multipart_nzb_body(nzb_name, body):
     head = (
         (
             "--{b}\r\n"
-            'Content-Disposition: form-data; name="nzbFile"; filename="{fn}"\r\n'
+            'Content-Disposition: form-data; name="name"; filename="{fn}"\r\n'
             "Content-Type: application/x-nzb\r\n"
             "\r\n"
         )
@@ -370,12 +385,19 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     return _execute_submit(url, timeout, nzb_name)
 
 
+# 4xx statuses that mean "this endpoint doesn't speak multipart addfile"
+# (missing mode / method / media type / malformed-multipart handling).
+# Auth (401/403/407), conflict (409), validation (422), and rate limiting
+# (429) are about THIS submission, not the transport — retrying them via
+# addurl would just repeat the same rejection or double-submit.
+_ADDFILE_INCOMPATIBLE_STATUSES = frozenset({400, 404, 405, 406, 415, 501})
+
+
 def _addfile_refused(error):
-    """Whether an addfile submit error is a definitive whole-request 4xx."""
+    """Whether an addfile error indicates the endpoint lacks addfile."""
     return (
         isinstance(error, dict)
-        and isinstance(error.get("status"), int)
-        and 400 <= error["status"] < 500
+        and error.get("status") in _ADDFILE_INCOMPATIBLE_STATUSES
     )
 
 

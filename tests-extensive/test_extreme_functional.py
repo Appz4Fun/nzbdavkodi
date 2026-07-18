@@ -363,8 +363,10 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                 "nzbdav-extreme-kodi",
                 "sh",
                 "-c",
-                "dmesg 2>/dev/null | tail -200 > /var/log/supervisor/dmesg.log"
-                " || true",
+                (
+                    "dmesg 2>/dev/null | tail -200 "
+                    "> /var/log/supervisor/dmesg.log || true"
+                ),
             ],
             check=False,
         )
@@ -458,11 +460,6 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             rng, settings, exclude=frozenset(tried_imdb_ids)
         )
         tried_imdb_ids.add(movie["imdb"])
-        # (Re-)post the schedule: replace_schedule resets the proxy's run
-        # clock and fired-events list, so fault timing anchors to THIS
-        # attempt's traffic and a doomed attempt can't consume the budget.
-        schedule_post_t_wall = time.time()
-        _post_schedule(schedule)
         rpc_resp = _kodi_rpc(
             "Addons.ExecuteAddon",
             {
@@ -507,6 +504,15 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             )
         )
         _clear_kodi_dialogs()
+
+    if pid is not None:
+        # Post the schedule only now that playback is live: the proxy run
+        # clock resets at post time, so at_seconds counts seconds OF
+        # PLAYBACK — a slow resolve can no longer let pre-playback probes
+        # consume early faults (and source_dead slots stay anchored after
+        # the prewarm burst as intended).
+        schedule_post_t_wall = time.time()
+        _post_schedule(schedule)
 
     if pid is None:
         # Save what we have and bail.
@@ -611,7 +617,9 @@ def test_extreme_fallback_run(stack_ready, run_dir):
 
     # Pull container logs into the run dir
     for container, name in [
-        ("nzbdav-extreme-kodi", "kodi.log"),
+        # NOT "kodi.log": _capture_diagnostics writes the in-container
+        # application log under that name and would clobber this one.
+        ("nzbdav-extreme-kodi", "kodi-container-stdout.log"),
         ("nzbdav-extreme-fault-proxy", "fault-proxy-container.log"),
     ]:
         with (run_dir / name).open("wb") as fh:

@@ -17,7 +17,7 @@ def test_extreme_compose_wraps_live_lan_nzbdav_not_a_container():
 
     assert "  nzbdav-rs:" not in compose
     assert "  hydra2:" not in compose
-    assert "FAULT_PROXY_UPSTREAM: ${NZBDAV_URL:?" in compose
+    assert "FAULT_PROXY_UPSTREAM: ${WEBDAV_URL:-${NZBDAV_URL:?" in compose
 
     template = ADDON_SETTINGS.read_text(encoding="utf-8")
     assert '<setting id="nzbdav_url">${NZBDAV_URL}</setting>' in template

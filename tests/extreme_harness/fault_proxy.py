@@ -116,6 +116,10 @@ class ProxyState:
             self.start_t = time.monotonic()
             self.start_t_wall = time.time()
             self.fired_events.clear()
+            # Same hygiene as replace_schedule: a parked http_500 or dead
+            # path from the previous run must not leak into the next one.
+            self.pending_fault = None
+            self.dead_paths.clear()
 
     def replace_schedule(self, events: list[ScheduledEvent]) -> None:
         """Atomically replace the event list and reset the run clock."""
@@ -491,10 +495,13 @@ def _apply_midstream_fault(handler, due, range_header, state) -> Optional[str]:
         try:
             handler.connection.shutdown(1)
         except OSError:
+            # Socket may already be half-closed by the peer; the goal is
+            # an abrupt teardown, so a failed shutdown is fine.
             pass
         try:
             handler.connection.close()
         except OSError:
+            # Already closed — the reset the client observes is the same.
             pass
         return "stop"
     if due.fault_type == "truncated_response":
@@ -619,11 +626,18 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         method = "HEAD" if head_only else self.command
-        conn = http.client.HTTPConnection(
-            _upstream.hostname,
-            _upstream.port or 80,
-            timeout=120,
-        )
+        if _upstream.scheme == "https":
+            conn = http.client.HTTPSConnection(
+                _upstream.hostname,
+                _upstream.port or 443,
+                timeout=120,
+            )
+        else:
+            conn = http.client.HTTPConnection(
+                _upstream.hostname,
+                _upstream.port or 80,
+                timeout=120,
+            )
         target = self.path
         if _upstream.path:
             target = _upstream.path.rstrip("/") + self.path
@@ -691,11 +705,22 @@ class Handler(BaseHTTPRequestHandler):
         # connections, so faults that come due mid-transfer would starve
         # waiting for the next request. Poll for due faults while copying
         # (fault-eligible streams only) and apply them to the live stream.
+        # An open-ended range that STARTED outside the protected tail can
+        # still advance into it, so compute the byte budget after which
+        # mid-stream injection must stop (EOF cues/index reads).
+        midstream_fault_budget = None
+        bounds = _range_bounds(range_header)
+        total = _content_range_total(resp)
+        if bounds is not None and total:
+            midstream_fault_budget = max(0, (total - TAIL_EXCLUDE_BYTES) - bounds[0])
         throttle_until = 0.0
         corrupt_next_chunk = False
         last_fault_check = 0.0
+        sent = 0
         while True:
-            if fault_eligible:
+            if fault_eligible and (
+                midstream_fault_budget is None or sent < midstream_fault_budget
+            ):
                 now = time.monotonic()
                 if now - last_fault_check >= MIDSTREAM_CHECK_SECONDS:
                     last_fault_check = now
@@ -728,6 +753,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 break
+            sent += len(chunk)
             if throttle_until and time.monotonic() < throttle_until:
                 time.sleep(max(1024, SLOW_BPS // 10) / SLOW_BPS)
         resp.close()

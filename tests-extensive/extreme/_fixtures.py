@@ -109,6 +109,12 @@ def env_loaded(run_dir):
     ):
         if not os.environ.get(required):
             pytest.fail(f"missing required env var: {required}")
+    # Derive the live-helper aliases here as well: the module-level
+    # setdefaults in test_extreme_functional run at import, BEFORE this
+    # fixture loads .env, so values supplied only via the env file would
+    # otherwise leave WEBDAV_URL/WEBDAV_API_KEY unset for _live_env().
+    os.environ.setdefault("WEBDAV_URL", os.environ["NZBDAV_URL"])
+    os.environ.setdefault("WEBDAV_API_KEY", os.environ["NZBDAV_API_KEY"])
     return env_file
 
 
