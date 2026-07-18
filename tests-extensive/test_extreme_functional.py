@@ -430,19 +430,19 @@ def test_extreme_fallback_run(stack_ready, run_dir):
         for _ in range(3):
             try:
                 _kodi_rpc("Input.Back")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:  # noqa: BLE001,S110
+                pass  # best-effort input; Kodi may be mid-restart
             time.sleep(1.0)
         for _ in range(2):
             try:
                 _kodi_rpc("Input.Select")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:  # noqa: BLE001,S110
+                pass  # best-effort input; Kodi may be mid-restart
             time.sleep(0.5)
         try:
             _kodi_rpc("Input.Home")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001,S110
+            pass  # best-effort input; Kodi may be mid-restart
         time.sleep(10)
 
     # Launch playback via TMDBHelper, retrying with a DIFFERENT movie when
