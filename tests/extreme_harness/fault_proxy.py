@@ -36,13 +36,16 @@ MAX_FAIL_START = int(os.environ.get("FAULT_PROXY_MAX_FAIL_START", str(1 << 50)))
 TAIL_EXCLUDE_BYTES = int(
     os.environ.get("FAULT_PROXY_TAIL_EXCLUDE", str(512 * 1024 * 1024))
 )
-# Cap bytes served per passthrough response (0 = unlimited). The nzbdav
-# addon's pass-through recovers from short reads by re-requesting at the
-# new offset, so a cap turns one movie-length upstream connection into a
-# steady cadence of fresh range GETs — the request stream that per-request
-# fault injection needs. Without it a 20-minute run saw only 16 GETs.
-MAX_RESPONSE_BYTES = int(
-    os.environ.get("FAULT_PROXY_MAX_RESPONSE_BYTES", str(64 * 1024 * 1024))
+# How often the passthrough copy loop polls for newly-due faults so they
+# can be applied MID-STREAM. The addon holds movie-length upstream
+# connections (a 20-minute run produced only ~16 GETs), so waiting for
+# the next request starved scheduled faults for minutes; capping response
+# length instead poisoned every healthy transfer (the addon's health
+# model treats short reads on a completed file as upstream failures and
+# killed playback within 2 minutes). Applying due faults to the in-flight
+# response leaves healthy traffic completely untouched.
+MIDSTREAM_CHECK_SECONDS = float(
+    os.environ.get("FAULT_PROXY_MIDSTREAM_CHECK_SECONDS", "1.0")
 )
 LOG_PATH = os.environ.get("FAULT_PROXY_LOG", "/var/log/fault-proxy/full.log")
 EVENTS_PATH = os.environ.get("FAULT_PROXY_EVENTS", "/var/log/fault-proxy/events.jsonl")
@@ -86,6 +89,10 @@ class ProxyState:
         self.fired_events: list[dict] = []
         self.start_t: float = time.monotonic()
         self.start_t_wall: float = time.time()
+        # A fault drawn mid-stream that can only be applied to a whole
+        # request (http_500): parked here and consumed by the next
+        # qualifying request instead.
+        self.pending_fault: Optional[ScheduledEvent] = None
 
     def reset_clock(self) -> None:
         with self.lock:
@@ -109,6 +116,15 @@ class ProxyState:
                 if ev.at_seconds <= now_run:
                     return self.scheduled_events.pop(i)
             return None
+
+    def set_pending_fault(self, event: ScheduledEvent) -> None:
+        with self.lock:
+            self.pending_fault = event
+
+    def take_pending_fault(self) -> Optional[ScheduledEvent]:
+        with self.lock:
+            event, self.pending_fault = self.pending_fault, None
+            return event
 
     def record_fired(self, fault_type: str, range_header: str) -> None:
         with self.lock:
@@ -380,6 +396,48 @@ def _apply_corrupted_bytes(handler, resp, range_header, state) -> None:
     resp.close()
 
 
+def _apply_midstream_fault(handler, due, range_header, state) -> Optional[str]:
+    """Apply a due fault to an in-flight passthrough stream.
+
+    Returns the action for the copy loop: "stop" (end the response now —
+    the client sees a short read / reset and re-requests), "corrupt"
+    (flip bytes in the next chunk), "slow" (throttle for SLOW_DURATION),
+    or None (nothing to change on this stream; http_500 is parked for
+    the next request because a 500 can't be sent mid-body).
+    """
+    if due.fault_type == "http_500":
+        # Park the 500 for the next request and cut this stream short so
+        # that request arrives promptly. Recorded when actually served.
+        state.set_pending_fault(due)
+        return "stop"
+    payload = {
+        "fault_type": due.fault_type,
+        "t_wall": time.time(),
+        "range": range_header,
+        "midstream": True,
+    }
+    state.record_fired(due.fault_type, range_header)
+    _log_event(payload)
+    if due.fault_type == "connection_reset":
+        try:
+            handler.connection.shutdown(1)
+        except OSError:
+            pass
+        try:
+            handler.connection.close()
+        except OSError:
+            pass
+        return "stop"
+    if due.fault_type == "truncated_response":
+        return "stop"
+    if due.fault_type == "corrupted_bytes":
+        return "corrupt"
+    if due.fault_type == "slow_upstream":
+        return "slow"
+    _log(f"WARN unimplemented midstream fault_type={due.fault_type!r}")
+    return None
+
+
 _FAULT_DISPATCH = {
     "connection_reset": _apply_connection_reset,
     "http_500": _apply_http_500,
@@ -505,14 +563,17 @@ class Handler(BaseHTTPRequestHandler):
         conn.request(method, target, body=body, headers=headers)
         resp = conn.getresponse()
         try:
-            if (
+            fault_eligible = (
                 not head_only
                 and method == "GET"
                 and _is_large_playback_range(
                     range_header, total_length=_content_range_total(resp)
                 )
-            ):
-                due = self.state.next_due_fault()
+            )
+            if fault_eligible:
+                # A parked whole-request fault (http_500 drawn mid-stream)
+                # takes precedence over the schedule.
+                due = self.state.take_pending_fault() or self.state.next_due_fault()
                 if due is not None:
                     fn = _FAULT_DISPATCH.get(due.fault_type)
                     if fn is None:
@@ -523,11 +584,18 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         fn(self, resp, range_header, self.state)
                         return
-            self._passthrough(resp, head_only=head_only)
+            self._passthrough(
+                resp,
+                head_only=head_only,
+                fault_eligible=fault_eligible,
+                range_header=range_header,
+            )
         finally:
             conn.close()
 
-    def _passthrough(self, resp, head_only=False):
+    def _passthrough(
+        self, resp, head_only=False, fault_eligible=False, range_header=""
+    ):
         self.send_response(resp.status, resp.reason)
         _forward_upstream_headers(self, resp)
         self.send_header("Connection", "close")
@@ -538,18 +606,49 @@ class Handler(BaseHTTPRequestHandler):
         if head_only:
             resp.close()
             return
-        # Serve at most MAX_RESPONSE_BYTES then close: the client sees a
-        # short read and re-requests at the new offset, keeping a steady
-        # stream of range GETs available for per-request fault injection.
-        sent = 0
+        # The addon streams movie-length responses over single upstream
+        # connections, so faults that come due mid-transfer would starve
+        # waiting for the next request. Poll for due faults while copying
+        # (fault-eligible streams only) and apply them to the live stream.
+        throttle_until = 0.0
+        corrupt_next_chunk = False
+        last_fault_check = 0.0
         while True:
-            chunk = resp.read(65536)
+            if fault_eligible:
+                now = time.monotonic()
+                if now - last_fault_check >= MIDSTREAM_CHECK_SECONDS:
+                    last_fault_check = now
+                    due = self.state.next_due_fault()
+                    if due is not None:
+                        action = _apply_midstream_fault(
+                            self, due, range_header, self.state
+                        )
+                        if action == "stop":
+                            resp.close()
+                            return
+                        if action == "corrupt":
+                            corrupt_next_chunk = True
+                        elif action == "slow":
+                            throttle_until = time.monotonic() + SLOW_DURATION
+            if throttle_until and time.monotonic() < throttle_until:
+                chunk = resp.read(max(1024, SLOW_BPS // 10))
+            else:
+                chunk = resp.read(65536)
             if not chunk:
                 break
-            self.wfile.write(chunk)
-            sent += len(chunk)
-            if 0 < MAX_RESPONSE_BYTES <= sent:
+            if corrupt_next_chunk:
+                corrupt_next_chunk = False
+                mutable = bytearray(chunk)
+                positions = random.sample(range(len(mutable)), min(32, len(mutable)))
+                for p in positions:
+                    mutable[p] ^= 0xFF
+                chunk = bytes(mutable)
+            try:
+                self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
                 break
+            if throttle_until and time.monotonic() < throttle_until:
+                time.sleep(max(1024, SLOW_BPS // 10) / SLOW_BPS)
         resp.close()
 
     def do_HEAD(self):

@@ -108,7 +108,7 @@ def test_proxy_state_replace_schedule_resets_clock(control_server):
     assert state.scheduled_events[0].at_seconds == 5.0
     assert state.scheduled_events[1].at_seconds == 10.0
     # Clock reset; fired events cleared
-    assert state.fired_events == []
+    assert not state.fired_events
 
 
 @pytest.fixture
@@ -281,23 +281,127 @@ def test_content_range_total_parses_upstream_header():
     assert fault_proxy._content_range_total(none_resp) is None
 
 
-def test_passthrough_caps_response_bytes(proxy_with_upstream, monkeypatch):
-    """The passthrough stops after MAX_RESPONSE_BYTES so the client
-    re-requests, keeping range GETs flowing for fault injection."""
-    import http.client
+class _FakeHandlerConn:
+    def __init__(self):
+        self.shutdown_called = False
 
-    monkeypatch.setattr(fault_proxy, "MAX_RESPONSE_BYTES", 1024 * 1024)
-    proxy_url, _state, _tmp = proxy_with_upstream
-    resp = _request_large_range(proxy_url)
-    # The proxy advertises the full upstream length but closes after the
-    # cap — a short read, which strict clients surface as IncompleteRead
-    # and the addon's pass-through recovers from by re-requesting.
-    with pytest.raises(http.client.IncompleteRead) as excinfo:
-        resp.read()
-    body = excinfo.value.partial
-    # One extra 64 KiB chunk may be in flight when the cap trips.
-    assert 1024 * 1024 <= len(body) <= 1024 * 1024 + 65536
-    assert int(resp.headers["Content-Length"]) == 100 * 1024 * 1024
+    def shutdown(self, _how):
+        self.shutdown_called = True
+
+    def close(self):
+        pass
+
+
+class _FakeWfile:  # pylint: disable=too-few-public-methods
+    def __init__(self):
+        self.chunks = []
+
+    def write(self, data):
+        self.chunks.append(bytes(data))
+
+
+class _FakePassthroughHandler:
+    """Just enough Handler surface for _passthrough unit tests."""
+
+    def __init__(self, state):
+        self.state = state
+        self.wfile = _FakeWfile()
+        self.connection = _FakeHandlerConn()
+        self.close_connection = False
+
+    def send_response(self, *_a, **_k):
+        pass
+
+    def send_header(self, *_a, **_k):
+        pass
+
+    def end_headers(self):
+        pass
+
+
+class _FakeResp:
+    """Streams `chunks` then EOF; records close."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.closed = False
+
+    status = 206
+    reason = "Partial Content"
+
+    def getheaders(self):
+        return [("Content-Type", "video/x-matroska")]
+
+    def read(self, _n):
+        if self._chunks:
+            return self._chunks.pop(0)
+        return b""
+
+    def close(self):
+        self.closed = True
+
+
+def _due_state(fault_type):
+    state = fault_proxy.ProxyState()
+    state.scheduled_events = [fault_proxy.ScheduledEvent(0.0, fault_type)]
+    state.start_t = time.monotonic() - 1.0  # already due
+    return state
+
+
+def _run_passthrough(state, chunks, monkeypatch):
+    # Check for due faults on every loop iteration in tests.
+    monkeypatch.setattr(fault_proxy, "MIDSTREAM_CHECK_SECONDS", 0.0)
+    handler = _FakePassthroughHandler(state)
+    fault_proxy.Handler._passthrough(
+        handler,
+        _FakeResp(chunks),
+        fault_eligible=True,
+        range_header="bytes=2097152-",
+    )
+    return handler
+
+
+def test_midstream_corrupted_bytes_flips_next_chunk(monkeypatch):
+    chunks = [b"A" * 65536, b"B" * 65536]
+    state = _due_state("corrupted_bytes")
+    handler = _run_passthrough(state, chunks, monkeypatch)
+    assert state.fired_events[0]["fault_type"] == "corrupted_bytes"
+    # First chunk got corrupted (fault was already due before chunk 1);
+    # exactly 32 positions differ, remainder untouched.
+    corrupted = handler.wfile.chunks[0]
+    diffs = sum(1 for a, b in zip(corrupted, b"A" * 65536) if a != b)
+    assert diffs == 32
+    assert handler.wfile.chunks[1] == b"B" * 65536
+
+
+def test_midstream_connection_reset_stops_stream(monkeypatch):
+    chunks = [b"A" * 65536, b"B" * 65536]
+    state = _due_state("connection_reset")
+    handler = _run_passthrough(state, chunks, monkeypatch)
+    assert state.fired_events[0]["fault_type"] == "connection_reset"
+    assert handler.connection.shutdown_called
+    assert not handler.wfile.chunks  # nothing written after the reset
+
+
+def test_midstream_http_500_parks_pending_and_stops(monkeypatch):
+    chunks = [b"A" * 65536, b"B" * 65536]
+    state = _due_state("http_500")
+    handler = _run_passthrough(state, chunks, monkeypatch)
+    # Not recorded yet: the 500 is served (and recorded) on the NEXT request.
+    assert not state.fired_events
+    assert state.pending_fault is not None
+    assert state.pending_fault.fault_type == "http_500"
+    assert not handler.wfile.chunks
+
+
+def test_pending_http_500_served_on_next_request(proxy_with_upstream):
+    proxy_url, state, _ = proxy_with_upstream
+    state.set_pending_fault(fault_proxy.ScheduledEvent(0.0, "http_500"))
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _request_large_range(proxy_url)
+    assert exc.value.code == 500
+    assert state.fired_events[0]["fault_type"] == "http_500"
+    assert state.pending_fault is None
 
 
 def test_passthrough_drops_unsafe_upstream_headers(proxy_with_upstream):
