@@ -303,14 +303,13 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
                     continue
                 filtered, _all = filter_results(results, settings_getter=getter)
                 cluster = _mirror_cluster_len(filtered)
-                if cluster < 2 or len(filtered) < 3:
-                    last_error = f"E{ep:02d}: filtered={len(filtered)} cluster={cluster}"
+                pool = len(filtered)
+                if cluster < 2 or pool < 3:
+                    last_error = f"E{ep:02d}: filtered={pool} cluster={cluster}"
                     continue
-                print(
-                    f"[extreme] E{ep:02d}: pool={len(filtered)} mirror_cluster={cluster}"
-                )
-                if best is None or (cluster, len(filtered)) > (best[0], best[1]):
-                    best = (cluster, len(filtered), ep, filtered)
+                print(f"[extreme] E{ep:02d}: pool={pool} mirror_cluster={cluster}")
+                if best is None or (cluster, pool) > (best[0], best[1]):
+                    best = (cluster, pool, ep, filtered)
             except Exception as exc:  # noqa: BLE001
                 last_error = f"E{ep:02d}: {exc}"
                 continue
