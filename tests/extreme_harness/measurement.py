@@ -166,6 +166,14 @@ class PlayerPoller(threading.Thread):
                     return
 
 
+# Resume detection window after each fault, seconds. Must exceed the
+# longest fault's ACTIVE duration: slow_upstream throttles the stream for
+# FAULT_PROXY_SLOW_DURATION (default 30s), so a 30s window could never
+# observe its recovery by construction (run 2026-07-18T06-44-29Z failed
+# only on that event, with every other fault resuming in 0.6-13s).
+RESUME_WINDOW_SECONDS = 60.0
+
+
 def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
     """For each fault event, compute resume time, max freeze, and freeze segments.
 
@@ -188,8 +196,12 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
         # State at fault: last tick at or before f_t
         before = [t for t in playable_ticks if t["t_wall"] <= f_t]
         state_at_fault = before[-1] if before else None
-        # Window for resume detection: [f_t, f_t + 30s]
-        window = [t for t in playable_ticks if f_t <= t["t_wall"] <= f_t + 30.0]
+        # Window for resume detection: [f_t, f_t + RESUME_WINDOW_SECONDS]
+        window = [
+            t
+            for t in playable_ticks
+            if f_t <= t["t_wall"] <= f_t + RESUME_WINDOW_SECONDS
+        ]
         resume_t_wall = None
         if state_at_fault is not None and window:
             ref_time_sec = state_at_fault["time_sec"]
@@ -225,9 +237,10 @@ def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
                 else:
                     consecutive_advancing = 0
         resume_seconds = resume_t_wall - f_t if resume_t_wall is not None else None
-        # Freeze segments within [f_t, min(resume + 30, f_t + 60)]
+        # Freeze segments within [f_t, min(resume + 30, f_t + window + 30)]
+        freeze_cap = f_t + RESUME_WINDOW_SECONDS + 30.0
         end_window_t = min(
-            resume_t_wall + 30.0 if resume_t_wall else f_t + 60.0, f_t + 60.0
+            resume_t_wall + 30.0 if resume_t_wall else freeze_cap, freeze_cap
         )
         freeze_window = [
             t for t in playable_ticks if f_t <= t["t_wall"] <= end_window_t
