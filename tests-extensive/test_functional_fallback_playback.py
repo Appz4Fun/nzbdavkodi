@@ -355,7 +355,9 @@ def _top_imdb_sample():
     return seed, count, initial + backfill
 
 
-def _movie_search_pool(settings, movie, query_title=None, use_imdb=True):
+def _movie_search_pool(
+    settings, movie, query_title=None, use_imdb=True, require_filtered=False
+):
     title = query_title or movie["title"]
     imdb = movie["imdb"] if use_imdb else ""
     year = movie["year"] if use_imdb else ""
@@ -376,7 +378,16 @@ def _movie_search_pool(settings, movie, query_title=None, use_imdb=True):
 
     with _patch_addon_settings(settings):
         filtered, all_parsed = filter_results(results)
-    parsed = filtered or all_parsed
+    # ``require_filtered`` keeps the pool aligned with what the addon will
+    # actually pick at play time: falling back to ``all_parsed`` builds a
+    # pool of releases the addon's own filter would reject, so the run
+    # plays an unfiltered pick with an empty fallback pool (a 4K DV REMUX
+    # under llvmpipe, in one real run) and can't test fallback recovery.
+    if require_filtered and not filtered:
+        raise _FunctionalAttemptFailed(
+            "{} has no results passing the addon filter".format(title)
+        )
+    parsed = filtered if require_filtered else (filtered or all_parsed)
     if not parsed:
         raise _FunctionalAttemptFailed(
             "{} search returned no parseable results".format(title)
@@ -439,6 +450,29 @@ def test_movie_search_pool_passes_live_settings_to_hydra_search():
     }
 
 
+def test_movie_search_pool_require_filtered_rejects_unfiltered_pool():
+    """With require_filtered, an addon-filter wipeout must raise instead of
+    silently building the pool from unfiltered results (which the addon
+    would never pick at play time)."""
+    settings = {"hydra_url": "http://h", "hydra_api_key": "k"}
+    movie = {"title": "The Matrix", "year": "1999", "imdb": "tt0133093"}
+    result = {"title": "The Matrix 1999 candidate", "link": "http://hydra/getnzb/1"}
+
+    with patch(
+        "{}.search_hydra".format(__name__),
+        return_value=([result], None),
+    ), patch(
+        "{}.filter_results".format(__name__),
+        return_value=([], [result, result]),
+    ):
+        with pytest.raises(_FunctionalAttemptFailed, match="addon filter"):
+            _movie_search_pool(settings, movie, require_filtered=True)
+
+        # Default (lenient) behavior is unchanged: unfiltered fallback pool.
+        pool = _movie_search_pool(settings, movie)
+    assert pool == [result, result]
+
+
 def _release_group_key(result):
     meta = result.get("_meta") if isinstance(result, dict) else {}
     group = meta.get("group", "") if isinstance(meta, dict) else ""
@@ -477,12 +511,16 @@ def _selection_pairs_for_targets(settings, targets, pool):
     return pairs
 
 
-def _movie_selections_with_fallbacks(settings, movie):
+def _movie_selections_with_fallbacks(settings, movie, require_filtered=False):
     failures = []
     framestor_query = "{} {} FraMeSToR".format(movie["title"], movie["year"])
     try:
         framestor_pool = _movie_search_pool(
-            settings, movie, query_title=framestor_query, use_imdb=False
+            settings,
+            movie,
+            query_title=framestor_query,
+            use_imdb=False,
+            require_filtered=require_filtered,
         )
         framestor_targets = [
             result for result in framestor_pool if _looks_like_framestor_release(result)
@@ -497,7 +535,9 @@ def _movie_selections_with_fallbacks(settings, movie):
         failures.append(str(exc))
 
     try:
-        regular_pool = _movie_search_pool(settings, movie)
+        regular_pool = _movie_search_pool(
+            settings, movie, require_filtered=require_filtered
+        )
         group, group_pool = _most_duplicated_group_pool(regular_pool)
         if not group_pool:
             raise _FunctionalAttemptFailed("no duplicated release group found")

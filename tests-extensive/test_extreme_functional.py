@@ -216,9 +216,17 @@ def _pick_movie_with_fallback_pool(rng: random.Random, settings):
     # most-duplicated release group. The original extreme-test pool used
     # only the latter, which often picked WEB-DL rips that nzbdav-rs
     # rejects with "no importable video file found".
-    for movie in pool_movies[:3]:
+    # require_filtered keeps the candidate pool aligned with the addon's own
+    # play-time filter: without it a movie whose releases all fail the
+    # addon filter (run 2026-07-18T04-05-30Z: Saving Private Ryan, addon
+    # filtered=0/250) builds its pool from unfiltered results, the addon
+    # plays an unfiltered heavy pick, and the run has no fallback pool to
+    # test. Try more movies since the strict check rejects more of them.
+    for movie in pool_movies[:6]:
         try:
-            _profile, pairs = _movie_selections_with_fallbacks(settings, movie)
+            _profile, pairs = _movie_selections_with_fallbacks(
+                settings, movie, require_filtered=True
+            )
             if not pairs:
                 last_error = f"no selection pairs for {movie['title']}"
                 continue
