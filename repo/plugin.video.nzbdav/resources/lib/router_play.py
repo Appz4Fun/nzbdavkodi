@@ -328,9 +328,16 @@ def _available_filtered_rows(filtered, all_parsed, title, notify, pack_result):
     return [] if pack_result is not None else None
 
 
-def _prepare_picker_rows(results, title, notify, pack_result):
-    """Filter provider rows and prepend one exact local-pack row."""
-    from resources.lib.filter import filter_results
+def _prepare_picker_rows(results, title, notify, pack_result, requested_series=None):
+    """Filter provider rows and prepend one exact local-pack row.
+
+    ``requested_series`` (episode searches only) demotes rows whose
+    PTT-parsed show title is a different series — an episode search
+    matches the phrase anywhere in the release name, so another show's
+    identically-titled EPISODE otherwise outranks the requested series
+    and auto-select plays the wrong show.
+    """
+    from resources.lib.filter import filter_results, prefer_series_rows
 
     filtered, all_parsed = filter_results(results)
     filtered = _available_filtered_rows(
@@ -338,6 +345,8 @@ def _prepare_picker_rows(results, title, notify, pack_result):
     )
     if filtered is None:
         return None
+    if requested_series:
+        filtered = prefer_series_rows(filtered, requested_series)
     provider_row_count = len(filtered)
     picker_rows = _prepend_pack(filtered, pack_result)
     total_count = len(results) + len(picker_rows) - provider_row_count
@@ -345,13 +354,21 @@ def _prepare_picker_rows(results, title, notify, pack_result):
 
 
 def _handle_play_filter_and_select(
-    handle, results, title, year, notify, identity=None, pack_result=None
+    handle,
+    results,
+    title,
+    year,
+    notify,
+    identity=None,
+    pack_result=None,
+    requested_series=None,
 ):
     """Filter, optionally auto-select, tag, and run the picker for ``_handle_play``.
 
     Resolves the Kodi handle itself (False on abort / no selection, or via the
     auto-select / picker-selection resolvers). ``identity`` carries the release
-    id fields the NZBGet DupeKey is built from (#372).
+    id fields the NZBGet DupeKey is built from (#372). ``requested_series``
+    demotes wrong-show rows on episode searches (see _prepare_picker_rows).
     """
     import resources.lib.router as _router
 
@@ -362,7 +379,9 @@ def _handle_play_filter_and_select(
         xbmc.LOGDEBUG,
     )
 
-    prepared = _prepare_picker_rows(results, title, notify, pack_result)
+    prepared = _prepare_picker_rows(
+        results, title, notify, pack_result, requested_series=requested_series
+    )
     if prepared is None:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
@@ -787,12 +806,20 @@ def _handle_play_resolve_selection(
 
 
 def _handle_search_filter_and_select(
-    handle, params, results, title, year, notify, pack_result=None
+    handle,
+    params,
+    results,
+    title,
+    year,
+    notify,
+    pack_result=None,
+    requested_series=None,
 ):
     """Filter, optionally auto-select, tag, and run the picker for ``_handle_search``.
 
     Always ends the Kodi directory (succeeded=False) so the route never hangs.
-    Extracted verbatim from the tail of ``_handle_search``.
+    Extracted verbatim from the tail of ``_handle_search``. ``requested_series``
+    demotes wrong-show rows on episode searches (see _prepare_picker_rows).
     """
     import resources.lib.router as _router
 
@@ -802,7 +829,9 @@ def _handle_search_filter_and_select(
         ),
         xbmc.LOGDEBUG,
     )
-    prepared = _prepare_picker_rows(results, title, notify, pack_result)
+    prepared = _prepare_picker_rows(
+        results, title, notify, pack_result, requested_series=requested_series
+    )
     if prepared is None:
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return

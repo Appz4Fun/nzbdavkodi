@@ -517,6 +517,70 @@ def filter_results(results, settings_getter=None):
     return filtered, all_parsed
 
 
+def partition_series_rows(rows, requested_title):
+    """Split rows into (matching, rest) by PTT-parsed show title.
+
+    An episode search matches the query phrase ANYWHERE in the release
+    name, so a series whose name collides with another show's EPISODE
+    title pulls in that show's releases (live: searching the 2025 series
+    "The Good the Bad and the Ugly" returned The.Rookie.S01E03.The.Good.
+    the.Bad.and.the.Ugly...-NTb, and auto-select played The Rookie).
+    A row matches when its normalized parsed show title equals, contains,
+    or is contained in the normalized requested title. Rows whose title
+    PTT cannot parse land in ``rest``.
+    """
+    if not requested_title:
+        return list(rows), []
+    # Lazy import, and through fallback_streams (not _identity directly):
+    # the fallback modules import each other and this module's parse
+    # helpers; fallback_streams is the only entry point that initializes
+    # cleanly from a cold sys.modules, and it re-exports both helpers.
+    from resources.lib.fallback_streams import (
+        _normalize_title,
+        _release_identity,
+    )
+
+    want = _normalize_title(requested_title)
+    if not want:
+        return list(rows), []
+    matching = []
+    rest = []
+    for row in rows:
+        got = _release_identity(row)[0]
+        raw = row.get("title", "") if isinstance(row, dict) else ""
+        if got == _normalize_title(raw) and got != want:
+            # PTT could not isolate a show title and the identity fell
+            # back to the WHOLE normalized release name — which contains
+            # the searched phrase by construction (the indexer matched
+            # it), so containment would pass every row. Only exact
+            # equality counts for these.
+            rest.append(row)
+        elif got and (got == want or want in got or got in want):
+            matching.append(row)
+        else:
+            rest.append(row)
+    return matching, rest
+
+
+def prefer_series_rows(rows, requested_title):
+    """Order rows so parsed-show-title matches precede everything else.
+
+    Auto-select takes ``rows[0]``, so this is the wrong-show guard for
+    episode playback; manual pickers still see every row. When NOTHING
+    matches (foreign titling, PTT quirks) the original order is kept
+    rather than guessing.
+    """
+    matching, rest = partition_series_rows(rows, requested_title)
+    if not matching or not rest:
+        return list(rows)
+    xbmc.log(
+        "NZB-DAV: demoted {} result(s) whose parsed show title does not "
+        "match '{}'".format(len(rest), requested_title),
+        xbmc.LOGINFO,
+    )
+    return matching + rest
+
+
 def _pubdate_sort_key(result):
     """Return a sortable datetime-derived key for RFC-822 pubdate.
 

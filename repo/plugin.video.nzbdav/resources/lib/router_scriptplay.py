@@ -192,14 +192,20 @@ def _script_play_search_filter_tag(
         if results is None:
             return None
         return _script_play_filter_autoselect_tag(
-            loading, params, results, title, notify, pack_result=pack_result
+            loading,
+            params,
+            results,
+            title,
+            notify,
+            pack_result=pack_result,
+            requested_series=title if search_type == "episode" else None,
         )
     finally:
         _router._close_loading_dialog(loading)
 
 
 def _script_play_filter_autoselect_tag(
-    loading, params, results, title, notify, pack_result=None
+    loading, params, results, title, notify, pack_result=None, requested_series=None
 ):
     """Filter, optionally auto-play, and tag for the RunScript flow.
 
@@ -207,9 +213,13 @@ def _script_play_filter_autoselect_tag(
     an auto-selected release was already played), otherwise the
     ``(filtered, total_count, completed_jobs)`` payload. Extracted verbatim from
     the body of ``_script_play_search_filter_tag``'s ``try`` block.
+    ``requested_series`` demotes wrong-show rows on episode searches — an
+    episode search matches the phrase anywhere in the release name, so
+    another show's identically-titled EPISODE otherwise outranks the
+    requested series and auto-select plays the wrong show.
     """
     import resources.lib.router as _router
-    from resources.lib.filter import filter_results
+    from resources.lib.filter import filter_results, prefer_series_rows
 
     total_count = len(results)
     _router._update_loading_dialog(loading, 60, _router._string(30088))
@@ -230,6 +240,8 @@ def _script_play_filter_autoselect_tag(
     )
     if filtered is None:
         return None
+    if requested_series:
+        filtered = prefer_series_rows(filtered, requested_series)
     provider_row_count = len(filtered)
     filtered = _router._prepend_pack(filtered, pack_result)
     total_count += len(filtered) - provider_row_count

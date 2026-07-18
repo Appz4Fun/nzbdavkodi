@@ -114,6 +114,53 @@ def test_parse_title_metadata_dotted_h265_maps_to_hevc_label():
     assert meta["codec"] == "x265/HEVC"
 
 
+def test_partition_series_rows_demotes_episode_title_collision():
+    """A series name colliding with another show's EPISODE title must not
+    win selection: searching the 2025 series "The Good the Bad and the
+    Ugly" returned The.Rookie.S01E03.The.Good.the.Bad.and.the.Ugly...
+    and auto-select played The Rookie (run 2026-07-18T20-08-47Z)."""
+    from resources.lib.filter import partition_series_rows, prefer_series_rows
+
+    rookie = _make_result(
+        "The.Rookie.S01E03.The.Good.the.Bad.and.the.Ugly.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb"
+    )
+    true_show = _make_result(
+        "The.Good.the.Bad.and.the.Ugly.2025.S01E03.1080p.NF.WEB-DL.H.264.AAC-UBWEB"
+    )
+
+    matching, rest = partition_series_rows(
+        [rookie, true_show], "The Good the Bad and the Ugly"
+    )
+    assert matching == [true_show]
+    assert rest == [rookie]
+
+    ordered = prefer_series_rows([rookie, true_show], "The Good the Bad and the Ugly")
+    assert ordered == [true_show, rookie]
+
+
+def test_prefer_series_rows_keeps_order_when_nothing_matches():
+    from resources.lib.filter import prefer_series_rows
+
+    rows = [
+        _make_result("The.Rookie.S01E03.1080p.AMZN.WEB-DL.DDP5.1.H.264-NTb"),
+        _make_result("Alien.1979.1080p.BluRay.DDP.5.1.x264-hallowed"),
+    ]
+    assert prefer_series_rows(rows, "The Good the Bad and the Ugly") == rows
+
+
+def test_partition_series_rows_unparsed_title_needs_exact_match():
+    """When PTT cannot isolate a show title the identity falls back to
+    the WHOLE normalized release name, which contains the searched
+    phrase by construction — containment must not count for those."""
+    from resources.lib.filter import partition_series_rows
+
+    row = _make_result("The.Good.the.Bad.and.the.Ugly.Extra.Tokens.XYZ")
+    with patch("resources.lib.ptt.parse_title", return_value={}):
+        matching, rest = partition_series_rows([row], "The Good the Bad and the Ugly")
+    assert not matching
+    assert rest == [row]
+
+
 def test_parse_title_metadata_4k_hdr():
     meta = parse_title_metadata(
         "Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX"

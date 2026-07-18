@@ -684,6 +684,7 @@ def _handle_play(handle, params):
         notify,
         identity,
         pack_result=pack_result,
+        requested_series=title if search_type == "episode" else None,
     )
 
 
@@ -742,6 +743,7 @@ def _handle_search(handle, params):
         year,
         notify,
         pack_result=pack_result,
+        requested_series=title if search_type == "episode" else None,
     )
 
 
