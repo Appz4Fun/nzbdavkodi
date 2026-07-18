@@ -90,7 +90,6 @@ class PlayerPoller(threading.Thread):
                                     "time_sec": 0.0,
                                     "totaltime_sec": 0.0,
                                     "percentage": 0.0,
-                                    "playcount": 0,
                                     "active_player_id": None,
                                 }
                             )
@@ -99,6 +98,11 @@ class PlayerPoller(threading.Thread):
                         fh.flush()
                     else:
                         pid = result[0]["playerid"]
+                        # NOTE: "playcount" is NOT a valid Player.GetProperties
+                        # property (it's a ListItem property) — requesting it
+                        # makes Kodi reject the whole call, which zeroed every
+                        # sample of an entire run once. Keep this list to
+                        # documented Player properties only.
                         props = self._rpc(
                             "Player.GetProperties",
                             params={
@@ -108,11 +112,16 @@ class PlayerPoller(threading.Thread):
                                     "time",
                                     "totaltime",
                                     "percentage",
-                                    "playcount",
                                 ],
                             },
                             request_id=2,
                         )
+                        if "error" in props:
+                            raise OSError(
+                                "Player.GetProperties error: {}".format(
+                                    json.dumps(props["error"])[:300]
+                                )
+                            )
                         r = props.get("result", {})
                         fh.write(
                             json.dumps(
@@ -127,7 +136,6 @@ class PlayerPoller(threading.Thread):
                                         r.get("totaltime", {})
                                     ),
                                     "percentage": r.get("percentage", 0.0),
-                                    "playcount": r.get("playcount", 0),
                                     "active_player_id": pid,
                                 }
                             )

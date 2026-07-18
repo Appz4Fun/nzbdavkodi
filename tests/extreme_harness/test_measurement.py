@@ -36,28 +36,40 @@ def mock_kodi():
                         "result": [{"playerid": 1, "type": "video"}],
                     }
                 elif method == "Player.GetProperties":
-                    t = state["time_sec"]
-                    body = {
-                        "jsonrpc": "2.0",
-                        "id": req["id"],
-                        "result": {
-                            "speed": state["speed"],
-                            "time": {
-                                "hours": int(t // 3600),
-                                "minutes": int((t // 60) % 60),
-                                "seconds": int(t % 60),
-                                "milliseconds": int((t * 1000) % 1000),
+                    # Real Kodi 21 rejects the whole call when ANY requested
+                    # property is not a Player property ("playcount" once
+                    # zeroed a full run's samples this way). Mirror that
+                    # strictness so the poller's property list stays valid.
+                    valid = {"speed", "time", "totaltime", "percentage"}
+                    requested = set(req.get("params", {}).get("properties", []))
+                    if requested - valid:
+                        body = {
+                            "jsonrpc": "2.0",
+                            "id": req["id"],
+                            "error": {"code": -32602, "message": "Invalid params."},
+                        }
+                    else:
+                        t = state["time_sec"]
+                        body = {
+                            "jsonrpc": "2.0",
+                            "id": req["id"],
+                            "result": {
+                                "speed": state["speed"],
+                                "time": {
+                                    "hours": int(t // 3600),
+                                    "minutes": int((t // 60) % 60),
+                                    "seconds": int(t % 60),
+                                    "milliseconds": int((t * 1000) % 1000),
+                                },
+                                "totaltime": {
+                                    "hours": 2,
+                                    "minutes": 0,
+                                    "seconds": 0,
+                                    "milliseconds": 0,
+                                },
+                                "percentage": (t / 7200.0) * 100,
                             },
-                            "totaltime": {
-                                "hours": 2,
-                                "minutes": 0,
-                                "seconds": 0,
-                                "milliseconds": 0,
-                            },
-                            "percentage": (t / 7200.0) * 100,
-                            "playcount": 0,
-                        },
-                    }
+                        }
                 else:
                     body = {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -1}}
             data = json.dumps(body).encode("utf-8")
@@ -127,7 +139,6 @@ def _tick(t_wall, time_sec, speed=1):
         "time_sec": time_sec,
         "totaltime_sec": 7200.0,
         "percentage": 0.0,
-        "playcount": 0,
         "active_player_id": 1,
     }
 
