@@ -274,7 +274,7 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
     cross-release standbys exist for the second source_dead. Returns
     (episode_number, filtered_rows).
     """
-    from resources.lib.filter import filter_results
+    from resources.lib.filter import filter_results, partition_series_rows
     from resources.lib.hydra import search_hydra
 
     def getter(k, d=""):
@@ -302,10 +302,22 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
                     last_error = f"E{ep:02d}: search failed: {error}"
                     continue
                 filtered, _all = filter_results(results, settings_getter=getter)
+                # Keep ONLY rows parsed as the requested series: an
+                # episode search matches the phrase anywhere in the
+                # release name, and The Rookie has an EPISODE titled
+                # exactly like this series — its huge repost cluster
+                # otherwise wins the largest-cluster pick and the run
+                # plays the wrong show (run 2026-07-18T20-08-47Z).
+                filtered, wrong_show = partition_series_rows(
+                    filtered, _TV_SERIES["title"]
+                )
                 cluster = _mirror_cluster_len(filtered)
                 pool = len(filtered)
                 if cluster < 2 or pool < 3:
-                    last_error = f"E{ep:02d}: filtered={pool} cluster={cluster}"
+                    last_error = (
+                        f"E{ep:02d}: filtered={pool} cluster={cluster} "
+                        f"(dropped {len(wrong_show)} wrong-show)"
+                    )
                     continue
                 print(f"[extreme] E{ep:02d}: pool={pool} mirror_cluster={cluster}")
                 if best is None or (cluster, pool) > (best[0], best[1]):
