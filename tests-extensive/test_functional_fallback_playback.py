@@ -300,7 +300,9 @@ def _matrix_selections_with_fallbacks(settings):
             failures.append("{} returned no results".format(search["label"]))
             continue
         with _patch_addon_settings(settings):
-            filtered, all_parsed = filter_results(results)
+            filtered, all_parsed = filter_results(
+                results, settings_getter=lambda k, d="": settings.get(k, d)
+            )
         results = filtered or all_parsed
         if not results:
             failures.append("{} returned no parseable results".format(search["label"]))
@@ -376,8 +378,16 @@ def _movie_search_pool(
     if not results:
         raise _FunctionalAttemptFailed("{} search returned no results".format(title))
 
+    # Pass the settings explicitly: filter_results' no-getter branch reads
+    # settings.xml from disk (thread-safety fix), which on the test host is
+    # empty — the old xbmcaddon patch context no longer reaches it, and an
+    # implicit call silently ran with default-permissive filters (a 2160p
+    # DV HEVC REMUX passed a 1080p/AVC/SDR profile in run
+    # 2026-07-18T10-22-25Z and llvmpipe could not play it).
     with _patch_addon_settings(settings):
-        filtered, all_parsed = filter_results(results)
+        filtered, all_parsed = filter_results(
+            results, settings_getter=lambda k, d="": settings.get(k, d)
+        )
     # ``require_filtered`` keeps the pool aligned with what the addon will
     # actually pick at play time: falling back to ``all_parsed`` builds a
     # pool of releases the addon's own filter would reject, so the run

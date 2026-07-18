@@ -380,9 +380,22 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             )
 
     def _clear_kodi_dialogs():
-        """Dismiss any leftover modal (e.g. the addon's 'Download failed'
-        dialog) so a retry's ExecuteAddon isn't swallowed by it."""
+        """Cancel a still-running resolve and dismiss leftover modals.
+
+        A timed-out attempt's resolve keeps polling addon-side (its own
+        timeout is 3600s); launching the next attempt underneath it means
+        neither ever reaches the player. Input.Back cancels the addon's
+        DialogProgress (the resolver aborts and cancels its nzbdav job),
+        then Input.Select confirms any 'Download failed' OK modal, and a
+        settle wait lets the cancel path unwind before the relaunch.
+        """
         for _ in range(3):
+            try:
+                _kodi_rpc("Input.Back")
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(1.0)
+        for _ in range(2):
             try:
                 _kodi_rpc("Input.Select")
             except Exception:  # noqa: BLE001
@@ -392,7 +405,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             _kodi_rpc("Input.Home")
         except Exception:  # noqa: BLE001
             pass
-        time.sleep(1)
+        time.sleep(10)
 
     # Launch playback via TMDBHelper, retrying with a DIFFERENT movie when
     # playback never starts: a release can be dead on the provider (missing
