@@ -87,7 +87,7 @@ def _result(title, link, size, meta=None):
     }
 
 
-def _fallback_setting(key):
+def _fallback_setting(key, default=""):
     return {
         "webdav_url": "http://webdav/content",
         "nzbdav_url": "http://nzbdav:3000",
@@ -183,14 +183,14 @@ def test_configured_stream_bases_tolerates_trailing_space_in_url():
     """
     from resources.lib import fallback_streams
 
-    def _spaced(key):
+    def _spaced(key, default=""):
         return {
             "webdav_url": "",
             "nzbdav_url": "http://192.168.1.93:3000 ",
         }.get(key, "")
 
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_spaced,
     ):
         bases = fallback_streams.configured_stream_probe_bases()
@@ -576,7 +576,7 @@ def test_prefetch_title_tokens_are_reused_for_selection_attach(
 
 def test_fallback_settings_default_to_enabled_with_five_candidates():
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         return_value="",
     ):
         assert _fallback_settings() == (True, 5)
@@ -3305,7 +3305,7 @@ def test_fingerprint_ranges_chunks_whole_file_when_smaller_than_sample_budget():
 @patch("resources.lib.fallback_streams.urlopen", side_effect=URLError("timeout"))
 def test_fetch_range_digest_returns_none_on_probe_error(_mock_urlopen):
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert (
@@ -3335,7 +3335,7 @@ def test_fetch_range_digest_rejects_out_of_bounds_range_before_probe(mock_urlope
 @patch("resources.lib.fallback_streams.urlopen")
 def test_fetch_range_digest_rejects_non_http_urls(mock_urlopen):
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert fetch_range_digest("file:///etc/passwd", None, 0, 3) is None
@@ -3345,7 +3345,7 @@ def test_fetch_range_digest_rejects_non_http_urls(mock_urlopen):
 @patch("resources.lib.fallback_streams.urlopen")
 def test_fetch_range_digest_rejects_off_origin_urls(mock_urlopen):
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert (
@@ -3357,7 +3357,7 @@ def test_fetch_range_digest_rejects_off_origin_urls(mock_urlopen):
 @patch("resources.lib.fallback_streams.urlopen")
 def test_fetch_content_length_rejects_off_origin_urls(mock_urlopen):
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert fetch_content_length("http://evil.test/content/movie.mkv", None) == 0
@@ -3367,7 +3367,7 @@ def test_fetch_content_length_rejects_off_origin_urls(mock_urlopen):
 @patch("resources.lib.fallback_streams.urlopen")
 def test_fetch_range_digest_rejects_configured_host_outside_content_root(mock_urlopen):
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert fetch_range_digest("http://webdav/private/movie.mkv", None, 0, 3) is None
@@ -3382,7 +3382,7 @@ def test_fetch_content_length_accepts_configured_stream_url(mock_urlopen):
     )
 
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert fetch_content_length("http://webdav/content/movie.mkv", None) == 1234
@@ -3402,7 +3402,7 @@ def test_fetch_content_length_reuses_validated_probe_url_for_precomputed_bases()
         headers={"Content-Length": "1234"},
     )
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         probe_bases = fallback_streams.configured_stream_probe_bases()
@@ -3447,7 +3447,7 @@ def test_precomputed_probe_bases_reuse_base_origin_checks_for_range_digest():
         headers={"Content-Range": "bytes 0-3/10"},
     )
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         probe_bases = fallback_streams.configured_stream_probe_bases()
@@ -3479,7 +3479,7 @@ def test_fetch_range_digest_rejects_server_that_ignores_range(mock_urlopen):
     mock_urlopen.return_value = _mock_range_response(b"A" * 4, status=200)
 
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert fetch_range_digest("http://webdav/content/movie.mkv", None, 0, 3) is None
@@ -3494,7 +3494,7 @@ def test_fetch_range_digest_requires_matching_content_range(mock_urlopen):
     )
 
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert fetch_range_digest("http://webdav/content/movie.mkv", None, 0, 3) is None
@@ -3509,7 +3509,7 @@ def test_fetch_range_digest_requires_matching_content_range_total(mock_urlopen):
     )
 
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert (
@@ -3530,7 +3530,7 @@ def test_fetch_range_digest_accepts_matching_partial_content(mock_urlopen):
     )
 
     with patch(
-        "resources.lib.fallback_streams.xbmcaddon.Addon.return_value.getSetting",
+        "resources.lib.router._get_script_setting",
         side_effect=_fallback_setting,
     ):
         assert (

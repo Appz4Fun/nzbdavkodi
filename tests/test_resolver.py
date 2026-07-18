@@ -5102,9 +5102,10 @@ def test_fallback_submit_worker_does_not_notify_no_candidates_when_disabled(
 ):
     from resources.lib.resolver import _start_fallback_submit_worker
 
-    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "false"
+    del mock_xbmcaddon  # no-getter reads now come from settings.xml on disk
 
-    state = _start_fallback_submit_worker(candidate_loader=lambda: [])
+    with patch("resources.lib.router._get_script_setting", return_value="false"):
+        state = _start_fallback_submit_worker(candidate_loader=lambda: [])
 
     assert state["finished"].wait(timeout=2)
     mock_submit_fallbacks.assert_not_called()

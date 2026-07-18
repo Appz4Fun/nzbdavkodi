@@ -962,8 +962,8 @@ def test_filter_results_logs_timing(
 # --- _get_filter_settings tests (direct coverage of the Kodi-settings reader) ---
 
 
-@patch("xbmcaddon.Addon")
-def test_get_filter_settings_collects_enabled_resolutions_and_codecs(mock_addon):
+@patch("resources.lib.router._get_script_setting")
+def test_get_filter_settings_collects_enabled_resolutions_and_codecs(mock_get):
     """When specific resolution / codec toggles are "true", the
     corresponding labels show up in the returned lists; disabled
     toggles don't leak through."""
@@ -978,7 +978,7 @@ def test_get_filter_settings_collects_enabled_resolutions_and_codecs(mock_addon)
         "filter_atmos": "true",
         "filter_english": "true",
     }
-    mock_addon.return_value.getSetting.side_effect = lambda k: enabled.get(k, "false")
+    mock_get.side_effect = lambda k, default="": enabled.get(k, "false")
 
     settings = _get_filter_settings()
 
@@ -998,8 +998,8 @@ def test_get_filter_settings_collects_enabled_resolutions_and_codecs(mock_addon)
     assert "es" not in settings["languages"]
 
 
-@patch("xbmcaddon.Addon")
-def test_get_filter_settings_csv_fields_split_and_stripped(mock_addon):
+@patch("resources.lib.router._get_script_setting")
+def test_get_filter_settings_csv_fields_split_and_stripped(mock_get):
     """Comma-separated settings (exclude_keywords, release_group, etc.)
     must be split on commas, whitespace trimmed, and empty entries
     dropped."""
@@ -1011,7 +1011,7 @@ def test_get_filter_settings_csv_fields_split_and_stripped(mock_addon):
         "filter_release_group": "GRP1,GRP2",
         "filter_exclude_release_group": "  NUKED  , ",
     }
-    mock_addon.return_value.getSetting.side_effect = lambda k: raw.get(k, "")
+    mock_get.side_effect = lambda k, default="": raw.get(k, default)
 
     settings = _get_filter_settings()
 
@@ -1021,8 +1021,8 @@ def test_get_filter_settings_csv_fields_split_and_stripped(mock_addon):
     assert settings["exclude_release_group"] == ["nuked"]
 
 
-@patch("xbmcaddon.Addon")
-def test_get_filter_settings_int_fields_fall_back_on_non_numeric(mock_addon):
+@patch("resources.lib.router._get_script_setting")
+def test_get_filter_settings_int_fields_fall_back_on_non_numeric(mock_get):
     """Non-numeric strings for int-valued settings must fall back to the
     documented defaults rather than raising ValueError."""
     from resources.lib.filter import _get_filter_settings
@@ -1032,7 +1032,7 @@ def test_get_filter_settings_int_fields_fall_back_on_non_numeric(mock_addon):
         "filter_max_size": "",
         "max_results": "",
     }
-    mock_addon.return_value.getSetting.side_effect = lambda k: raw.get(k, "")
+    mock_get.side_effect = lambda k, default="": raw.get(k, default)
 
     settings = _get_filter_settings()
 

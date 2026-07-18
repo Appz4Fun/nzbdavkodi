@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 import xbmc
-import xbmcaddon
+import xbmcaddon  # noqa: F401  pylint: disable=unused-import  (module-scope Kodi imports are the repo convention; tests patch <mod>.xbmcaddon and the thread-safety contract tests forbid its use on no-getter paths)
 
 from resources.lib.exact_job import ExactJobLookup
 from resources.lib.http_util import http_get as _http_get
@@ -76,13 +76,17 @@ _API_READ_TIMEOUT = 10
 
 
 def _get_settings(settings_getter=None):
+    """Read nzbdav connection settings.
+
+    With no getter, read settings.xml from disk instead of the
+    ``xbmcaddon`` binding: submit/status calls run on resolver worker
+    and fallback-prewarm threads, and concurrent binding reads race
+    Kodi's lazy settings load (TinyXML SIGSEGV, gdb-confirmed).
+    """
     if settings_getter is None:
-        addon = xbmcaddon.Addon("plugin.video.nzbdav")
-        url = addon.getSetting("nzbdav_url").strip().rstrip("/")
-        api_key = addon.getSetting("nzbdav_api_key")
-    else:
-        url = settings_getter("nzbdav_url", "").strip().rstrip("/")
-        api_key = settings_getter("nzbdav_api_key", "")
+        from resources.lib.router import _get_script_setting as settings_getter
+    url = settings_getter("nzbdav_url", "").strip().rstrip("/")
+    api_key = settings_getter("nzbdav_api_key", "")
     return url, api_key
 
 
@@ -105,9 +109,9 @@ def _get_submit_timeout(settings_getter=None):
     in the Kodi settings UI can't produce a 83-hour timeout."""
     try:
         if settings_getter is None:
-            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("submit_timeout")
-        else:
-            raw = settings_getter("submit_timeout", "")
+            # Disk read, not the xbmcaddon binding (see _get_settings).
+            from resources.lib.router import _get_script_setting as settings_getter
+        raw = settings_getter("submit_timeout", "")
         value = int(raw) if raw else _DEFAULT_SUBMIT_TIMEOUT
     except (ValueError, TypeError):
         return _DEFAULT_SUBMIT_TIMEOUT

@@ -77,12 +77,11 @@ def _get_settings(settings_getter=None):
                 trimmed and empty entries are omitted.
     """
     if settings_getter is None:
-        import xbmcaddon
-
-        addon = xbmcaddon.Addon("plugin.video.nzbdav")
-
-        def settings_getter(key, default=""):
-            return addon.getSetting(key) or default
+        # Disk read, not the xbmcaddon binding: the fallback candidate
+        # loader can re-run Prowlarr searches on worker threads, where
+        # concurrent binding reads race Kodi's lazy settings load
+        # (TinyXML SIGSEGV, gdb-confirmed on the extreme harness).
+        from resources.lib.router import _get_script_setting as settings_getter
 
     host = settings_getter("prowlarr_host", "").rstrip("/")
     api_key = settings_getter("prowlarr_api_key", "")
@@ -174,9 +173,10 @@ def _resolve_max_results(settings_getter):
     original inline behavior in ``search_prowlarr``.
     """
     if settings_getter is None:
-        import xbmcaddon
+        # Disk read, not the xbmcaddon binding (see _get_settings).
+        from resources.lib.router import _get_script_setting as settings_getter
 
-        raw_max = xbmcaddon.Addon("plugin.video.nzbdav").getSetting("max_results")
+        raw_max = settings_getter("max_results", "25")
     else:
         try:
             raw_max = settings_getter("max_results", "25")

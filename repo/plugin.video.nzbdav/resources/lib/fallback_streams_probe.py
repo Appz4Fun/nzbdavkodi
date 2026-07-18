@@ -314,21 +314,11 @@ def _configured_stream_bases():
         )
     except Exception:  # pylint: disable=broad-except
         raw_bases = ()
-    # If the script-mode settings.xml read returned nothing (no profile
-    # yet, or addon hasn't saved settings), fall back to the addon API.
-    # In script-mode this is the very SIGSEGV path we're trying to avoid,
-    # but with raw_bases populated from disk above we never get here in
-    # the script-mode case — only on a fresh GUI invocation where the
-    # binding is safe.
-    if not any(raw_bases):
-        try:
-            addon = _fs.xbmcaddon.Addon("plugin.video.nzbdav")
-            raw_bases = (
-                addon.getSetting("webdav_url"),
-                addon.getSetting("nzbdav_url"),
-            )
-        except Exception:  # pylint: disable=broad-except
-            raw_bases = ()
+    # No addon-API fallback here: this runs on background prevalidation
+    # threads, and even the "fresh GUI invocation" case the old fallback
+    # served is covered by the schema defaults below. A gdb backtrace on
+    # the extreme harness showed Kodi SIGSEGVing in TinyXML when two
+    # threads race CAddon::LoadUserSettings via concurrent getSetting.
     if not any(raw_bases):
         raw_bases = (
             _fs._schema_setting_default("webdav_url"),

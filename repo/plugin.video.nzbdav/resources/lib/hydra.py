@@ -78,14 +78,14 @@ def _get_settings(settings_getter=None):
     ``_DEFAULT_HYDRA_URL``) so a URL left at its displayed default reads the
     same through a raw-XML getter as through the live Kodi settings layer.
     """
-    if settings_getter is not None:
-        configured_url = settings_getter("hydra_url", _DEFAULT_HYDRA_URL).rstrip("/")
-        api_key = settings_getter("hydra_api_key", "")
-        return configured_url, api_key
-
-    addon = _addon()
-    configured_url = addon.getSetting("hydra_url").rstrip("/")
-    api_key = addon.getSetting("hydra_api_key")
+    if settings_getter is None:
+        # Disk read, not the xbmcaddon binding: the fallback candidate
+        # loader re-runs Hydra searches on worker threads, where
+        # concurrent binding reads race Kodi's lazy settings load
+        # (TinyXML SIGSEGV, gdb-confirmed on the extreme harness).
+        from resources.lib.router import _get_script_setting as settings_getter
+    configured_url = settings_getter("hydra_url", _DEFAULT_HYDRA_URL).rstrip("/")
+    api_key = settings_getter("hydra_api_key", "")
     return configured_url, api_key
 
 
@@ -201,10 +201,10 @@ def _resolve_max_results(settings_getter):
     numeric string (legacy text input, hand-edited XML). Guard the int
     conversion + clamp to a sensible range — TODO.md §H.2-M20 / §H.3.
     """
-    if settings_getter is not None:
-        raw_max = settings_getter("max_results", "25")
-    else:
-        raw_max = _addon().getSetting("max_results")
+    if settings_getter is None:
+        # Disk read, not the xbmcaddon binding (see _get_settings).
+        from resources.lib.router import _get_script_setting as settings_getter
+    raw_max = settings_getter("max_results", "25")
     try:
         max_results = int(raw_max) if raw_max not in (None, "") else 25
     except (TypeError, ValueError):

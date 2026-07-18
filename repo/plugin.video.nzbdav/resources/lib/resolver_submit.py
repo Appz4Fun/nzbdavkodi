@@ -520,11 +520,10 @@ def _get_submit_timeout_seconds(settings_getter=None):
     """Read submit_timeout setting; returns int or 300 on error."""
     try:
         if settings_getter is None:
-            raw = _resolver.xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
-                "submit_timeout"
-            )
-        else:
-            raw = settings_getter("submit_timeout", "")
+            # Disk read, not the xbmcaddon binding: the submit pump runs
+            # on worker threads (see nzbdav_api._get_settings).
+            from resources.lib.router import _get_script_setting as settings_getter
+        raw = settings_getter("submit_timeout", "")
         return int(raw) if raw else 300
     except Exception:  # pylint: disable=broad-except
         # xbmcaddon import failures, unexpected setting shapes, int() on

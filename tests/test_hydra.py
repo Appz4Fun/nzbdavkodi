@@ -48,17 +48,24 @@ def test_hydra_import_does_not_read_kodi_settings(monkeypatch):
 
 
 def test_search_hydra_reads_kodi_settings_via_lazy_addon(monkeypatch):
-    fake_addon = MagicMock()
-    fake_addon.getSetting.side_effect = lambda key: {
-        "hydra_url": "http://hydra:5076",
-        "hydra_api_key": "testkey",
-        "max_results": "33",
-    }.get(key, "")
+    """No-getter reads go through the disk-backed script-setting reader,
+    never the xbmcaddon binding (thread-unsafe: concurrent
+    CAddon::LoadUserSettings SIGSEGVs in TinyXML, gdb-confirmed)."""
+    fake_get = MagicMock(
+        side_effect=lambda key, default="": {
+            "hydra_url": "http://hydra:5076",
+            "hydra_api_key": "testkey",
+            "max_results": "33",
+        }.get(key, default)
+    )
 
     with patch(
+        "resources.lib.router._get_script_setting",
+        fake_get,
+    ), patch(
         "resources.lib.hydra.xbmcaddon.Addon",
-        return_value=fake_addon,
-    ) as mock_addon_ctor, patch("resources.lib.hydra._http_get") as mock_http, patch(
+        side_effect=AssertionError("binding read from no-getter path"),
+    ), patch("resources.lib.hydra._http_get") as mock_http, patch(
         "resources.lib.hydra.load_provider_caps"
     ) as mock_load_provider_caps:
         mock_load_provider_caps.return_value = {
@@ -79,23 +86,24 @@ def test_search_hydra_reads_kodi_settings_via_lazy_addon(monkeypatch):
 
     assert error is None
     assert len(results) == 2
-    mock_addon_ctor.assert_called_with("plugin.video.nzbdav")  # lazy, per read
     assert "limit=33" in mock_http.call_args[0][0]
-    fake_addon.getSetting.assert_any_call("hydra_api_key")
-    fake_addon.getSetting.assert_any_call("max_results")
+    read_keys = {call.args[0] for call in fake_get.call_args_list}
+    assert {"hydra_api_key", "max_results"} <= read_keys
 
 
 def test_search_hydra_reads_url_via_lazy_addon(monkeypatch):
-    fake_addon = MagicMock()
-    fake_addon.getSetting.side_effect = lambda key: {
-        "hydra_url": "http://hydra:5076",
-        "hydra_api_key": "testkey",
-        "max_results": "25",
-    }.get(key, "")
+    fake_get = MagicMock(
+        side_effect=lambda key, default="": {
+            "hydra_url": "http://hydra:5076",
+            "hydra_api_key": "testkey",
+            "max_results": "25",
+        }.get(key, default)
+    )
 
-    with patch("resources.lib.hydra.xbmcaddon.Addon", return_value=fake_addon), patch(
-        "resources.lib.hydra._http_get"
-    ) as mock_http, patch(
+    with patch("resources.lib.router._get_script_setting", fake_get), patch(
+        "resources.lib.hydra.xbmcaddon.Addon",
+        side_effect=AssertionError("binding read from no-getter path"),
+    ), patch("resources.lib.hydra._http_get") as mock_http, patch(
         "resources.lib.hydra.load_provider_caps"
     ) as mock_load_provider_caps:
         mock_load_provider_caps.return_value = {}
@@ -108,8 +116,8 @@ def test_search_hydra_reads_url_via_lazy_addon(monkeypatch):
     assert error is None
     assert len(results) == 2
     assert mock_http.call_args[0][0].startswith("http://hydra:5076/api?")
-    fake_addon.getSetting.assert_any_call("hydra_url")
-    fake_addon.getSetting.assert_any_call("hydra_api_key")
+    read_keys = {call.args[0] for call in fake_get.call_args_list}
+    assert {"hydra_url", "hydra_api_key"} <= read_keys
 
 
 @patch("resources.lib.hydra._get_settings")
@@ -973,13 +981,17 @@ def test_hydra_import_constructs_no_module_scope_addon():
     # contexts that deliberately avoid the Kodi settings API until the safe
     # getter path is reached (review finding: import side effect).
     assert not hasattr(hydra, "addon")
-    # The live-Kodi branch constructs the addon lazily, per call.
-    fake = MagicMock()
-    fake.getSetting.side_effect = lambda key: {
-        "hydra_url": "http://h:5076/",
-        "hydra_api_key": "k",
-    }.get(key, "")
-    with patch("resources.lib.hydra.xbmcaddon.Addon", return_value=fake) as ctor:
+    # The no-getter branch reads settings.xml from disk (thread-safe);
+    # the xbmcaddon binding must not be constructed at all.
+    fake_get = MagicMock(
+        side_effect=lambda key, default="": {
+            "hydra_url": "http://h:5076/",
+            "hydra_api_key": "k",
+        }.get(key, default)
+    )
+    with patch("resources.lib.router._get_script_setting", fake_get), patch(
+        "resources.lib.hydra.xbmcaddon.Addon"
+    ) as ctor:
         url, api_key = hydra._get_settings()
     assert (url, api_key) == ("http://h:5076", "k")
-    ctor.assert_called_once_with("plugin.video.nzbdav")
+    ctor.assert_not_called()

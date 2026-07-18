@@ -224,14 +224,18 @@ def _resolve_fallback_candidate_job(
 
 
 def _fallback_streams_enabled(settings_getter=None):
-    """Return whether fallback streams are enabled in Kodi settings."""
+    """Return whether fallback streams are enabled in Kodi settings.
+
+    With no getter, read settings.xml from disk instead of the
+    ``xbmcaddon`` binding: this runs on the fallback submit worker
+    thread, and a concurrent ``CAddon::LoadUserSettings`` from two
+    threads SIGSEGVs inside TinyXML (gdb-confirmed on the extreme
+    harness at prewarm time).
+    """
     try:
         if settings_getter is None:
-            raw = _resolver.xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
-                "fallback_streams_enabled"
-            )
-        else:
-            raw = settings_getter("fallback_streams_enabled", "true")
+            from resources.lib.router import _get_script_setting as settings_getter
+        raw = settings_getter("fallback_streams_enabled", "true")
     except (AttributeError, RuntimeError, TypeError):
         return True
     return str(raw or "").strip().lower() != "false"
@@ -366,15 +370,14 @@ def _get_fallback_submit_delay_seconds(settings_getter=None):
     """
     try:
         if settings_getter is None:
-            raw = _resolver.xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
-                "fallback_submit_delay"
-            )
-        else:
-            raw = settings_getter("fallback_submit_delay", "")
+            # Disk read, not the xbmcaddon binding: callable from worker
+            # threads (see _fallback_streams_enabled).
+            from resources.lib.router import _get_script_setting as settings_getter
+        raw = settings_getter("fallback_submit_delay", "")
         value = int(raw) if raw else _resolver._FALLBACK_PREWARM_DELAY_SECONDS
         return value if value >= 0 else _resolver._FALLBACK_PREWARM_DELAY_SECONDS
     except Exception:  # pylint: disable=broad-except
-        # xbmcaddon import failure, unexpected setting shapes, int() on a
+        # settings read failure, unexpected setting shapes, int() on a
         # MagicMock in tests — all funnel to the documented default.
         return _resolver._FALLBACK_PREWARM_DELAY_SECONDS
 

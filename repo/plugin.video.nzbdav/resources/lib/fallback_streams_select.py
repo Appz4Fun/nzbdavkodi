@@ -26,11 +26,16 @@ from resources.lib.fallback_streams_select_streaming import (  # noqa: F401  pyl
 
 
 def _fallback_settings(settings_getter=None):
-    """Return (enabled, max_candidates) from Kodi settings."""
+    """Return (enabled, max_candidates) from Kodi settings.
+
+    With no getter, read settings.xml from disk instead of the
+    ``xbmcaddon`` binding — this is reachable from fallback worker
+    threads, where concurrent binding reads SIGSEGV in Kodi's settings
+    loader (TinyXML race, gdb-confirmed).
+    """
     if settings_getter is None:
-        addon = _fs.xbmcaddon.Addon("plugin.video.nzbdav")
-    else:
-        addon = _fs.SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
+        from resources.lib.router import _get_script_setting as settings_getter
+    addon = _fs.SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
     enabled = _fs._setting_bool(addon, "fallback_streams_enabled", True)
     max_candidates = _fs._setting_int(addon, "fallback_streams_max", 5)
     if max_candidates < 0 or max_candidates > _fs._MAX_FALLBACKS:

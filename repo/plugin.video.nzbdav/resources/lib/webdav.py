@@ -18,6 +18,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import xbmc
+import xbmcaddon  # noqa: F401  pylint: disable=unused-import  (module-scope Kodi imports are the repo convention; tests patch <mod>.xbmcaddon and the thread-safety contract tests forbid its use on no-getter paths)
 
 from resources.lib.webdav_match import (
     _episode_tags,
@@ -65,7 +66,6 @@ _VIDEO_FILE_SIZE_HINTS = {}
 
 def _get_settings(settings_getter=None):
     if settings_getter is None:
-        import xbmcaddon
 
         # When the plugin is invoked via `RunScript(...)` (TMDBHelper's
         # tmdb_play hook), repeatedly calling `addon.getSetting()` from the
@@ -75,11 +75,11 @@ def _get_settings(settings_getter=None):
         # router._get_script_setting which reads settings.xml from disk),
         # so this fallback only fires for the GUI plugin path where the
         # script-mode crash doesn't apply.
-        addon = xbmcaddon.Addon("plugin.video.nzbdav")
-
-        def settings_getter(key, default=""):
-            value = addon.getSetting(key)
-            return value if isinstance(value, str) else default
+        # Disk read, not the xbmcaddon binding: this is reachable from
+        # fallback prevalidation / worker threads, where concurrent
+        # binding reads race Kodi's lazy settings load (TinyXML
+        # SIGSEGV, gdb-confirmed on the extreme harness).
+        from resources.lib.router import _get_script_setting as settings_getter
 
     return {
         # .strip() before .rstrip("/"): a stray trailing space in the
@@ -198,14 +198,10 @@ def _probe_content_root(settings_getter):
     ``or "content"`` was dead code (closes §H.3 Low).
     """
     try:
-        if settings_getter is not None:
-            raw = settings_getter("webdav_content_root", "")
-        else:
-            import xbmcaddon
-
-            raw = xbmcaddon.Addon("plugin.video.nzbdav").getSetting(
-                "webdav_content_root"
-            )
+        if settings_getter is None:
+            # Disk read, not the xbmcaddon binding (see _get_settings).
+            from resources.lib.router import _get_script_setting as settings_getter
+        raw = settings_getter("webdav_content_root", "")
         return raw.strip("/") if isinstance(raw, str) and raw else "content"
     except Exception:  # pylint: disable=broad-except
         return "content"

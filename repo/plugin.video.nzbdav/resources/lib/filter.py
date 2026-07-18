@@ -9,7 +9,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import xbmc
-import xbmcaddon
+import xbmcaddon  # noqa: F401  pylint: disable=unused-import  (module-scope Kodi imports are the repo convention; tests patch <mod>.xbmcaddon and the thread-safety contract tests forbid its use on no-getter paths)
 import xbmcgui  # re-exported via __all__ for callers/tests; not used here
 
 from resources.lib import telemetry
@@ -224,9 +224,12 @@ def _resolve_size_bounds(addon):
 def _get_filter_settings(settings_getter=None):
     """Read filter settings from Kodi addon config."""
     if settings_getter is None:
-        addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    else:
-        addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
+        # Disk read, not the xbmcaddon binding: filter_results runs on
+        # fallback-loader worker threads, where concurrent binding reads
+        # race Kodi's lazy settings load (TinyXML SIGSEGV,
+        # gdb-confirmed on the extreme harness).
+        from resources.lib.router import _get_script_setting as settings_getter
+    addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
 
     resolutions = _collect_enabled(addon, _RESOLUTION_SETTINGS)
     hdr = _collect_enabled(addon, _HDR_SETTINGS)

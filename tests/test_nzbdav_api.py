@@ -125,10 +125,12 @@ def test_submit_nzb_passes_configured_timeout(mock_http, mock_settings, mock_tim
     assert mock_http.call_args.kwargs["timeout"] == 90
 
 
-@patch("resources.lib.nzbdav_api.xbmcaddon.Addon")
+@patch(
+    "resources.lib.router._get_script_setting",
+    side_effect=AssertionError("disk fallback used despite provided getter"),
+)
 @patch("resources.lib.nzbdav_api._http_get")
-def test_submit_nzb_uses_settings_getter_without_kodi_addon(mock_http, mock_addon):
-    mock_addon.side_effect = RuntimeError("Kodi settings unavailable")
+def test_submit_nzb_uses_settings_getter_without_kodi_addon(mock_http, mock_disk):
     mock_http.return_value = json.dumps({"status": True, "nzo_ids": ["nzo_1"]})
 
     def settings_getter(key, default=""):
@@ -144,7 +146,7 @@ def test_submit_nzb_uses_settings_getter_without_kodi_addon(mock_http, mock_addo
         submit_timeout=12,
     )
 
-    mock_addon.assert_not_called()
+    mock_disk.assert_not_called()
     assert (nzo_id, error) == ("nzo_1", None)
     call_url = mock_http.call_args.args[0]
     assert call_url.startswith("http://nzbdav:3000/api?")
@@ -201,46 +203,46 @@ def test_find_terminal_by_name_returns_newest_acceptable_completed_slot(
     assert result["completed"] == 200
 
 
-@patch("resources.lib.nzbdav_api.xbmcaddon")
-def test_get_submit_timeout_reads_setting(mock_xbmcaddon):
+@patch("resources.lib.router._get_script_setting")
+def test_get_submit_timeout_reads_setting(mock_get):
     """_get_submit_timeout returns the parsed setting value."""
-    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "300"
+    mock_get.return_value = "300"
     assert _get_submit_timeout() == 300
 
 
-@patch("resources.lib.nzbdav_api.xbmcaddon")
-def test_get_submit_timeout_falls_back_on_empty(mock_xbmcaddon):
+@patch("resources.lib.router._get_script_setting")
+def test_get_submit_timeout_falls_back_on_empty(mock_get):
     """_get_submit_timeout returns the default when the setting is empty."""
-    mock_xbmcaddon.Addon.return_value.getSetting.return_value = ""
+    mock_get.return_value = ""
     assert _get_submit_timeout() == _DEFAULT_SUBMIT_TIMEOUT
 
 
-@patch("resources.lib.nzbdav_api.xbmcaddon")
-def test_get_submit_timeout_falls_back_on_garbage(mock_xbmcaddon):
+@patch("resources.lib.router._get_script_setting")
+def test_get_submit_timeout_falls_back_on_garbage(mock_get):
     """_get_submit_timeout returns the default when the setting is non-numeric."""
-    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "not a number"
+    mock_get.return_value = "not a number"
     assert _get_submit_timeout() == _DEFAULT_SUBMIT_TIMEOUT
 
 
-@patch("resources.lib.nzbdav_api.xbmcaddon")
-def test_get_submit_timeout_clamps_typo_high(mock_xbmcaddon):
+@patch("resources.lib.router._get_script_setting")
+def test_get_submit_timeout_clamps_typo_high(mock_get):
     """A typo'd huge value (e.g. 300000 — meant 300, accidentally
     typed too many zeros, observed in the wild) is clamped to the
     upper bound rather than producing a multi-hour timeout that
     would block the resolver effectively forever."""
     from resources.lib.nzbdav_api import _SUBMIT_TIMEOUT_MAX
 
-    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "300000"
+    mock_get.return_value = "300000"
     assert _get_submit_timeout() == _SUBMIT_TIMEOUT_MAX
 
 
-@patch("resources.lib.nzbdav_api.xbmcaddon")
-def test_get_submit_timeout_clamps_too_low(mock_xbmcaddon):
+@patch("resources.lib.router._get_script_setting")
+def test_get_submit_timeout_clamps_too_low(mock_get):
     """A nonsensically small value (e.g. 0 or 1) is clamped up to
     the minimum so nzbdav has a fighting chance of responding."""
     from resources.lib.nzbdav_api import _SUBMIT_TIMEOUT_MIN
 
-    mock_xbmcaddon.Addon.return_value.getSetting.return_value = "1"
+    mock_get.return_value = "1"
     assert _get_submit_timeout() == _SUBMIT_TIMEOUT_MIN
 
 
