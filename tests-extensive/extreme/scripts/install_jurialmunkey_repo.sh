@@ -40,8 +40,23 @@ docker cp "$WORKDIR/extracted/repository.jurialmunkey" \
 # Kodi only scans /root/.kodi/addons/ at startup. Without a restart, the
 # subsequent install_tmdbhelper.sh -> Addons.SetAddonEnabled call returns
 # -32602 Invalid params because the addonid is not yet in Kodi's DB.
+# The restart is retried: OrbStack's daemon can drop a single request
+# ("read response: unexpected EOF") right after a compose up/down cycle,
+# and one transient RPC failure must not abort a multi-hour soak.
 echo "[jurialmunkey] Restarting Kodi container so it discovers the new repo"
-docker restart "$CONTAINER" >/dev/null
+restarted=0
+for attempt in 1 2 3; do
+    if docker restart "$CONTAINER" >/dev/null; then
+        restarted=1
+        break
+    fi
+    echo "[jurialmunkey] docker restart attempt $attempt failed; retrying in 5s"
+    sleep 5
+done
+if [[ "$restarted" != 1 ]]; then
+    echo "[jurialmunkey] FATAL: docker restart $CONTAINER failed 3 times"
+    exit 1
+fi
 echo "[jurialmunkey] Waiting for Kodi JSON-RPC to come back up"
 deadline=$(( $(date +%s) + 90 ))
 while (( $(date +%s) < deadline )); do
