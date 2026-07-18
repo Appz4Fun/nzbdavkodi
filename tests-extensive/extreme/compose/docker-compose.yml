@@ -9,9 +9,7 @@ name: nzbdav-extreme
 #
 # All services bind to host ports so the user can still hit each one via
 # localhost from the Mac:
-#   localhost:5076  -> Hydra2 web UI
-#   localhost:8180  -> nzbdav-rs API + WebDAV
-#   localhost:8280  -> fault-proxy WebDAV (wraps nzbdav-rs)
+#   localhost:8280  -> fault-proxy WebDAV (wraps the upstream nzbdav)
 #   localhost:8281  -> fault-proxy control plane
 #   localhost:8082  -> Kodi JSON-RPC web server
 #   localhost:5902  -> Kodi VNC (raw)
@@ -19,66 +17,23 @@ name: nzbdav-extreme
 #
 # Host ports are picked to avoid: 8081 (kodi-real), 5900 (kodi-real VNC),
 # 6901 (kodi-real noVNC), 6379 (redis), 5000/7000 (Apple), 49152 (rapportd).
+#
+# NZBHydra2 and nzbdav are NOT containerised: the stack uses the live LAN
+# instances via .env's HYDRA_URL and NZBDAV_URL (the bridge network + NAT
+# reaches the LAN). The upstream nzbdav must already have its NNTP
+# provider configured; the harness no longer seeds one.
 
 services:
-  hydra2:
-    # Optional containerised NZBHydra2. The user's existing Hydra at
-    # 192.168.1.93:5076 is reached via .env's HYDRA_URL (the bridge
-    # network can reach the LAN), so this service is currently a
-    # placeholder for self-contained runs — configure indexers via
-    # http://localhost:5076 once and the hydra-config volume persists.
-    image: linuxserver/nzbhydra2:latest
-    container_name: nzbdav-extreme-hydra2
-    environment:
-      PUID: "1000"
-      PGID: "1000"
-      TZ: ${TZ:-Etc/UTC}
-    ports:
-      - "5076:5076"
-    volumes:
-      - hydra-config:/config
-    networks:
-      - extreme
-
-  nzbdav-rs:
-    image: nzbdav/nzbdav:latest
-    container_name: nzbdav-extreme-nzbdav
-    environment:
-      NZBDAV_API_KEY: ${NZBDAV_API_KEY}
-      FRONTEND_BACKEND_API_KEY: ${NZBDAV_API_KEY}
-      WEBDAV_USER: ${WEBDAV_USERNAME}
-      WEBDAV_PASS: ${WEBDAV_PASSWORD}
-      # OrbStack injects proxy envs into containers. The proxy has been
-      # observed resetting LAN Hydra NZB downloads mid-stream, so clear it
-      # here the same way the Kodi container does.
-      HTTP_PROXY: ""
-      http_proxy: ""
-      HTTPS_PROXY: ""
-      https_proxy: ""
-      ALL_PROXY: ""
-      all_proxy: ""
-    ports:
-      - "8180:8080"
-    healthcheck:
-      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
-    volumes:
-      - nzbdav-data:/data
-    networks:
-      - extreme
-
   fault-proxy:
     build:
       context: ../../../tests/extreme_harness
       dockerfile: Dockerfile.fault-proxy
     container_name: nzbdav-extreme-fault-proxy
     environment:
-      # Upstream uses the docker-network service name (not localhost) since
-      # this is bridge networking. The orchestrator on the host hits the
+      # Upstream is the live LAN nzbdav from .env (e.g.
+      # http://192.168.1.93:3000). The orchestrator on the host hits the
       # mapped 8281 control port to schedule faults.
-      FAULT_PROXY_UPSTREAM: http://nzbdav-rs:8080
+      FAULT_PROXY_UPSTREAM: ${NZBDAV_URL:?set NZBDAV_URL in .env to the upstream nzbdav}
       FAULT_PROXY_LISTEN: "0.0.0.0"
       FAULT_PROXY_PORT: "8280"
       FAULT_PROXY_CONTROL_PORT: "8281"
@@ -89,9 +44,6 @@ services:
       - "8281:8281"
     volumes:
       - ../../../docs/reports/${EXTREME_RUN_DIR:-_default}/fault-proxy:/var/log/fault-proxy
-    depends_on:
-      nzbdav-rs:
-        condition: service_healthy
     networks:
       - extreme
 
@@ -137,22 +89,20 @@ services:
       NZBDAV_DUMP_NZBS_DIR: "/run-reports/submitted_nzbs"
     ports:
       - "8082:8080"   # Kodi JSON-RPC web server
-      - "5902:5900"   # x11vnc raw
-      - "6902:6901"   # noVNC web
+      # VNC has no password (x11vnc -nopw), so publish it on the host's
+      # loopback only instead of 0.0.0.0.
+      - "127.0.0.1:5902:5900"   # x11vnc raw
+      - "127.0.0.1:6902:6901"   # noVNC web
     volumes:
       - kodi-config:/root/.kodi
       - ../../../docs/reports/${EXTREME_RUN_DIR:-_default}:/run-reports
     depends_on:
-      nzbdav-rs:
-        condition: service_healthy
       fault-proxy:
         condition: service_started
     networks:
       - extreme
 
 volumes:
-  hydra-config:
-  nzbdav-data:
   kodi-config:
 
 networks:

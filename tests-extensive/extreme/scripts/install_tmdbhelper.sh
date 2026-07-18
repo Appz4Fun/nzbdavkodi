@@ -34,7 +34,11 @@ echo "[tmdbhelper] Resolving dependency tree from jurialmunkey's addons.xml"
 # jurialmunkey's repo are assumed to come from repository.xbmc.org (the
 # official Kodi addons repo, which Kodi auto-installs deps from on
 # restart) or to be built into the Kodi runtime (e.g. xbmc.python).
-mapfile -t TARGETS < <(python3 - "$WORKDIR/addons.xml" "$ADDON_ID" <<'PY'
+# while-read instead of mapfile: macOS ships bash 3.2 and this runs on the host.
+TARGETS=()
+while IFS= read -r _target_line; do
+    TARGETS+=("$_target_line")
+done < <(python3 - "$WORKDIR/addons.xml" "$ADDON_ID" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
 

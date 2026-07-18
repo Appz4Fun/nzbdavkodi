@@ -3,11 +3,12 @@
     <setting id="hydra_url">${HYDRA_URL}</setting>
     <setting id="hydra_api_key">${HYDRA_API_KEY}</setting>
     <setting id="prowlarr_enabled" default="true">false</setting>
-    <!-- These URLs are docker-network-internal hostnames since the addon
-         runs inside the kodi container (bridge network). The host can
-         still reach the same services via localhost:8180 and
-         localhost:8280 (port-mapped in docker-compose.yml). -->
-    <setting id="nzbdav_url">http://nzbdav-rs:8080</setting>
+    <!-- nzbdav_url is the live LAN nzbdav (reachable from the container
+         via bridge NAT). webdav_url is the docker-network-internal
+         fault-proxy hostname, which wraps that same upstream so faults
+         can be injected into the streaming path; the host can reach it
+         via localhost:8280 (port-mapped in docker-compose.yml). -->
+    <setting id="nzbdav_url">${NZBDAV_URL}</setting>
     <setting id="nzbdav_api_key">${NZBDAV_API_KEY}</setting>
     <setting id="webdav_url">http://fault-proxy:8280</setting>
     <setting id="webdav_username">${WEBDAV_USERNAME}</setting>

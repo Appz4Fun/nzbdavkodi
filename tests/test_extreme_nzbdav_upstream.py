@@ -9,15 +9,21 @@ STORAGE_DISCOVERY = REPO_ROOT / "tests" / "extreme_harness" / "_storage_discover
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 
 
-def test_extreme_compose_uses_upstream_nzbdav_image_with_internal_api_key():
+def test_extreme_compose_wraps_live_lan_nzbdav_not_a_container():
+    """The stack must not containerise nzbdav or NZBHydra2: the fault
+    proxy wraps the live LAN nzbdav from .env's NZBDAV_URL, and the
+    addon settings template points at the same URL."""
     compose = COMPOSE_FILE.read_text(encoding="utf-8")
-    nzbdav_service = compose.split("  nzbdav-rs:", 1)[1].split("  fault-proxy:", 1)[0]
 
-    assert "image: nzbdav/nzbdav:latest" in nzbdav_service
-    assert "FRONTEND_BACKEND_API_KEY: ${NZBDAV_API_KEY}" in nzbdav_service
-    assert '["CMD", "curl", "-fs", "http://localhost:8080/health"]' in nzbdav_service
-    assert 'HTTP_PROXY: ""' in nzbdav_service
-    assert 'ALL_PROXY: ""' in nzbdav_service
+    assert "  nzbdav-rs:" not in compose
+    assert "  hydra2:" not in compose
+    assert "FAULT_PROXY_UPSTREAM: ${NZBDAV_URL:?" in compose
+
+    template = ADDON_SETTINGS.read_text(encoding="utf-8")
+    assert '<setting id="nzbdav_url">${NZBDAV_URL}</setting>' in template
+
+    env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "NZBDAV_URL=" in env_example
 
 
 def test_seed_script_targets_upstream_config_api_not_legacy_servers_api():

@@ -54,7 +54,6 @@ import pytest
 from extreme._fixtures import (
     FAULT_PROXY_CONTROL_HOST_PORT,
     KODI_HOST_PORT,
-    NZBDAV_HOST_PORT,
 )
 
 from tests.extreme_harness import measurement
@@ -79,14 +78,13 @@ os.environ.setdefault("LIVE_FALLBACK_POOL_LIMIT", "100")
 os.environ.setdefault("FUNCTIONAL_MIN_FALLBACK_CANDIDATES", "2")
 
 # _live_env() (imported below) requires NZBDAV_URL, WEBDAV_URL, WEBDAV_API_KEY
-# in addition to HYDRA_*/WEBDAV_USERNAME/WEBDAV_PASSWORD. The extreme test
-# brings up its own nzbdav-rs in docker-compose with a fixed host port, so we
-# point the live-env helpers at that host-mapped port instead of asking the
-# user to put it in .env. NZBDAV_API_KEY is the same secret as WEBDAV_API_KEY
-# in this stack (both come from the .env's NZBDAV_API_KEY).
-_NZBDAV_HOST_URL = f"http://localhost:{NZBDAV_HOST_PORT}"
-os.environ.setdefault("NZBDAV_URL", _NZBDAV_HOST_URL)
-os.environ.setdefault("WEBDAV_URL", _NZBDAV_HOST_URL)
+# in addition to HYDRA_*/WEBDAV_USERNAME/WEBDAV_PASSWORD. NZBDAV_URL is the
+# live LAN nzbdav from .env (required by env_loaded); the host-side helpers
+# talk to it directly, while only the Kodi container's streaming path goes
+# through the fault proxy. NZBDAV_API_KEY is the same secret as
+# WEBDAV_API_KEY (both come from the .env's NZBDAV_API_KEY).
+if os.environ.get("NZBDAV_URL"):
+    os.environ.setdefault("WEBDAV_URL", os.environ["NZBDAV_URL"])
 if "WEBDAV_API_KEY" not in os.environ and os.environ.get("NZBDAV_API_KEY"):
     os.environ["WEBDAV_API_KEY"] = os.environ["NZBDAV_API_KEY"]
 
@@ -455,7 +453,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     # Pull container logs into the run dir
     for container, name in [
         ("nzbdav-extreme-kodi", "kodi.log"),
-        ("nzbdav-extreme-nzbdav", "nzbdav-rs.log"),
+        ("nzbdav-extreme-fault-proxy", "fault-proxy-container.log"),
     ]:
         with (run_dir / name).open("wb") as fh:
             subprocess.run(

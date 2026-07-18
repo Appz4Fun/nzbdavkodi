@@ -26,7 +26,6 @@ COMPOSE_FILE = EXTREME_DIR / "compose" / "docker-compose.yml"
 PROJECT_NAME = "nzbdav-extreme"
 
 KODI_HOST_PORT = "8082"
-NZBDAV_HOST_PORT = "8180"
 FAULT_PROXY_DAV_HOST_PORT = "8280"
 FAULT_PROXY_CONTROL_HOST_PORT = "8281"
 
@@ -97,11 +96,12 @@ def env_loaded(run_dir):
             continue
         k, v = s.split("=", 1)
         os.environ.setdefault(k.strip(), v.strip())
+    # NNTP_* are no longer required: the upstream nzbdav (NZBDAV_URL) is a
+    # live LAN instance whose provider is already configured server-side.
     for required in (
         "HYDRA_URL",
         "HYDRA_API_KEY",
-        "NNTP_USER",
-        "NNTP_PASS",
+        "NZBDAV_URL",
         "TMDB_API_KEY",
         "NZBDAV_API_KEY",
         "WEBDAV_USERNAME",
@@ -126,15 +126,7 @@ def compose_up(env_loaded, run_dir):
 
 
 @pytest.fixture(scope="session")
-def nzbdav_seeded(compose_up):
-    seed = EXTREME_DIR / "scripts" / "seed_nzbdav.sh"
-    env = os.environ.copy()
-    env["NZBDAV_URL"] = f"http://localhost:{NZBDAV_HOST_PORT}"
-    _run(["bash", str(seed)], env=env)
-
-
-@pytest.fixture(scope="session")
-def kodi_ready(compose_up, nzbdav_seeded):
+def kodi_ready(compose_up):
     """Poll Kodi JSON-RPC until version returns. Asserts version major == 21."""
     url = f"http://localhost:{KODI_HOST_PORT}/jsonrpc"
     body = (

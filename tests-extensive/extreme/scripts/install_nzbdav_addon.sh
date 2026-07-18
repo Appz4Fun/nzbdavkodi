@@ -68,20 +68,37 @@ docker cp "$EXTRACT_DIR/plugin.video.nzbdav" \
 
 echo "[nzbdav-addon] Rendering settings.xml from template"
 RENDERED="$WORKDIR/settings.xml"
-# Constrain envsubst to a known set of variables, avoiding accidental
+# Substitute only a known set of ${VAR} tokens, avoiding accidental
 # substitution (and silent empty-replacement) of any other $VAR token
-# that might appear inside the template's XML. The addon's HTTP client
-# bypasses OrbStack's transparent proxy for RFC1918 destinations via
-# NO_PROXY (set on the kodi-desktop service in docker-compose.yml), so
-# LAN-hosted Hydra URLs work without rewriting.
-SUBST_VARS='${HYDRA_URL} ${HYDRA_API_KEY} ${NZBDAV_API_KEY} ${WEBDAV_USERNAME} ${WEBDAV_PASSWORD}'
-for var_name in HYDRA_URL HYDRA_API_KEY NZBDAV_API_KEY WEBDAV_USERNAME WEBDAV_PASSWORD; do
+# that might appear inside the template's XML. python3 instead of
+# envsubst: this runs on the host and stock macOS has no gettext.
+# Values are XML-escaped since they land in settings.xml text nodes.
+# The addon's HTTP client bypasses OrbStack's transparent proxy for
+# RFC1918 destinations via NO_PROXY (set on the kodi-desktop service in
+# docker-compose.yml), so LAN-hosted Hydra URLs work without rewriting.
+for var_name in HYDRA_URL HYDRA_API_KEY NZBDAV_URL NZBDAV_API_KEY WEBDAV_USERNAME WEBDAV_PASSWORD; do
     if [[ -z "${!var_name:-}" ]]; then
         echo "[nzbdav-addon] FATAL: required env var $var_name is empty or unset"
         exit 1
     fi
 done
-envsubst "$SUBST_VARS" < "$TEMPLATE_PATH" > "$RENDERED"
+python3 - "$TEMPLATE_PATH" > "$RENDERED" <<'PY'
+import os
+import sys
+from xml.sax.saxutils import escape
+
+text = open(sys.argv[1], encoding="utf-8").read()
+for name in (
+    "HYDRA_URL",
+    "HYDRA_API_KEY",
+    "NZBDAV_URL",
+    "NZBDAV_API_KEY",
+    "WEBDAV_USERNAME",
+    "WEBDAV_PASSWORD",
+):
+    text = text.replace("${%s}" % name, escape(os.environ[name]))
+sys.stdout.write(text)
+PY
 docker exec "$CONTAINER" mkdir -p /root/.kodi/userdata/addon_data/plugin.video.nzbdav
 docker cp "$RENDERED" "$CONTAINER:/root/.kodi/userdata/addon_data/plugin.video.nzbdav/settings.xml"
 
