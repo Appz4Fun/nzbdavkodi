@@ -215,6 +215,30 @@ def _generate_fault_schedule(rng: random.Random) -> list[dict]:
     return schedule
 
 
+def _has_exact_mirror_standby(primary_pair):
+    """Whether the primary's attached candidates include a byte-identical
+    mirror: same release title+size, DIFFERENT pubdate (the addon's
+    pubdate dedup collapses same-post relistings). Only such a standby
+    can pass the proxy-level identity validation at cutover — a
+    cross-encode standby is correctly rejected (splicing a different
+    file mid-stream would be garbage) and falls to the retry re-resolve
+    layer instead. source_dead faults need at least one proxy-validatable
+    standby to exercise a clean cutover.
+    """
+    selected, candidates = primary_pair
+    p_title = str(selected.get("title", "")).lower().strip()
+    p_size = str(selected.get("size", ""))
+    p_pubdate = str(selected.get("pubdate", "")).strip()
+    for candidate in candidates:
+        if (
+            str(candidate.get("title", "")).lower().strip() == p_title
+            and str(candidate.get("size", "")) == p_size
+            and str(candidate.get("pubdate", "")).strip() != p_pubdate
+        ):
+            return True
+    return False
+
+
 def _pick_movie_with_fallback_pool(rng: random.Random, settings, exclude=frozenset()):
     """Try up to 3 random movies; return (movie, primary_pair, fallback_pairs).
 
@@ -252,7 +276,7 @@ def _pick_movie_with_fallback_pool(rng: random.Random, settings, exclude=frozens
     # filtered=0/250) builds its pool from unfiltered results, the addon
     # plays an unfiltered heavy pick, and the run has no fallback pool to
     # test. Try more movies since the strict check rejects more of them.
-    for movie in pool_movies[:6]:
+    for movie in pool_movies[:10]:
         try:
             _profile, pairs = _movie_selections_with_fallbacks(
                 settings, movie, require_filtered=True
@@ -261,6 +285,11 @@ def _pick_movie_with_fallback_pool(rng: random.Random, settings, exclude=frozens
                 last_error = f"no selection pairs for {movie['title']}"
                 continue
             primary, fallbacks = pairs[0], pairs[1:]
+            if not _has_exact_mirror_standby(primary):
+                last_error = (
+                    f"{movie['title']}: no dedup-surviving exact-mirror standby"
+                )
+                continue
             return movie, primary, fallbacks
         except Exception as exc:
             last_error = f"{movie['title']}: {exc}"
