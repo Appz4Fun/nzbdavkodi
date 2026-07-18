@@ -246,6 +246,60 @@ def test_corrupted_bytes_modifies_payload(proxy_with_upstream):
     assert state.fired_events[0]["fault_type"] == "corrupted_bytes"
 
 
+def test_large_playback_range_allows_deep_offsets_outside_tail():
+    """Offsets past the old 1 GiB cap must still qualify on big files —
+    the cap starved 4/5 scheduled faults on a 23 GB REMUX once playback
+    passed the 1 GiB mark (run 2026-07-18T04-51-39Z)."""
+    five_gb = 5 * 1024 * 1024 * 1024
+    total = 23 * 1024 * 1024 * 1024
+    assert fault_proxy._is_large_playback_range(f"bytes={five_gb}-", total_length=total)
+
+
+def test_large_playback_range_excludes_file_tail():
+    """Reads near EOF (Kodi's MKV cues/index probes at open) must never
+    be faulted, with or without a known end offset."""
+    total = 23 * 1024 * 1024 * 1024
+    tail_start = total - (2 * 1024 * 1024)
+    assert not fault_proxy._is_large_playback_range(
+        f"bytes={tail_start}-{total - 1}", total_length=total
+    )
+    assert not fault_proxy._is_large_playback_range(
+        f"bytes={tail_start}-", total_length=total
+    )
+    # Unknown total: no tail information, deep offsets stay eligible.
+    assert fault_proxy._is_large_playback_range(f"bytes={tail_start}-")
+
+
+def test_content_range_total_parses_upstream_header():
+    resp = type(
+        "Response",
+        (),
+        {"getheader": lambda self, name: "bytes 0-99/23000000000"},
+    )()
+    assert fault_proxy._content_range_total(resp) == 23000000000
+    none_resp = type("Response", (), {"getheader": lambda self, name: None})()
+    assert fault_proxy._content_range_total(none_resp) is None
+
+
+def test_passthrough_caps_response_bytes(proxy_with_upstream, monkeypatch):
+    """The passthrough stops after MAX_RESPONSE_BYTES so the client
+    re-requests, keeping range GETs flowing for fault injection."""
+    import http.client
+
+    monkeypatch.setattr(fault_proxy, "MAX_RESPONSE_BYTES", 1024 * 1024)
+    proxy_url, _state, _tmp = proxy_with_upstream
+    resp = _request_large_range(proxy_url)
+    # The proxy advertises the full upstream length but closes after the
+    # cap — a short read, which strict clients surface as IncompleteRead
+    # and the addon's pass-through recovers from by re-requesting.
+    with pytest.raises(http.client.IncompleteRead) as excinfo:
+        resp.read()
+    body = excinfo.value.partial
+    # One extra 64 KiB chunk may be in flight when the cap trips.
+    assert 1024 * 1024 <= len(body) <= 1024 * 1024 + 65536
+    assert int(resp.headers["Content-Length"]) == 100 * 1024 * 1024
+
+
 def test_passthrough_drops_unsafe_upstream_headers(proxy_with_upstream):
     handler = type(
         "HeaderRecorder",

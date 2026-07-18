@@ -26,8 +26,23 @@ FAIL_BYTES = int(os.environ.get("FAULT_PROXY_FAIL_BYTES", str(4 * 1024 * 1024)))
 SLOW_BPS = int(os.environ.get("FAULT_PROXY_SLOW_BPS", str(50 * 1024)))
 SLOW_DURATION = float(os.environ.get("FAULT_PROXY_SLOW_DURATION", "30"))
 MIN_FAIL_START = int(os.environ.get("FAULT_PROXY_MIN_FAIL_START", str(1024 * 1024)))
-MAX_FAIL_START = int(
-    os.environ.get("FAULT_PROXY_MAX_FAIL_START", str(1024 * 1024 * 1024))
+# Effectively unbounded by default. The old 1 GiB default starved fault
+# injection on large files: a 23 GB REMUX passes the 1 GiB playback mark
+# within minutes, after which no reconnect offset ever qualified again and
+# 4 of 5 scheduled faults sat unfired for the rest of a 20-minute run.
+# Tail protection (Kodi's file-open cues/moov probes near EOF) is handled
+# by TAIL_EXCLUDE_BYTES against the upstream Content-Range total instead.
+MAX_FAIL_START = int(os.environ.get("FAULT_PROXY_MAX_FAIL_START", str(1 << 50)))
+TAIL_EXCLUDE_BYTES = int(
+    os.environ.get("FAULT_PROXY_TAIL_EXCLUDE", str(512 * 1024 * 1024))
+)
+# Cap bytes served per passthrough response (0 = unlimited). The nzbdav
+# addon's pass-through recovers from short reads by re-requesting at the
+# new offset, so a cap turns one movie-length upstream connection into a
+# steady cadence of fresh range GETs — the request stream that per-request
+# fault injection needs. Without it a 20-minute run saw only 16 GETs.
+MAX_RESPONSE_BYTES = int(
+    os.environ.get("FAULT_PROXY_MAX_RESPONSE_BYTES", str(64 * 1024 * 1024))
 )
 LOG_PATH = os.environ.get("FAULT_PROXY_LOG", "/var/log/fault-proxy/full.log")
 EVENTS_PATH = os.environ.get("FAULT_PROXY_EVENTS", "/var/log/fault-proxy/events.jsonl")
@@ -157,12 +172,29 @@ def _range_bounds(value):
     return start, end
 
 
-def _is_large_playback_range(value):
+def _content_range_total(resp):
+    """Total file length from an upstream Content-Range header, or None."""
+    value = resp.getheader("Content-Range") if hasattr(resp, "getheader") else None
+    if not value or "/" not in value:
+        return None
+    total_text = value.rsplit("/", 1)[1].strip()
+    try:
+        return int(total_text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_large_playback_range(value, total_length=None):
     bounds = _range_bounds(value)
     if bounds is None:
         return False
     start, end = bounds
     if start < MIN_FAIL_START or start > MAX_FAIL_START:
+        return False
+    # Never fault reads near the file tail: Kodi's MKV open probes the
+    # cues/index at EOF, and failing those breaks file-open rather than
+    # exercising mid-playback recovery.
+    if total_length and start > max(0, total_length - TAIL_EXCLUDE_BYTES):
         return False
     if end is None:
         return True
@@ -476,7 +508,9 @@ class Handler(BaseHTTPRequestHandler):
             if (
                 not head_only
                 and method == "GET"
-                and _is_large_playback_range(range_header)
+                and _is_large_playback_range(
+                    range_header, total_length=_content_range_total(resp)
+                )
             ):
                 due = self.state.next_due_fault()
                 if due is not None:
@@ -504,11 +538,18 @@ class Handler(BaseHTTPRequestHandler):
         if head_only:
             resp.close()
             return
+        # Serve at most MAX_RESPONSE_BYTES then close: the client sees a
+        # short read and re-requests at the new offset, keeping a steady
+        # stream of range GETs available for per-request fault injection.
+        sent = 0
         while True:
             chunk = resp.read(65536)
             if not chunk:
                 break
             self.wfile.write(chunk)
+            sent += len(chunk)
+            if 0 < MAX_RESPONSE_BYTES <= sent:
+                break
         resp.close()
 
     def do_HEAD(self):
