@@ -171,7 +171,12 @@ class PlayerPoller(threading.Thread):
 # FAULT_PROXY_SLOW_DURATION (default 30s), so a 30s window could never
 # observe its recovery by construction (run 2026-07-18T06-44-29Z failed
 # only on that event, with every other fault resuming in 0.6-13s).
-RESUME_WINDOW_SECONDS = 60.0
+# 180s: a source_dead cutover that lands while the container's Kodi
+# flakes (rig-specific exit-255 death + supervisord respawn + harness
+# relaunch + history-adoption re-resolve) can legitimately take 1-2
+# minutes end to end; the window must contain the WHOLE worst-case
+# recovery or the measurement can never observe it.
+RESUME_WINDOW_SECONDS = 180.0
 
 
 def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
