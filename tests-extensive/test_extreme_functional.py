@@ -70,6 +70,11 @@ pytest_plugins = ["extreme._fixtures"]
 
 pytestmark = pytest.mark.extreme
 
+# Distinct movies to try when playback never starts (a picked release can
+# be dead on the provider — missing articles — and the addon fails fast by
+# design). Each attempt re-picks with the tried IMDb ids excluded.
+_MAX_PLAYBACK_ATTEMPTS = 3
+
 # Wider candidate pool than just functional-test-top-imdb. Setting these via
 # os.environ affects the existing helpers in test_functional_fallback_playback.
 os.environ.setdefault("LIVE_FALLBACK_POOL_LIMIT", "100")
@@ -190,8 +195,11 @@ def _generate_fault_schedule(rng: random.Random) -> list[dict]:
     ]
 
 
-def _pick_movie_with_fallback_pool(rng: random.Random, settings):
+def _pick_movie_with_fallback_pool(rng: random.Random, settings, exclude=frozenset()):
     """Try up to 3 random movies; return (movie, primary_pair, fallback_pairs).
+
+    ``exclude`` drops already-attempted IMDb ids so a playback retry (dead
+    release on the provider) re-picks a different movie.
 
     _most_duplicated_group_pool returns (group_str, pool_list); we unpack it
     and check the pool list length, not the 2-tuple length.
@@ -207,7 +215,9 @@ def _pick_movie_with_fallback_pool(rng: random.Random, settings):
         if not pool_movies:
             pytest.fail(f"EXTREME_TEST_IMDB_ID={pinned_imdb} not in IMDB_TOP_50_MOVIES")
     else:
-        pool_movies = list(IMDB_TOP_50_MOVIES)
+        pool_movies = [
+            m for m in IMDB_TOP_50_MOVIES if m.get("imdb") not in (exclude or ())
+        ]
         rng.shuffle(pool_movies)
     last_error = None
     # Mirror the regular functional test's selection: try a FraMeSToR-tagged
@@ -315,49 +325,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
         assert r.status == 200, "Fault proxy not reachable"
 
     settings = _extreme_addon_settings(_addon_settings(_live_env()))
-    movie, primary, fallbacks = _pick_movie_with_fallback_pool(rng, settings)
-
     schedule = _generate_fault_schedule(rng)
-    _post_schedule(schedule)
-
-    measurement.write_manifest(
-        run_dir / "manifest.json",
-        {
-            "seed": seed_value,
-            "movie": {
-                "title": movie["title"],
-                "year": movie["year"],
-                "imdb": movie["imdb"],
-            },
-            "primary_nzb": primary[0].get("title") if primary else None,
-            "fallback_count": len(fallbacks),
-            "schedule": schedule,
-            "started_at_wall": time.time(),
-        },
-    )
-
-    # Start playback via TMDBHelper.
-    # TMDBHelper accepts imdb_id; use it so the test actually exercises the
-    # TMDBHelper -> player JSON -> nzbdav resolver path (per spec). The
-    # IMDB_TOP_50_MOVIES list pinned in test_functional_fallback_playback.py
-    # carries imdb tt-IDs, not tmdb_ids, so we route via imdb_id.
-    imdb_id = movie["imdb"]  # tt-format id like "tt0111161"
-    rpc_resp = _kodi_rpc(
-        "Addons.ExecuteAddon",
-        {
-            "addonid": "plugin.video.themoviedb.helper",
-            "params": {
-                "info": "play",
-                "type": "movie",
-                "imdb_id": imdb_id,
-            },
-        },
-    )
-    print(
-        f"[extreme] TMDBHelper playback launch (imdb_id={imdb_id}) response: {rpc_resp}"
-    )
-
-    _dismiss_tmdbhelper_player_choosers()
 
     def _capture_diagnostics():
         """Pull Kodi + addon logs out of the container before teardown.
@@ -411,34 +379,120 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                 check=False,
             )
 
-    try:
-        # nzbdav's resolver polls until the NZB download completes before
-        # invoking the player (see repo/plugin.video.nzbdav/resources/lib/
-        # resolver.py:_poll_until_ready). For a 1080p release that's
-        # multiple GB over NNTP the wait can be several minutes; 60s is
-        # too tight. The 20-min test body tolerates most of that wait
-        # since faults start at t=60s into playback, not into the test.
-        pid = _wait_for_player(timeout=600)
-    except Exception:  # noqa: BLE001
-        # Connection reset / refused while polling = Kodi crashed mid-test.
-        # Snapshot diagnostics first so the cause is reachable post-teardown.
+    def _clear_kodi_dialogs():
+        """Dismiss any leftover modal (e.g. the addon's 'Download failed'
+        dialog) so a retry's ExecuteAddon isn't swallowed by it."""
+        for _ in range(3):
+            try:
+                _kodi_rpc("Input.Select")
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.5)
         try:
-            _capture_diagnostics()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[extreme] diagnostic capture failed: {exc}")
-        raise
+            _kodi_rpc("Input.Home")
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1)
+
+    # Launch playback via TMDBHelper, retrying with a DIFFERENT movie when
+    # playback never starts: a release can be dead on the provider (missing
+    # articles — the 12.Angry.Men run-3 LOTR pick) and the addon fails fast
+    # by design, so one dead pick must not fail the whole 20-minute run.
+    # TMDBHelper accepts imdb_id, so the test exercises the full
+    # TMDBHelper -> player JSON -> nzbdav resolver path per attempt.
+    tried_imdb_ids = set()
+    movie = primary = fallbacks = None
+    pid = None
+    schedule_post_t_wall = time.time()
+    for attempt in range(1, _MAX_PLAYBACK_ATTEMPTS + 1):
+        movie, primary, fallbacks = _pick_movie_with_fallback_pool(
+            rng, settings, exclude=frozenset(tried_imdb_ids)
+        )
+        tried_imdb_ids.add(movie["imdb"])
+        # (Re-)post the schedule: replace_schedule resets the proxy's run
+        # clock and fired-events list, so fault timing anchors to THIS
+        # attempt's traffic and a doomed attempt can't consume the budget.
+        schedule_post_t_wall = time.time()
+        _post_schedule(schedule)
+        rpc_resp = _kodi_rpc(
+            "Addons.ExecuteAddon",
+            {
+                "addonid": "plugin.video.themoviedb.helper",
+                "params": {
+                    "info": "play",
+                    "type": "movie",
+                    "imdb_id": movie["imdb"],
+                },
+            },
+        )
+        print(
+            "[extreme] attempt {}/{}: TMDBHelper playback launch "
+            "(imdb_id={}, {}) response: {}".format(
+                attempt,
+                _MAX_PLAYBACK_ATTEMPTS,
+                movie["imdb"],
+                movie["title"],
+                rpc_resp,
+            )
+        )
+        _dismiss_tmdbhelper_player_choosers()
+        try:
+            # nzbdav's resolver polls until the NZB download completes
+            # before invoking the player; for a multi-GB release over NNTP
+            # that wait can be several minutes, so 600s.
+            pid = _wait_for_player(timeout=600)
+        except Exception:  # noqa: BLE001
+            # Connection reset / refused while polling = Kodi crashed.
+            # Snapshot diagnostics so the cause survives teardown.
+            try:
+                _capture_diagnostics()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[extreme] diagnostic capture failed: {exc}")
+            raise
+        if pid is not None:
+            break
+        print(
+            "[extreme] attempt {}/{}: playback never started for '{}' "
+            "(dead release?); retrying with a different movie".format(
+                attempt, _MAX_PLAYBACK_ATTEMPTS, movie["title"]
+            )
+        )
+        _clear_kodi_dialogs()
 
     if pid is None:
         # Save what we have and bail.
         measurement.write_manifest(
             run_dir / "manifest.json",
-            {"seed": seed_value, "playback_started": False},
+            {
+                "seed": seed_value,
+                "playback_started": False,
+                "attempted_imdb_ids": sorted(tried_imdb_ids),
+            },
         )
         try:
             _capture_diagnostics()
         except Exception as exc:  # noqa: BLE001
             print(f"[extreme] diagnostic capture failed: {exc}")
-        pytest.fail("playback never started")
+        pytest.fail(
+            "playback never started after {} attempts".format(_MAX_PLAYBACK_ATTEMPTS)
+        )
+
+    measurement.write_manifest(
+        run_dir / "manifest.json",
+        {
+            "seed": seed_value,
+            "movie": {
+                "title": movie["title"],
+                "year": movie["year"],
+                "imdb": movie["imdb"],
+            },
+            "primary_nzb": primary[0].get("title") if primary else None,
+            "fallback_count": len(fallbacks),
+            "schedule": schedule,
+            "playback_attempts": len(tried_imdb_ids),
+            "started_at_wall": time.time(),
+        },
+    )
 
     poller = measurement.PlayerPoller(
         url=f"http://localhost:{KODI_HOST_PORT}/jsonrpc",
@@ -489,14 +543,20 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     except Exception as exc:  # noqa: BLE001
         print(f"[extreme] diagnostic capture failed: {exc}")
 
-    # Read fault-proxy events.jsonl from the bind-mounted reports dir
+    # Read fault-proxy events.jsonl from the bind-mounted reports dir.
+    # The file appends across playback attempts while replace_schedule only
+    # resets in-memory state, so drop any events fired before the FINAL
+    # attempt's schedule post — a doomed first attempt must not inflate the
+    # expected-5-events count.
     fault_log = run_dir / "fault-proxy" / "events.jsonl"
     fault_events = []
     if fault_log.exists():
         for line in fault_log.read_text().splitlines():
             line = line.strip()
             if line:
-                fault_events.append(json.loads(line))
+                event = json.loads(line)
+                if event.get("t_wall", 0) >= schedule_post_t_wall - 1:
+                    fault_events.append(event)
 
     # Read timeline
     timeline = []
