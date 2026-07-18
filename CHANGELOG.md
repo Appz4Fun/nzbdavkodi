@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[2.0.0-beta.2](#200-beta2--2026-07-18)** | 2026-07-18 | Exact season-pack episode reuse, SMB readability gate before playback, results-dialog label scrolling, unified XML-safety parsing |
 | **[2.0.0-beta.1](#200-beta1--2026-07-09)** | 2026-07-09 | NZBGet backend + Smart Duplicates, tiered fallback/dropout hardening, manual indexer manager, TVDB-aware TV search, versioned settings.xml with per-option help text, unified XXE protection, large complexity-reduction refactor, MkDocs documentation site |
 | **[1.2.3](#123--2026-05-08)** | 2026-05-08 | Proxy fallback hardening, repo install checksum fix, RunScript path reliability |
 | **[1.2.2](#122--2026-05-07)** | 2026-05-07 | Kodi add-on info freeze hotfix |
@@ -60,6 +61,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Bolded** versions are either major features or recommended upgrades.
 
 ---
+
+## [2.0.0-beta.2][] — 2026-07-18
+
+> Second beta on the road to 2.0.0. The headline is **exact season-pack
+> episode reuse**: a completed multi-episode download now plays the episode
+> you actually asked for, and later episodes from that same pack reuse the
+> finished job instead of downloading again. Also gates SMB playback behind a
+> real readability probe (no more silent failures from stale Kodi SMB
+> sessions), finishes the XML-safety unification, and polishes the results
+> dialog.
+
+### Added
+
+- **Exact season-pack episode reuse.** Completed multi-episode (season-pack)
+  downloads now build an exact per-episode inventory of the finished job:
+  playing an episode selects the file that actually matches the requested
+  season/episode — on both the NZBGet SMB path and the nzbdav WebDAV path —
+  instead of falling back to the largest video in the folder. Auxiliary files
+  (samples, trailers, featurettes, descriptive extras) are classified and
+  excluded so they can never be picked over the real episode. Validated packs
+  are recorded by exact backend job id after stream validation, and later
+  episode picks from the same pack surface in the picker as a reusable
+  already-downloaded pack that plays without re-submitting anything. Episode
+  context threads through the resolvers and standby fallback streams, stale
+  or failed pack records are pruned, and cached SMB path mappings are
+  validated before reuse. (#415)
+
+### Fixed
+
+- **SMB playback is now gated on a readability probe.** A file that lists
+  over SMB can still fail to open — it may still be settling after NZBGet's
+  move, or Kodi's cached SMB session may return "Permission denied" while
+  fresh sessions read it fine. The resolver now probes the selected file
+  through `xbmcvfs` (the exact cached libsmbclient session VideoPlayer will
+  use) and keeps retrying within the resolve budget until it actually reads.
+  A never-readable file propagates a distinct unreadable state that fails
+  closed: it is never recorded into the season-pack catalog, the
+  picker-reuse path won't pointlessly re-submit the already-completed NZB,
+  and the failure logs the stuck-session signature and toasts a
+  restart-Kodi hint instead of handing the player a doomed URL. Probe log
+  lines redact SMB credentials. (#427)
+- **XML parsing fully unified through `xml_safety`.** `router.py` and
+  `fallback_streams_probe.py` still carried ad-hoc `ElementTree` fallback
+  paths with an incomplete XXE patch for when `defusedxml` is absent; both
+  now route through the centralized `safe_fromstring` helper. (#416)
+
+### Changed
+
+- **Results dialog: long labels scroll on the focused row.** Filenames and
+  the variable-length metadata labels (size, age, indexer, group,
+  resolution, HDR, codec, audio, quality, container) auto-scroll into view
+  on the focused row instead of truncating; unfocused rows stay static.
+  (#416, #432)
+- Pre-compiled the episode-inventory path/word-separator regexes so the
+  classification loops avoid repeated `re.split()` cache lookups. (#432)
+- Code-hygiene sweep from the retired Codacy scanner's actionable findings:
+  92 missing docstrings added across runtime modules, plus assorted small
+  cleanups (redundant exception tuple, import-alias naming, static-method
+  conversions, install-script shellcheck fixes). (#433, #434)
 
 ## [2.0.0-beta.1][] — 2026-07-09
 
@@ -1286,6 +1346,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[2.0.0-beta.2]: https://github.com/Appz4Fun/nzbdavkodi/compare/v2.0.0-beta.1...v2.0.0-beta.2
 [2.0.0-beta.1]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.3...v2.0.0-beta.1
 [1.2.3]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.1...v1.2.2

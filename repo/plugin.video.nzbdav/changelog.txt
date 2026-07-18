@@ -1,1 +1,1 @@
-v2.0.0-beta.1: NZBGet backend, Smart Duplicates, fallback overhaul, indexers.
+v2.0.0-beta.2: Exact season-pack episode reuse, SMB readability gate, polish.
