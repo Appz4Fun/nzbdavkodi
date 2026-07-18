@@ -131,8 +131,8 @@ def _handle_submit_4xx(submit_error, ctx):
 def _handle_submit_timeout(submit_error, ctx):
     """Handle a client-side submit timeout: probe-then-adopt, else retry.
 
-    nzbdav's /api?mode=addurl handler can take > 30 s on big NZBs (fetch +
-    parse + enumerate) — longer than the default HTTP timeout. A timeout does
+    nzbdav's submit handler can take > 30 s on big NZBs (parse +
+    enumerate) — longer than the default HTTP timeout. A timeout does
     NOT mean the submit failed. Probe the queue before retrying so we adopt the
     job nzbdav is already processing instead of double-submitting.
     """

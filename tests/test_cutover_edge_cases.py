@@ -217,7 +217,7 @@ def test_dump_submitted_nzb_no_op_without_env(monkeypatch, tmp_path):
     monkeypatch.delenv("NZBDAV_DUMP_NZBS_DIR", raising=False)
     from resources.lib.nzbdav_api import _dump_submitted_nzb
 
-    _dump_submitted_nzb("http://example.com/x.nzb", "name")
+    _dump_submitted_nzb("name", b"<nzb/>")
     # No exception, no files; assertion is the lack of side effects.
     assert tmp_path.exists()  # tmp_path stayed empty as expected.
     assert not list(tmp_path.iterdir())

@@ -255,6 +255,30 @@ def http_get(url, timeout=15, headers=None, max_bytes=None):
         return body.decode("utf-8", errors="replace")
 
 
+def http_post(url, data, timeout=15, headers=None):
+    """POST a pre-encoded ``bytes`` body and return the response text.
+
+    Mirrors ``http_get``'s scheme allowlist and non-2xx handling. The
+    caller supplies the ``Content-Type`` via ``headers`` (used by the
+    nzbdav ``addfile`` multipart submit).
+    """
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in _ALLOWED_HTTP_SCHEMES:
+        raise ValueError("unsupported URL scheme: {!r}".format(scheme))
+    request_headers = {"User-Agent": _HTTP_USER_AGENT}
+    if headers:
+        request_headers.update(headers)
+    req = Request(url, data=data, headers=request_headers)
+    # nosemgrep
+    with urlopen(  # nosec B310 — scheme allowlist enforced above
+        req, timeout=timeout
+    ) as resp:
+        status = _response_status(resp)
+        if status is not None and not 200 <= status < 300:
+            raise OSError("HTTP status {}".format(status))
+        return resp.read().decode("utf-8", errors="replace")
+
+
 def http_post_json(url, payload, timeout=15, headers=None, basic_auth=None):
     """POST ``payload`` as a JSON body and return the response text.
 

@@ -12,6 +12,7 @@ import xbmcaddon
 
 from resources.lib.exact_job import ExactJobLookup
 from resources.lib.http_util import http_get as _http_get
+from resources.lib.http_util import http_post as _http_post
 from resources.lib.http_util import redact_text as _redact_text
 from resources.lib.nzbdav_api_parsing import (
     _cancel_job_outcome,
@@ -64,8 +65,8 @@ __all__ = [
     "completed_jobs_lookup_done",
 ]
 
-# nzbdav's /api?mode=addurl handler fetches the .nzb from the indexer,
-# parses the XML, and enumerates segments before returning. On a big
+# nzbdav's submit handlers (addfile upload, addurl server-side fetch)
+# parse the NZB XML and enumerate segments before returning. On a big
 # REMUX this can routinely exceed 30 s. 300 s gives nzbdav real headroom
 # while remaining below the 10 minute clamp for truly stuck requests.
 _DEFAULT_SUBMIT_TIMEOUT = 300
@@ -113,29 +114,63 @@ def _get_submit_timeout(settings_getter=None):
     return _clamp_int_setting(value, _SUBMIT_TIMEOUT_MIN, _SUBMIT_TIMEOUT_MAX)
 
 
-def _dump_submitted_nzb(nzb_url, nzb_name):
-    """Save the NZB body that's about to be submitted to nzbdav-rs.
+# NZB fetches from the indexer are quick (a few MB of XML at most), so
+# they get a flat timeout independent of the submit timeout.
+_NZB_FETCH_TIMEOUT = 30
+
+
+def _fetch_nzb_body(nzb_url, nzb_name):
+    """Fetch the NZB bytes from the indexer for an addfile submit.
+
+    Returns the body as bytes, or ``None`` on any failure (network error,
+    empty response, or a body that isn't XML — e.g. an indexer error page
+    served with HTTP 200). ``None`` makes ``submit_nzb`` fall back to the
+    server-side ``addurl`` fetch, preserving the old behavior.
+    """
+    if not nzb_url:
+        return None
+    try:
+        body = _http_get(nzb_url, timeout=_NZB_FETCH_TIMEOUT)
+    except Exception as exc:  # pylint: disable=broad-except
+        xbmc.log(
+            "NZB-DAV: Local NZB fetch failed for '{}' ({}); falling back to "
+            "server-side addurl".format(nzb_name, _redact_text(str(exc))),
+            xbmc.LOGWARNING,
+        )
+        return None
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    # An NZB is XML. Anything else (empty body, HTML error page with a
+    # 200 status) would just be rejected server-side with a confusing
+    # parse error, so treat it as a fetch failure instead.
+    if not body or not body.lstrip()[:1] == b"<":
+        xbmc.log(
+            "NZB-DAV: Local NZB fetch for '{}' returned non-XML content; "
+            "falling back to server-side addurl".format(nzb_name),
+            xbmc.LOGWARNING,
+        )
+        return None
+    return body
+
+
+def _dump_submitted_nzb(nzb_name, body):
+    """Save the NZB body that's about to be submitted to nzbdav.
 
     No-op unless ``NZBDAV_DUMP_NZBS_DIR`` is set in the environment. Used
     by the extreme functional test to inspect the bytes that went into
-    nzbdav-rs's deobfuscator when a job fails with "no importable video
+    nzbdav's deobfuscator when a job fails with "no importable video
     file found", so we can tell whether the NZB itself is malformed (or
-    just unsupported by nzbdav-rs).
+    just unsupported by nzbdav).
     """
     import os
 
     dump_dir = os.environ.get("NZBDAV_DUMP_NZBS_DIR", "").strip()
-    if not dump_dir or not nzb_url:
+    if not dump_dir or not body:
         return
     try:
         os.makedirs(dump_dir, exist_ok=True)
         safe_name = (nzb_name or "submission").replace("/", "_")[:200]
         out_path = os.path.join(dump_dir, "{}.nzb".format(safe_name))
-        # Use _http_get to inherit the addon's HTTP client (timeout,
-        # redirects, retries). Hydra returns NZBs as text/xml.
-        body = _http_get(nzb_url, timeout=30)
-        if isinstance(body, str):
-            body = body.encode("utf-8")
         with open(out_path, "wb") as fh:
             fh.write(body)
         xbmc.log(
@@ -177,6 +212,63 @@ def _build_submit_request(
     return url, timeout
 
 
+def _build_addfile_request(
+    base_url, api_key, nzb_name, settings_getter, submit_timeout
+):
+    """Return the (url, timeout) for an addfile submit and log the request."""
+    params = {
+        "mode": "addfile",
+        "nzbname": nzb_name,
+        "apikey": api_key,
+        "output": "json",
+    }
+    url = "{}/api?{}".format(base_url, urlencode(params))
+    from resources.lib.http_util import redact_url
+
+    timeout = (
+        submit_timeout
+        if submit_timeout is not None
+        else _get_submit_timeout(settings_getter=settings_getter)
+    )
+    xbmc.log(
+        "NZB-DAV: Submit NZB via addfile (timeout={}s): {}".format(
+            timeout, redact_url(url)
+        ),
+        xbmc.LOGDEBUG,
+    )
+    return url, timeout
+
+
+def _multipart_nzb_body(nzb_name, body):
+    """Encode ``body`` as a multipart/form-data upload for mode=addfile.
+
+    Returns ``(encoded_body, content_type)``. The file goes in the
+    ``nzbFile`` field, which both nzbdav (C#) and nzbdav-rs accept
+    (SABnzbd itself accepts ``nzbfile``/``name``).
+    """
+    import uuid
+
+    filename = (nzb_name or "download").replace('"', "_").replace("\\", "_")
+    if not filename.lower().endswith(".nzb"):
+        filename += ".nzb"
+    boundary = uuid.uuid4().hex
+    while boundary.encode("ascii") in body:
+        boundary = uuid.uuid4().hex
+    head = (
+        (
+            "--{b}\r\n"
+            'Content-Disposition: form-data; name="nzbFile"; filename="{fn}"\r\n'
+            "Content-Type: application/x-nzb\r\n"
+            "\r\n"
+        )
+        .format(b=boundary, fn=filename)
+        .encode("utf-8")
+    )
+    tail = "\r\n--{b}--\r\n".format(b=boundary).encode("ascii")
+    content_type = "multipart/form-data; boundary={}".format(boundary)
+    return head + body + tail, content_type
+
+
 def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
     """Submit an NZB URL to nzbdav's SABnzbd-compatible API.
 
@@ -205,7 +297,11 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
 
     Side effects:
         Reads nzbdav settings from Kodi via xbmcaddon.Addon("plugin.video.nzbdav").
-        Performs an HTTP GET to nzbdav /api with mode=addurl.
+        Fetches the NZB from the indexer and POSTs it to nzbdav /api with
+        mode=addfile; falls back to a GET with mode=addurl when the local
+        fetch fails (nzbdav then fetches the URL server-side — newer
+        nzbdav builds refuse this for private-IP indexer hosts, which is
+        why addfile is the primary path).
         Logs submission URLs, successes, and errors to the Kodi log.
     """
     try:
@@ -216,22 +312,39 @@ def submit_nzb(nzb_url, nzb_name="", settings_getter=None, submit_timeout=None):
             xbmc.LOGERROR,
         )
         return None, None
+    nzb_body = _fetch_nzb_body(nzb_url, nzb_name)
+    # Optional NZB dump for the extreme functional test: when
+    # NZBDAV_DUMP_NZBS_DIR is set, write the NZB body the addon is about
+    # to submit to disk. Lets the test post-mortem inspect the exact
+    # bytes that went into nzbdav's deobfuscator (e.g. for "no importable
+    # video file found" failures).
+    _dump_submitted_nzb(nzb_name, nzb_body)
+    if nzb_body is not None:
+        url, timeout = _build_addfile_request(
+            base_url, api_key, nzb_name, settings_getter, submit_timeout
+        )
+        return _execute_submit(url, timeout, nzb_name, nzb_body=nzb_body)
     url, timeout = _build_submit_request(
         base_url, api_key, nzb_url, nzb_name, settings_getter, submit_timeout
     )
-    # Optional NZB dump for the extreme functional test: when
-    # NZBDAV_DUMP_NZBS_DIR is set, fetch the NZB body the addon is about
-    # to ask nzbdav-rs to download and write it to disk. Lets the test
-    # post-mortem inspect the exact bytes that went into nzbdav-rs's
-    # deobfuscator (e.g. for "no importable video file found" failures).
-    _dump_submitted_nzb(nzb_url, nzb_name)
     return _execute_submit(url, timeout, nzb_name)
 
 
-def _execute_submit(url, timeout, nzb_name):
-    """Perform the addurl GET and classify the (nzo_id, error) outcome."""
+def _execute_submit(url, timeout, nzb_name, nzb_body=None):
+    """Perform the submit request and classify the (nzo_id, error) outcome.
+
+    With ``nzb_body`` this is a multipart addfile POST; without it, the
+    legacy addurl GET. Both return the same SABnzbd-style JSON, so the
+    classification below is shared.
+    """
     try:
-        response_text = _http_get(url, timeout=timeout)
+        if nzb_body is not None:
+            body, content_type = _multipart_nzb_body(nzb_name, nzb_body)
+            response_text = _http_post(
+                url, body, timeout=timeout, headers={"Content-Type": content_type}
+            )
+        else:
+            response_text = _http_get(url, timeout=timeout)
         response = _coerce_response_dict(json.loads(response_text))
     except HTTPError as e:
         return _submit_http_error_result(e)

@@ -214,9 +214,10 @@ def _submit_nzb_with_ui_pump(
     """Run ``submit_nzb`` off the plugin thread, pump the dialog, and
     race a concurrent queue probe against the submit.
 
-    ``submit_nzb`` issues a synchronous HTTP request to ``/api?mode=addurl``
-    which on a big NZB routinely takes 30-300 s. Running it on the Kodi
-    plugin thread freezes the progress dialog. The fix is two-part:
+    ``submit_nzb`` issues a synchronous HTTP request to nzbdav's submit
+    API (``mode=addfile`` upload, with ``mode=addurl`` fallback) which on
+    a big NZB routinely takes 30-300 s. Running it on the Kodi plugin
+    thread freezes the progress dialog. The fix is two-part:
 
     1. ``submit_nzb`` runs in a daemon worker thread; the plugin thread
        loops on ``monitor.waitForAbort`` at 250 ms cadence, advances the
@@ -224,7 +225,7 @@ def _submit_nzb_with_ui_pump(
     2. Daemon probe threads concurrently watch nzbdav's queue/history via
        ``find_queued_by_name`` / ``find_completed_by_name`` and short-circuit
        as soon as the job for ``title`` appears — usually well before
-       ``addurl`` replies.
+       the submit replies.
 
     Returns ``(nzo_id, None)`` on success (either by worker completion or
     by queue adoption), or ``(None, error_dict)`` on cancel, shutdown,
