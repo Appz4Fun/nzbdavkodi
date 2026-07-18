@@ -479,6 +479,16 @@ def test_extreme_fallback_run(stack_ready, run_dir):
         check=False,
     )
 
+    # Always snapshot the full diagnostics set (kodi.old.log, supervisord
+    # log, gdb backtraces, addon data) before any assertion can raise:
+    # two mid-run Kodi crashes went unexplained because the gdb log was
+    # only captured on the playback-start failure paths, and compose_up's
+    # teardown wiped the containers after the measurement asserts failed.
+    try:
+        _capture_diagnostics()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[extreme] diagnostic capture failed: {exc}")
+
     # Read fault-proxy events.jsonl from the bind-mounted reports dir
     fault_log = run_dir / "fault-proxy" / "events.jsonl"
     fault_events = []
