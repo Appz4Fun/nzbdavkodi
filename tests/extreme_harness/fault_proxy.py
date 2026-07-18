@@ -23,7 +23,16 @@ LISTEN = os.environ.get("FAULT_PROXY_LISTEN", "0.0.0.0")
 PORT = int(os.environ.get("FAULT_PROXY_PORT", "19080"))
 CONTROL_PORT = int(os.environ.get("FAULT_PROXY_CONTROL_PORT", "19081"))
 FAIL_BYTES = int(os.environ.get("FAULT_PROXY_FAIL_BYTES", str(4 * 1024 * 1024)))
-SLOW_BPS = int(os.environ.get("FAULT_PROXY_SLOW_BPS", str(50 * 1024)))
+# Keep the throttle rate ABOVE the addon's minimum viable throughput
+# (_PASSTHROUGH_MIN_THROUGHPUT_BPS = 100 KiB/s): sustained sub-threshold
+# delivery makes the addon declare terminal stream_starvation and stop
+# playback BY DESIGN ("backend could not keep up"), so a 50 KiB/s
+# throttle tested an unsurvivable condition and passed only when the
+# throttle happened to land across connection boundaries (fresh
+# connections reset the rate window). 300 KiB/s is still ~5% of REMUX
+# bitrate — the player buffer drains and freezes — but recovery is
+# possible, which is what the test measures.
+SLOW_BPS = int(os.environ.get("FAULT_PROXY_SLOW_BPS", str(300 * 1024)))
 SLOW_DURATION = float(os.environ.get("FAULT_PROXY_SLOW_DURATION", "30"))
 MIN_FAIL_START = int(os.environ.get("FAULT_PROXY_MIN_FAIL_START", str(1024 * 1024)))
 # Effectively unbounded by default. The old 1 GiB default starved fault
