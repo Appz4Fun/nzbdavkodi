@@ -108,7 +108,15 @@ def _submit_one_fallback_candidate(
 def _recover_fallback_submit_error(
     submit_error, nzb_url, job_name, monitor, settings_getter, dead
 ):
-    """Adopt a timed-out fallback submit, or log+mark-dead and return None."""
+    """Adopt an existing nzbdav job for a failed fallback submit, or give up.
+
+    Timeouts probe queue/history repeatedly (the in-flight submit may
+    still land). REFUSED submits (indexer grab quota 403 on the NZB
+    fetch, nzbdav's addurl SSRF reject, any 4xx) probe ONCE: the job
+    name is deterministic per candidate, so a PRIOR session's ingest of
+    this same standby sits in nzbdav's queue/history under the same
+    name and serves without any fresh grab.
+    """
     status = submit_error.get("status")
     nzo_id = None
     if status == "timeout":
@@ -120,6 +128,16 @@ def _recover_fallback_submit_error(
         nzo_id = _resolver._adopt_queued_or_completed_job(
             job_name, monitor, settings_getter=settings_getter
         )
+    else:
+        nzo_id = _resolver._find_adoptable_job_during_submit(
+            job_name, settings_getter=settings_getter
+        )
+        if nzo_id:
+            _resolver.xbmc.log(
+                "NZB-DAV: Fallback submit refused for '{}' (status={}); "
+                "adopted prior ingest nzo_id={}".format(job_name, status, nzo_id),
+                _resolver.xbmc.LOGINFO,
+            )
     if not nzo_id:
         if dead is not None and _resolver.is_provably_dead_submit_error(submit_error):
             dead.add(nzb_url=nzb_url)
