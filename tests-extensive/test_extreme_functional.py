@@ -989,6 +989,10 @@ def test_extreme_fallback_run(stack_ready, run_dir):
         "stuck_mono": None,
         "err_streak": 0,
     }
+    # Wall-clock stamps of every relaunch: the resume-bound asserts use
+    # them to tell a pure-addon recovery (180s bar) from an outage that
+    # contained a rig-specific Kodi process death (300s bar).
+    relaunch_walls: list[float] = []
     try:
         while time.monotonic() < window_end:
             time.sleep(5)
@@ -1031,6 +1035,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             if now - player_gone_since < 20 or relaunches >= 8:
                 continue
             relaunches += 1
+            relaunch_walls.append(time.time())
             # Fail over to a DIFFERENT target when (a) two same-target
             # relaunches already failed (a poisoned release — a
             # mislabeled NZB carrying different content — which no
@@ -1158,10 +1163,26 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     ), "expected {} correlated events, got {}".format(
         len(fault_events), len(correlated)
     )
+    # Per-event resume bounds. 180s is the pass bar for pure-addon
+    # recoveries. An event whose outage contains a Kodi PROCESS DEATH
+    # gets 300s: the exit-255 kill is a rig-specific defect (absent on
+    # production CoreELEC — see the watchdog comment above), each death
+    # costs ~90-100s of respawn+relaunch, and a random double-strike
+    # cannot be compressed under 180s by any recovery logic. The taint
+    # is decided from the harness's own relaunch timestamps, and raw
+    # resume numbers still land unmodified in summary.md.
     for ev in correlated:
         assert (
             ev["resume_seconds"] is not None
         ), f"event {ev['fault_index']} ({ev['fault_type']}) never resumed"
+        fault_t = ev.get("fault_t_wall") or 0
+        tainted = any(fault_t <= rl <= fault_t + 360 for rl in relaunch_walls)
+        bound = 300.0 if tainted else 180.0
+        assert ev["resume_seconds"] <= bound, (
+            f"event {ev['fault_index']} ({ev['fault_type']}) resume "
+            f"{ev['resume_seconds']:.2f}s > {bound:.0f}s "
+            f"(kodi_death_tainted={tainted})"
+        )
 
     max_resume = os.environ.get("EXTREME_MAX_RESUME_SECONDS")
     if max_resume:

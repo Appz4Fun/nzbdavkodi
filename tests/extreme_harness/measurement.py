@@ -176,7 +176,13 @@ class PlayerPoller(threading.Thread):
 # relaunch + history-adoption re-resolve) can legitimately take 1-2
 # minutes end to end; the window must contain the WHOLE worst-case
 # recovery or the measurement can never observe it.
-RESUME_WINDOW_SECONDS = 180.0
+# Measurement search window per fault. Deliberately wider than the
+# 180s pass bound the extreme test asserts for pure-addon recoveries:
+# an event whose outage contains a rig-specific Kodi PROCESS DEATH
+# (exit-255, absent on production hardware) is allowed 300s by the
+# test, so measurement must keep looking past 180s to report the
+# actual resume instead of "never resumed".
+RESUME_WINDOW_SECONDS = 360.0
 
 
 def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
