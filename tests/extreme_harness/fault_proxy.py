@@ -611,7 +611,11 @@ class Handler(BaseHTTPRequestHandler):
     state: ProxyState  # set by main()
 
     def log_message(self, fmt, *args):
-        _log("REQUEST " + fmt % args)
+        # Timestamp + Range make post-mortems answerable: "which sessions
+        # were alive when a scheduled fault starved" needs both.
+        stamp = time.strftime("%H:%M:%S", time.gmtime())
+        range_header = self.headers.get("Range", "") if self.headers else ""
+        _log(f"REQUEST {stamp} [{range_header}] " + fmt % args)
 
     def _forward(self, head_only=False):
         # Dead-path gate: a source_dead fault killed this file — 404
@@ -713,11 +717,29 @@ class Handler(BaseHTTPRequestHandler):
         total = _content_range_total(resp)
         if bounds is not None and total:
             midstream_fault_budget = max(0, (total - TAIL_EXCLUDE_BYTES) - bounds[0])
+        # A session whose range STARTED below MIN_FAIL_START (Kodi reopens
+        # from a low offset after a fault) is start-ineligible but can
+        # stream hundreds of MB — freezing eligibility at request start
+        # let due faults starve for that session's whole life while the
+        # proxy carried the only playback traffic. Promote it once its
+        # absolute position crosses MIN_FAIL_START; the budget check
+        # still guards the protected tail.
+        dynamic_eligible = (
+            not head_only
+            and not fault_eligible
+            and bounds is not None
+            and bool(total)
+            and midstream_fault_budget is not None
+            and midstream_fault_budget > 0
+        )
         throttle_until = 0.0
         corrupt_next_chunk = False
         last_fault_check = 0.0
         sent = 0
         while True:
+            if dynamic_eligible and bounds[0] + sent >= MIN_FAIL_START:
+                fault_eligible = True
+                dynamic_eligible = False
             if fault_eligible and (
                 midstream_fault_budget is None or sent < midstream_fault_budget
             ):

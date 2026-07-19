@@ -174,6 +174,104 @@ def _post_schedule(events: list[dict]) -> None:
         assert r.status == 200, r.status
 
 
+def _fired_fault_types(anchor_t_wall: float) -> list[str] | None:
+    """List fault types the proxy has fired since ``anchor_t_wall``.
+
+    Reads the proxy's events.jsonl live (docker exec) so the relaunch
+    watchdog can re-arm the UNFIRED remainder of the schedule after a
+    Kodi death swallowed fault slots. Returns None when the log cannot
+    be read (container restarting) — callers must then skip re-arming
+    rather than risk double-posting already-fired faults.
+    """
+    proc = subprocess.run(
+        [
+            "docker",
+            "exec",
+            "nzbdav-extreme-fault-proxy",
+            "cat",
+            "/var/log/fault-proxy/events.jsonl",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    fired = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("t_wall", 0) >= anchor_t_wall - 1:
+            fired.append(str(event.get("fault_type", "")))
+    return fired
+
+
+def _unfired_schedule_events(schedule: list[dict], fired: list[str]) -> list[dict]:
+    """Schedule entries with no fired counterpart, matched by type.
+
+    Type-multiset matching (not count slicing): a parked http_500 can
+    fire AFTER a later midstream event, so position alone would re-post
+    an already-fired fault and overshoot the expected event count.
+    """
+    pending = list(fired)
+    remaining = []
+    for entry in schedule:
+        if entry["fault_type"] in pending:
+            pending.remove(entry["fault_type"])
+        else:
+            remaining.append(entry)
+    return remaining
+
+
+def _rearm_unfired_faults(
+    schedule: list[dict],
+    schedule_post_t_wall: float,
+    rearms: int,
+    window_end: float,
+) -> tuple[int, float]:
+    """Re-post unfired fault slots after a playback outage, if any.
+
+    A Kodi death (exit-255 class) or an ineligible-traffic stretch can
+    swallow scheduled fault slots — the run then fails the 5-fired-events
+    assert even though playback recovered. Once the relaunched player has
+    settled, re-post the UNFIRED remainder of the schedule shifted to
+    start 90s out (original spacing preserved) and stretch the window so
+    every fault still fires and gets measured. Skipped when the events
+    log is unreadable — double-posting a fired fault would break the
+    count the other way. Returns the updated (rearms, window_end).
+    """
+    fired = _fired_fault_types(schedule_post_t_wall)
+    remaining = _unfired_schedule_events(schedule, fired) if fired is not None else []
+    if not remaining or rearms >= 3:
+        return rearms, window_end
+    base = remaining[0]["at_seconds"]
+    shifted = [
+        {
+            "at_seconds": 90.0 + (e["at_seconds"] - base),
+            "fault_type": e["fault_type"],
+        }
+        for e in remaining
+    ]
+    try:
+        _post_schedule(shifted)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[extreme] re-arm failed: {exc}")
+        return rearms, window_end
+    window_end = max(window_end, time.monotonic() + shifted[-1]["at_seconds"] + 240)
+    print(
+        "[extreme] re-armed {} unfired fault(s) "
+        "(re-arm {} of 3, fired so far: {})".format(
+            len(shifted), rearms + 1, len(fired)
+        )
+    )
+    return rearms + 1, window_end
+
+
 def _kodi_rpc(method: str, params: dict | None = None, request_id: int = 1) -> dict:
     body = json.dumps(
         {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": request_id}
@@ -721,6 +819,8 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     window_end = time.monotonic() + 1200
     player_gone_since = None
     relaunches = 0
+    rearms = 0
+    rearm_check_after = None
     try:
         while time.monotonic() < window_end:
             time.sleep(5)
@@ -730,6 +830,13 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                 active = None  # Kodi down/restarting
             if active:
                 player_gone_since = None
+                if rearm_check_after is not None and time.monotonic() >= (
+                    rearm_check_after
+                ):
+                    rearm_check_after = None
+                    rearms, window_end = _rearm_unfired_faults(
+                        schedule, schedule_post_t_wall, rearms, window_end
+                    )
                 continue
             now = time.monotonic()
             if player_gone_since is None:
@@ -774,6 +881,10 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             except Exception as exc:  # noqa: BLE001
                 print(f"[extreme] relaunch failed: {exc}")
             player_gone_since = None
+            # Once the relaunched player has been back and stable for a
+            # bit, check whether the outage swallowed fault slots and
+            # re-arm them (see the re-arm block above).
+            rearm_check_after = time.monotonic() + 45
     finally:
         poller.stop()
         poller.join(timeout=5)
