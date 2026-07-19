@@ -92,6 +92,14 @@
          203.9s, runs 2026-07-18T21-48-42Z and 23-05-22Z) while the
          later kill always finds a warm mirror and cuts over in <1s. -->
     <setting id="fallback_submit_delay">10</setting>
+    <!-- 20s patient-stall budget (schema default: 120s). The patience
+         exists for slow real-world backends; here the upstream is LAN
+         nzbdav, so a stall that long only ever means a KILLED source.
+         At 120s a dead-source session burned ~2 min before the retry
+         ladder/relaunch could act, pushing source_dead recoveries to
+         181-204s against the 180s resume window (seed 202607182,
+         attempts 20/21 + loop-attempt 5). -->
+    <setting id="passthrough_stall_wait">20</setting>
     <setting id="proxy_convert_subs">true</setting>
     <setting id="force_remux_threshold_mb">15000</setting>
     <setting id="strict_contract_mode">1</setting>
