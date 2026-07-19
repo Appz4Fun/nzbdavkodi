@@ -427,6 +427,36 @@ _TV_SERIES = {
 }
 
 
+def _failed_release_names() -> set:
+    """Series release names with a Failed ingest in nzbdav history.
+
+    A release that repeatedly fails ingest (missing articles) can never
+    start playback; picking an episode whose top-ranked row is such a
+    release burns a whole attempt/relaunch learning nothing (E19's NF
+    UBWEB: 28 Failed entries, picked as the 4th failover of seed
+    202607184's cascade). Fail-open to an empty set.
+    """
+    base = os.environ.get("NZBDAV_URL", "").rstrip("/")
+    api_key = os.environ.get("NZBDAV_API_KEY", "")
+    if not base or not api_key:
+        return set()
+    try:
+        with urllib.request.urlopen(
+            f"{base}/api?mode=history&output=json&limit=200&apikey={api_key}",
+            timeout=10,
+        ) as resp:
+            slots = json.loads(resp.read()).get("history", {}).get("slots", [])
+    except Exception:  # noqa: BLE001
+        return set()
+    series_token = _TV_SERIES["title"].replace(" ", ".").lower()
+    return {
+        str(slot.get("name", ""))
+        for slot in slots
+        if str(slot.get("status", "")) == "Failed"
+        and str(slot.get("name", "")).lower().startswith(series_token)
+    }
+
+
 def _completed_episode_numbers() -> set:
     """Episode numbers of this series already Completed in nzbdav history.
 
@@ -527,6 +557,7 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
     for scan_pass in range(1, 4):
         rng.shuffle(episodes)
         ingested = _completed_episode_numbers()
+        dead_names = _failed_release_names()
         best = None  # (cluster_len, ingested_flag, pool_len, ep, filtered)
         for ep in episodes[:8]:
             try:
@@ -556,6 +587,17 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
                     last_error = (
                         f"E{ep:02d}: filtered={pool} cluster={cluster} "
                         f"(dropped {len(wrong_show)} wrong-show)"
+                    )
+                    continue
+                # The runtime addon auto-selects the same top-ranked row;
+                # if that release has already Failed ingest, playback can
+                # never start — skip the episode.
+                top_title = str(filtered[0].get("title", ""))
+                if top_title in dead_names:
+                    last_error = f"E{ep:02d}: top pick is a known-Failed release"
+                    print(
+                        f"[extreme] E{ep:02d}: skipped (top pick "
+                        f"known-Failed: {top_title[:60]})"
                     )
                     continue
                 warm = 1 if ep in ingested else 0
