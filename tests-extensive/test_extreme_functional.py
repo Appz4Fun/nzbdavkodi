@@ -871,8 +871,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                 if play_time is None:
                     pass  # RPC hiccup: leave the stuck tracker as-is
                 elif (
-                    last_play_time is not None
-                    and abs(play_time - last_play_time) < 0.3
+                    last_play_time is not None and abs(play_time - last_play_time) < 0.3
                 ):
                     if play_time_stuck_since is None:
                         play_time_stuck_since = stuck_now
