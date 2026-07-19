@@ -274,6 +274,86 @@ def _rearm_unfired_faults(
     return rearms + 1, window_end, shifted[-1]["at_seconds"]
 
 
+def _proxy_bytes_forwarded() -> int | None:
+    """Total bytes the fault proxy has forwarded, or None on error."""
+    try:
+        with urllib.request.urlopen(
+            f"http://localhost:{FAULT_PROXY_CONTROL_HOST_PORT}/control/health",
+            timeout=5,
+        ) as resp:
+            return int(json.loads(resp.read()).get("bytes_forwarded", 0))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _playback_liveness_check(active: list, lv: dict) -> list:
+    """Return ``active`` emptied when playback is provably bogus or stuck.
+
+    Three failure shapes the plain active-player check cannot see, each
+    routed into the relaunch path by emptying ``active`` (``lv`` is the
+    watchdog's tracker dict, mutated in place):
+
+    - BOGUS playback: Kodi advancing its clock at speed 1 on locally-
+      fabricated data while consuming ZERO upstream bytes (attempt-11
+      run-1: 50 min of "playback" after recovery_exhausted with no
+      proxy traffic). The fault proxy's bytes_forwarded counter is
+      ground truth; no forwarded bytes for 180s = not real playback,
+      and the zombie player is stopped explicitly.
+    - WEDGED player: answers GetActivePlayers but errors on
+      GetProperties forever — a sustained error streak, not a hiccup.
+    - FROZEN playback time: >75s without movement (beyond any healthy
+      in-window recovery pause) while claiming to be active.
+    """
+    now = time.monotonic()
+    proxy_bytes = _proxy_bytes_forwarded()
+    if proxy_bytes is not None:
+        if proxy_bytes != lv["bytes"]:
+            lv["bytes"] = proxy_bytes
+            lv["bytes_mono"] = now
+        elif now - lv["bytes_mono"] >= 180:
+            print(
+                "[extreme] player active but no proxy bytes forwarded "
+                "for {:.0f}s — bogus playback, stopping player".format(
+                    now - lv["bytes_mono"]
+                )
+            )
+            lv["bytes_mono"] = now
+            try:
+                _kodi_rpc("Player.Stop", {"playerid": active[0]["playerid"]})
+            except Exception:  # noqa: BLE001
+                pass
+            return []
+    play_time = _active_play_time_seconds(active)
+    if play_time is None:
+        lv["err_streak"] += 1
+        if lv["err_streak"] >= 6:
+            print(
+                "[extreme] player active but properties unreadable for "
+                "{} polls — treating as gone".format(lv["err_streak"])
+            )
+            lv["err_streak"] = 0
+            lv["stuck_mono"] = None
+            lv["last_time"] = None
+            return []
+        return active
+    lv["err_streak"] = 0
+    if lv["last_time"] is not None and abs(play_time - lv["last_time"]) < 0.3:
+        if lv["stuck_mono"] is None:
+            lv["stuck_mono"] = now
+        elif now - lv["stuck_mono"] >= 75:
+            print(
+                "[extreme] player active but playback time frozen "
+                "{:.0f}s — treating as gone".format(now - lv["stuck_mono"])
+            )
+            lv["stuck_mono"] = None
+            lv["last_time"] = None
+            return []
+    else:
+        lv["stuck_mono"] = None
+        lv["last_time"] = play_time
+    return active
+
+
 def _active_play_time_seconds(active: list) -> float | None:
     """Current playback position of the first active player, or None."""
     try:
@@ -898,15 +978,17 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     # happened. Updated on every successful re-arm.
     sched_final_at = schedule[-1]["at_seconds"]
     sched_posted_mono = time.monotonic()
-    # Stuck-active detector: Kodi can report an ACTIVE player whose
-    # playback time is frozen forever (stalled on a dead stream after
-    # churn). That state passes the active check, so re-arms fire but
-    # no eligible traffic ever reaches the proxy — attempt-9 run-1 sat
-    # active-but-stuck for ~50 minutes through three re-arms. Playback
-    # time frozen >75s (beyond any healthy in-window recovery pause)
-    # is treated as player-gone so the relaunch path takes over.
-    last_play_time = None
-    play_time_stuck_since = None
+    # Liveness tracker for _playback_liveness_check: proxy-bytes ground
+    # truth (bogus playback), frozen playback time, and sustained
+    # GetProperties error streaks each route the player into the
+    # relaunch path instead of silently absorbing re-arms.
+    liveness = {
+        "bytes": None,
+        "bytes_mono": time.monotonic(),
+        "last_time": None,
+        "stuck_mono": None,
+        "err_streak": 0,
+    }
     try:
         while time.monotonic() < window_end:
             time.sleep(5)
@@ -915,28 +997,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             except Exception:  # noqa: BLE001
                 active = None  # Kodi down/restarting
             if active:
-                stuck_now = time.monotonic()
-                play_time = _active_play_time_seconds(active)
-                if play_time is None:
-                    pass  # RPC hiccup: leave the stuck tracker as-is
-                elif (
-                    last_play_time is not None and abs(play_time - last_play_time) < 0.3
-                ):
-                    if play_time_stuck_since is None:
-                        play_time_stuck_since = stuck_now
-                    elif stuck_now - play_time_stuck_since >= 75:
-                        print(
-                            "[extreme] player active but playback time "
-                            "frozen {:.0f}s — treating as gone".format(
-                                stuck_now - play_time_stuck_since
-                            )
-                        )
-                        play_time_stuck_since = None
-                        last_play_time = None
-                        active = []
-                else:
-                    play_time_stuck_since = None
-                    last_play_time = play_time
+                active = _playback_liveness_check(active, liveness)
             if active:
                 player_gone_since = None
                 overdue = time.monotonic() - sched_posted_mono > sched_final_at + 90

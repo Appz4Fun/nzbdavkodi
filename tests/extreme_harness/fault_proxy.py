@@ -110,6 +110,14 @@ class ProxyState:
         # for them gets an immediate 404, so the addon must cut over to
         # a standby source to keep playing.
         self.dead_paths: set = set()
+        # Total content bytes forwarded to clients — the harness
+        # watchdog's ground truth for whether playback is consuming
+        # real upstream data (never reset; the watchdog tracks deltas).
+        self.bytes_forwarded: int = 0
+
+    def add_bytes_forwarded(self, count: int) -> None:
+        with self.lock:
+            self.bytes_forwarded += count
 
     def reset_clock(self) -> None:
         with self.lock:
@@ -535,7 +543,19 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/control/health":
-            body = json.dumps({"status": "ok"}).encode("utf-8")
+            # bytes_forwarded lets the harness watchdog spot BOGUS
+            # playback: Kodi advancing its clock on locally-fabricated
+            # data (zero-fill style) while no upstream bytes flow.
+            with self.state.lock:
+                forwarded = self.state.bytes_forwarded
+                fired = len(self.state.fired_events)
+            body = json.dumps(
+                {
+                    "status": "ok",
+                    "bytes_forwarded": forwarded,
+                    "fired": fired,
+                }
+            ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -776,6 +796,7 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 break
             sent += len(chunk)
+            self.state.add_bytes_forwarded(len(chunk))
             if throttle_until and time.monotonic() < throttle_until:
                 time.sleep(max(1024, SLOW_BPS // 10) / SLOW_BPS)
         resp.close()
