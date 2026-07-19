@@ -347,6 +347,46 @@ _TV_SERIES = {
 }
 
 
+def _completed_episode_numbers() -> set:
+    """Episode numbers of this series already Completed in nzbdav history.
+
+    A failover pick that lands on a never-ingested episode pays a full
+    multi-GB download before playback returns (~209s outage, seed
+    202607184/attempt-10); an already-ingested episode resolves via
+    history adoption in seconds. Fail-open to an empty set — preference
+    only, never a gate.
+    """
+    import re as _re
+
+    base = os.environ.get("NZBDAV_URL", "").rstrip("/")
+    api_key = os.environ.get("NZBDAV_API_KEY", "")
+    if not base or not api_key:
+        return set()
+    try:
+        with urllib.request.urlopen(
+            f"{base}/api?mode=history&output=json&limit=120&apikey={api_key}",
+            timeout=10,
+        ) as resp:
+            slots = json.loads(resp.read()).get("history", {}).get("slots", [])
+    except Exception:  # noqa: BLE001
+        return set()
+    completed = set()
+    series_token = _TV_SERIES["title"].replace(" ", ".").lower()
+    for slot in slots:
+        name = str(slot.get("name", ""))
+        if str(slot.get("status", "")) != "Completed":
+            continue
+        # startswith, not contains: The Rookie's identically-titled
+        # EPISODE embeds this series' name mid-string and would mark
+        # its episode number as ingested.
+        if not name.lower().startswith(series_token):
+            continue
+        match = _re.search(r"S0*{}E(\d+)".format(_TV_SERIES["season"]), name)
+        if match:
+            completed.add(int(match.group(1)))
+    return completed
+
+
 def _mirror_cluster_len(filtered):
     """Size of the largest byte-identical mirror cluster in a pool.
 
@@ -406,7 +446,8 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
     # run on one bad window.
     for scan_pass in range(1, 4):
         rng.shuffle(episodes)
-        best = None  # (cluster_len, pool_len, ep, filtered)
+        ingested = _completed_episode_numbers()
+        best = None  # (cluster_len, ingested_flag, pool_len, ep, filtered)
         for ep in episodes[:8]:
             try:
                 results, error = search_hydra(
@@ -437,14 +478,22 @@ def _pick_episode_with_mirror_pool(rng: random.Random, settings, exclude=frozens
                         f"(dropped {len(wrong_show)} wrong-show)"
                     )
                     continue
-                print(f"[extreme] E{ep:02d}: pool={pool} mirror_cluster={cluster}")
-                if best is None or (cluster, pool) > (best[0], best[1]):
-                    best = (cluster, pool, ep, filtered)
+                warm = 1 if ep in ingested else 0
+                print(
+                    f"[extreme] E{ep:02d}: pool={pool} "
+                    f"mirror_cluster={cluster} ingested={bool(warm)}"
+                )
+                # Same-size clusters tiebreak toward already-ingested
+                # episodes: those resolve via history adoption in
+                # seconds, while a fresh episode pays a full multi-GB
+                # download before playback returns.
+                if best is None or (cluster, warm, pool) > (best[0], best[1], best[2]):
+                    best = (cluster, warm, pool, ep, filtered)
             except Exception as exc:  # noqa: BLE001
                 last_error = f"E{ep:02d}: {exc}"
                 continue
         if best is not None:
-            return best[2], best[3]
+            return best[3], best[4]
         if scan_pass < 3:
             print(
                 f"[extreme] scan pass {scan_pass}: no mirror pool "
