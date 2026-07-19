@@ -871,16 +871,19 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             if now - player_gone_since < 20 or relaunches >= 8:
                 continue
             relaunches += 1
-            # After two failed same-movie relaunches, fail over to a
-            # DIFFERENT movie: a source_dead may have killed a primary
-            # whose only standby is a poisoned release (a mislabeled NZB
-            # carrying different content — seen live: a 'Modern Times'
-            # post whose storage held Monsters University), which no
-            # amount of relaunching can fix. A fresh movie restores
-            # eligible traffic so the remaining faults still fire.
+            # Fail over to a DIFFERENT target when (a) two same-target
+            # relaunches already failed (a poisoned release — a
+            # mislabeled NZB carrying different content — which no
+            # amount of relaunching can fix), or (b) any source_dead
+            # has FIRED: the fault permanently 404s the current
+            # target's path at the proxy, so a same-target relaunch
+            # resolves straight back into the dead path and burns a
+            # full relaunch cycle learning nothing (seed 202607184:
+            # two dead E18 relaunches inside a 209s outage).
             relaunch_target = target
             relaunch_label = target_label
-            if relaunches > 2:
+            fired_types = _fired_fault_types(schedule_post_t_wall) or []
+            if relaunches > 2 or "source_dead" in fired_types:
                 try:
                     relaunch_target, relaunch_label, _pool = _pick_target(
                         frozenset(tried_targets)
