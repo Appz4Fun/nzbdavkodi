@@ -419,6 +419,16 @@ def test_detect_content_type_avi():
     assert sp._detect_content_type("http://host/film.avi") == "video/x-msvideo"
 
 
+def test_detect_content_type_mpegts():
+    # .ts/.m2ts are MPEG-TS, not MP4 -- a wrong hint here confuses Kodi's
+    # demuxer selection for raw Blu-ray stream files served through the proxy.
+    from resources.lib.stream_proxy import StreamProxy
+
+    sp = StreamProxy.__new__(StreamProxy)
+    assert sp._detect_content_type("http://host/file.ts") == "video/mp2t"
+    assert sp._detect_content_type("http://host/00000.m2ts") == "video/mp2t"
+
+
 # ---------------------------------------------------------------------------
 # StreamProxy lifecycle
 # ---------------------------------------------------------------------------
