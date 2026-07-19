@@ -863,7 +863,12 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             if player_gone_since is None:
                 player_gone_since = now
                 continue
-            if now - player_gone_since < 20 or relaunches >= 4:
+            # 8 lives: the exit-255 death can strike several times per
+            # run; at cap the player stays gone, and the overdue re-arm
+            # (which needs an ACTIVE player) can never recover the
+            # remaining fault slots (attempt-6 run-1 burned all 4 and
+            # finished 4/5).
+            if now - player_gone_since < 20 or relaunches >= 8:
                 continue
             relaunches += 1
             # After two failed same-movie relaunches, fail over to a
@@ -885,7 +890,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                     print(f"[extreme] failover pick failed: {exc}")
             print(
                 "[extreme] player gone {:.0f}s — relaunching playback "
-                "({} of 4, target: {})".format(
+                "({} of 8, target: {})".format(
                     now - player_gone_since, relaunches, relaunch_label
                 )
             )
