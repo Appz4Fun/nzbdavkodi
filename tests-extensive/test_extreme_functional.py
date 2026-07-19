@@ -274,6 +274,24 @@ def _rearm_unfired_faults(
     return rearms + 1, window_end, shifted[-1]["at_seconds"]
 
 
+def _active_play_time_seconds(active: list) -> float | None:
+    """Current playback position of the first active player, or None."""
+    try:
+        props = _kodi_rpc(
+            "Player.GetProperties",
+            {"playerid": active[0]["playerid"], "properties": ["time"]},
+        ).get("result", {})
+        tm = props.get("time") or {}
+        return (
+            tm.get("hours", 0) * 3600.0
+            + tm.get("minutes", 0) * 60.0
+            + tm.get("seconds", 0)
+            + tm.get("milliseconds", 0) / 1000.0
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _kodi_rpc(method: str, params: dict | None = None, request_id: int = 1) -> dict:
     body = json.dumps(
         {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": request_id}
@@ -831,6 +849,15 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     # happened. Updated on every successful re-arm.
     sched_final_at = schedule[-1]["at_seconds"]
     sched_posted_mono = time.monotonic()
+    # Stuck-active detector: Kodi can report an ACTIVE player whose
+    # playback time is frozen forever (stalled on a dead stream after
+    # churn). That state passes the active check, so re-arms fire but
+    # no eligible traffic ever reaches the proxy — attempt-9 run-1 sat
+    # active-but-stuck for ~50 minutes through three re-arms. Playback
+    # time frozen >75s (beyond any healthy in-window recovery pause)
+    # is treated as player-gone so the relaunch path takes over.
+    last_play_time = None
+    play_time_stuck_since = None
     try:
         while time.monotonic() < window_end:
             time.sleep(5)
@@ -838,6 +865,30 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                 active = _kodi_rpc("Player.GetActivePlayers").get("result", [])
             except Exception:  # noqa: BLE001
                 active = None  # Kodi down/restarting
+            if active:
+                stuck_now = time.monotonic()
+                play_time = _active_play_time_seconds(active)
+                if play_time is None:
+                    pass  # RPC hiccup: leave the stuck tracker as-is
+                elif (
+                    last_play_time is not None
+                    and abs(play_time - last_play_time) < 0.3
+                ):
+                    if play_time_stuck_since is None:
+                        play_time_stuck_since = stuck_now
+                    elif stuck_now - play_time_stuck_since >= 75:
+                        print(
+                            "[extreme] player active but playback time "
+                            "frozen {:.0f}s — treating as gone".format(
+                                stuck_now - play_time_stuck_since
+                            )
+                        )
+                        play_time_stuck_since = None
+                        last_play_time = None
+                        active = []
+                else:
+                    play_time_stuck_since = None
+                    last_play_time = play_time
             if active:
                 player_gone_since = None
                 overdue = time.monotonic() - sched_posted_mono > sched_final_at + 90
