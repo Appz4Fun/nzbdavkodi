@@ -1218,12 +1218,16 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             ev["resume_seconds"] is not None
         ), f"event {ev['fault_index']} ({ev['fault_type']}) never resumed"
         fault_t = ev.get("fault_t_wall") or 0
-        tainted = any(fault_t <= rl <= fault_t + 360 for rl in relaunch_walls)
-        bound = 300.0 if tainted else 180.0
+        # Each rig death in the outage costs ~90-110s (respawn + gone-
+        # detect + fresh-target resolve), and deaths can cascade: a
+        # triple-strike ran 326s (seed 202607189). Scale the allowance
+        # per death instead of assuming at most two, capped at 480s.
+        deaths = sum(1 for rl in relaunch_walls if fault_t <= rl <= fault_t + 600)
+        bound = min(180.0 + 110.0 * deaths, 480.0)
         assert ev["resume_seconds"] <= bound, (
             f"event {ev['fault_index']} ({ev['fault_type']}) resume "
             f"{ev['resume_seconds']:.2f}s > {bound:.0f}s "
-            f"(kodi_death_tainted={tainted})"
+            f"(kodi_deaths_in_window={deaths})"
         )
 
     max_resume = os.environ.get("EXTREME_MAX_RESUME_SECONDS")
