@@ -233,22 +233,24 @@ def _rearm_unfired_faults(
     schedule_post_t_wall: float,
     rearms: int,
     window_end: float,
-) -> tuple[int, float]:
+) -> tuple[int, float, float]:
     """Re-post unfired fault slots after a playback outage, if any.
 
     A Kodi death (exit-255 class) or an ineligible-traffic stretch can
     swallow scheduled fault slots — the run then fails the 5-fired-events
     assert even though playback recovered. Once the relaunched player has
-    settled, re-post the UNFIRED remainder of the schedule shifted to
-    start 90s out (original spacing preserved) and stretch the window so
-    every fault still fires and gets measured. Skipped when the events
-    log is unreadable — double-posting a fired fault would break the
-    count the other way. Returns the updated (rearms, window_end).
+    settled (or the posted schedule has gone overdue), re-post the
+    UNFIRED remainder shifted to start 90s out (original spacing
+    preserved) and stretch the window so every fault still fires and
+    gets measured. Skipped when the events log is unreadable —
+    double-posting a fired fault would break the count the other way.
+    Returns (rearms, window_end, posted_final_at); ``posted_final_at``
+    is the re-posted batch's last at_seconds (0.0 when nothing posted).
     """
     fired = _fired_fault_types(schedule_post_t_wall)
     remaining = _unfired_schedule_events(schedule, fired) if fired is not None else []
     if not remaining or rearms >= 3:
-        return rearms, window_end
+        return rearms, window_end, 0.0
     base = remaining[0]["at_seconds"]
     shifted = [
         {
@@ -261,7 +263,7 @@ def _rearm_unfired_faults(
         _post_schedule(shifted)
     except Exception as exc:  # noqa: BLE001
         print(f"[extreme] re-arm failed: {exc}")
-        return rearms, window_end
+        return rearms, window_end, 0.0
     window_end = max(window_end, time.monotonic() + shifted[-1]["at_seconds"] + 240)
     print(
         "[extreme] re-armed {} unfired fault(s) "
@@ -269,7 +271,7 @@ def _rearm_unfired_faults(
             len(shifted), rearms + 1, len(fired)
         )
     )
-    return rearms + 1, window_end
+    return rearms + 1, window_end, shifted[-1]["at_seconds"]
 
 
 def _kodi_rpc(method: str, params: dict | None = None, request_id: int = 1) -> dict:
@@ -821,6 +823,14 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     relaunches = 0
     rearms = 0
     rearm_check_after = None
+    # Overdue watch: faults can also starve WITHOUT a relaunch trigger
+    # (an ineligible-traffic stretch, or a re-armed batch that only
+    # partially fired — http_500 needs a fresh request start). Track when
+    # the most recently POSTED schedule should have fully fired; once
+    # it is 90s overdue, probe and re-arm even though no relaunch
+    # happened. Updated on every successful re-arm.
+    sched_final_at = schedule[-1]["at_seconds"]
+    sched_posted_mono = time.monotonic()
     try:
         while time.monotonic() < window_end:
             time.sleep(5)
@@ -830,13 +840,24 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                 active = None  # Kodi down/restarting
             if active:
                 player_gone_since = None
-                if rearm_check_after is not None and time.monotonic() >= (
-                    rearm_check_after
+                overdue = time.monotonic() - sched_posted_mono > sched_final_at + 90
+                if overdue or (
+                    rearm_check_after is not None
+                    and time.monotonic() >= rearm_check_after
                 ):
                     rearm_check_after = None
-                    rearms, window_end = _rearm_unfired_faults(
+                    prior_rearms = rearms
+                    rearms, window_end, posted_final = _rearm_unfired_faults(
                         schedule, schedule_post_t_wall, rearms, window_end
                     )
+                    if rearms != prior_rearms:
+                        sched_final_at = posted_final
+                        sched_posted_mono = time.monotonic()
+                    elif overdue:
+                        # Nothing unfired (or log unreadable): push the
+                        # overdue horizon out so the probe doesn't run
+                        # on every 5s tick.
+                        sched_posted_mono = time.monotonic() - sched_final_at
                 continue
             now = time.monotonic()
             if player_gone_since is None:
