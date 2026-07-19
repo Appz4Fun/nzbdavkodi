@@ -178,6 +178,22 @@ def test_make_playable_listitem_detects_mime_with_fragment(mock_xbmc, mock_gui):
     mock_li.setMimeType.assert_called_with("video/mp4")
 
 
+@patch("resources.lib.resolver.xbmcgui")
+@patch("resources.lib.resolver.xbmc")
+def test_make_playable_listitem_detects_mpegts_mime(mock_xbmc, mock_gui):
+    # Raw Blu-ray stream files (.m2ts) and .ts must not fall through to the
+    # MKV default -- that mime mismatch confuses Kodi's demuxer selection.
+    mock_li = MagicMock()
+    mock_gui.ListItem.return_value = mock_li
+
+    _make_playable_listitem("http://webdav/00000.m2ts", {})
+    mock_li.setMimeType.assert_called_with("video/mp2t")
+
+    mock_li.reset_mock()
+    _make_playable_listitem("http://webdav/movie.ts", {})
+    mock_li.setMimeType.assert_called_with("video/mp2t")
+
+
 @patch("urllib.request.urlopen")
 def test_validate_stream_url_catches_http_protocol_exception(mock_urlopen):
     from http.client import BadStatusLine

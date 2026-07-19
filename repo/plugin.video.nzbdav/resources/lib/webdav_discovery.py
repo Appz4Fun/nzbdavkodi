@@ -29,7 +29,7 @@ import xbmc
 from resources.lib import webdav_match
 
 _WEBDAV_SUBDIR_SCAN_WORKERS = 4
-_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
+_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".m2ts", ".wmv", ".mov")
 _DAV_NS = {"D": "DAV:"}
 
 

@@ -284,4 +284,6 @@ class _MgrProbeMixin:  # pylint: disable=too-few-public-methods
             return "video/mp4"
         if lower.endswith(".avi"):
             return "video/x-msvideo"
+        if lower.endswith((".ts", ".m2ts")):
+            return "video/mp2t"
         return "video/mp4"
