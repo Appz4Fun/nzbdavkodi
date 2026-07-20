@@ -179,10 +179,10 @@ class PlayerPoller(threading.Thread):
 # Measurement search window per fault. Deliberately wider than the
 # 180s pass bound the extreme test asserts for pure-addon recoveries:
 # an event whose outage contains rig-specific Kodi PROCESS DEATHS
-# (exit-255, absent on production hardware) is allowed up to 480s by
-# the test (110s per death), so measurement must keep looking past
+# (exit-255, absent on production hardware) is allowed up to 820s by
+# the test (160s per death), so measurement must keep looking past
 # 180s to report the actual resume instead of "never resumed".
-RESUME_WINDOW_SECONDS = 520.0
+RESUME_WINDOW_SECONDS = 860.0
 
 
 def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
