@@ -108,9 +108,13 @@ FAULT_TYPES = [
     "corrupted_bytes",
 ]
 # Kills the currently-streaming file path permanently (404), forcing the
-# addon to promote a prevalidated standby. Two per schedule exercises
-# consecutive fallback cutovers (the pick guarantees >=2 standbys).
-_SOURCE_DEAD_COUNT = 2
+# addon to promote a prevalidated standby. Four per schedule exercises
+# consecutive fallback cutovers (mirror promotion, then cross-release /
+# fresh-target failovers as each active path is killed in turn).
+_SOURCE_DEAD_COUNT = 4
+# Total scheduled faults per run: the 4 source_dead cutover forcers
+# plus 3 recoverable faults sampled from FAULT_TYPES.
+_SCHEDULE_EVENT_COUNT = 7
 # source_dead slots must land after the prewarm burst has armed the
 # standbys (playback + 120s, plus submit/prevalidate time).
 _SOURCE_DEAD_MIN_AT = 240
@@ -388,7 +392,7 @@ def _kodi_rpc(method: str, params: dict | None = None, request_id: int = 1) -> d
 
 
 def _generate_fault_schedule(rng: random.Random) -> list[dict]:
-    """5 events: 3 recoverable faults + 2 source_dead cutover forcers.
+    """7 events: 3 recoverable faults + 4 source_dead cutover forcers.
 
     Times land in [60, 1020] with >=90s spacing (a source_dead cutover
     needs runway to complete before the next event). source_dead events
@@ -396,13 +400,13 @@ def _generate_fault_schedule(rng: random.Random) -> list[dict]:
     already armed the standbys they force promotion onto.
     """
     while True:
-        candidates = sorted(rng.sample(range(60, 1000), 5))
+        candidates = sorted(rng.sample(range(60, 1000), _SCHEDULE_EVENT_COUNT))
         if all(b - a >= 90 for a, b in zip(candidates, candidates[1:])):
             late_slots = [t for t in candidates if _SOURCE_DEAD_MIN_AT <= t <= 900]
             if len(late_slots) >= _SOURCE_DEAD_COUNT:
                 break
     dead_slots = set(rng.sample(late_slots, _SOURCE_DEAD_COUNT))
-    recoverable = rng.sample(FAULT_TYPES, 5 - _SOURCE_DEAD_COUNT)
+    recoverable = rng.sample(FAULT_TYPES, _SCHEDULE_EVENT_COUNT - _SOURCE_DEAD_COUNT)
     schedule = []
     for t in candidates:
         if t in dead_slots:
@@ -1197,9 +1201,9 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     )
 
     # Assertions (observability mode: only check basics + opt-in bounds)
-    assert (
-        len(fault_events) == 5
-    ), f"expected 5 fault events, proxy log has {len(fault_events)}"
+    assert len(fault_events) == len(schedule), (
+        f"expected {len(schedule)} fault events, " f"proxy log has {len(fault_events)}"
+    )
     assert len(correlated) == len(
         fault_events
     ), "expected {} correlated events, got {}".format(
