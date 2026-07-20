@@ -1073,12 +1073,15 @@ def test_extreme_fallback_run(stack_ready, run_dir):
             if player_gone_since is None:
                 player_gone_since = now
                 continue
-            # 8 lives: the exit-255 death can strike several times per
+            # 16 lives: the exit-255 death can strike several times per
             # run; at cap the player stays gone, and the overdue re-arm
             # (which needs an ACTIVE player) can never recover the
-            # remaining fault slots (attempt-6 run-1 burned all 4 and
-            # finished 4/5).
-            if now - player_gone_since < 20 or relaunches >= 8:
+            # remaining fault slots (attempt-6 run-1 burned all 4 of the
+            # old cap and finished 4/5). _SOURCE_DEAD_COUNT doubling to
+            # 4 roughly doubles the relaunch-transition surface a death
+            # can land on, so the budget doubles too (soak50 attempt-1
+            # run-12: 5 deaths exhausted 8 lives, 3/7 faults stranded).
+            if now - player_gone_since < 20 or relaunches >= 16:
                 continue
             relaunches += 1
             relaunch_walls.append(time.time())
@@ -1104,7 +1107,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                     print(f"[extreme] failover pick failed: {exc}")
             print(
                 "[extreme] player gone {:.0f}s — relaunching playback "
-                "({} of 8, target: {})".format(
+                "({} of 16, target: {})".format(
                     now - player_gone_since, relaunches, relaunch_label
                 )
             )
