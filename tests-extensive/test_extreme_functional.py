@@ -1002,7 +1002,7 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     )
     poller.start()
 
-    # 20-minute measured window with a relaunch watchdog: this container's
+    # 40-minute measured window with a relaunch watchdog: this container's
     # Kodi sporadically dies (exit 255, no signal, no OOM — a rig-specific
     # kill with no obtainable trace) during retry/re-resolve GUI
     # transitions after hard faults. supervisord respawns it in ~2s; when
@@ -1011,7 +1011,15 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     # MEASURED as a long freeze instead of starving the remaining faults.
     # Production CoreELEC does not exhibit the 255 death; its numbers
     # would only be better.
-    window_end = time.monotonic() + 1200
+    # 40-minute baseline (doubled from 20): the relaunch budget doubled
+    # to 16 lives for the doubled cutover schedule, and each relaunch
+    # cycle (>=20s gone-detection + RPC + settle) consumes real wall
+    # time — a death cluster that legitimately needs most of the 16-life
+    # budget must also have the clock to use it. soak50 attempt-2
+    # run-32: an 8-relaunch cluster (half the budget, 2/3 re-arm slots
+    # used) still hit window_end one event short, never reaching the
+    # 3rd re-arm attempt though its slot was free.
+    window_end = time.monotonic() + 2400
     player_gone_since = None
     relaunches = 0
     rearms = 0
