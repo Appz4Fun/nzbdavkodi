@@ -265,7 +265,16 @@ _FOLDER_TOTAL_INCOMPLETE = -1
 # Video extensions summed by the folder-total walk. Kept module-level so the
 # per-href video test below stays a one-liner (the genuine size accounting
 # lives in ``_folder_total_video_size``).
-_FOLDER_TOTAL_VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
+_FOLDER_TOTAL_VIDEO_EXTENSIONS = (
+    ".mkv",
+    ".mp4",
+    ".avi",
+    ".m4v",
+    ".ts",
+    ".m2ts",
+    ".wmv",
+    ".mov",
+)
 
 
 def _folder_total_resource_key(resource_path):

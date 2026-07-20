@@ -23,7 +23,7 @@ import xbmcvfs
 import resources.lib.nzbget_resolver as _core  # noqa: F401  pylint: disable=unused-import
 from resources.lib.episode_inventory import build_video_inventory
 
-VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
+VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".m2ts", ".wmv", ".mov")
 
 
 def nzbget_smb_target(smb_root, dest_dir, category="", completed_base=""):

@@ -608,6 +608,8 @@ def _video_mime_for_path(path):
         return "video/mp4"
     if path.endswith(".avi"):
         return "video/x-msvideo"
+    if path.endswith((".ts", ".m2ts")):
+        return "video/mp2t"
     return "video/x-matroska"
 
 

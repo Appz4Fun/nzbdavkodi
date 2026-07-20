@@ -203,6 +203,28 @@ def test_resolve_smb_video_keeps_literal_spaces_unencoded_in_returned_url():
     )
 
 
+def test_resolve_smb_video_recognizes_raw_bluray_stream_file():
+    # Full Blu-ray disc rips (e.g. scene "-BLoz" releases) commonly land the
+    # main title as a raw .m2ts stream (e.g. "00000.m2ts") rather than a
+    # remuxed .mkv/.mp4. If .m2ts isn't a recognized video extension, the
+    # NZBGet completed-history reuse probe never finds it and the resolver
+    # falls through to re-submitting an already-downloaded release.
+    xbmcvfs = sys.modules["xbmcvfs"]
+
+    def fake_stat(path):
+        st = MagicMock()
+        st.st_size.return_value = 9000 if path.endswith("00000.m2ts") else 10
+        return st
+
+    with patch.object(
+        xbmcvfs, "listdir", return_value=([], ["00000.m2ts"])
+    ), patch.object(xbmcvfs, "Stat", side_effect=fake_stat):
+        url = resolve_smb_video(
+            "smb://host/downloads/Battle.Royale.2000-BLoz", monitor=_Monitor()
+        )
+    assert url == "smb://host/downloads/Battle.Royale.2000-BLoz/00000.m2ts"
+
+
 def test_resolve_smb_video_selects_requested_episode_over_largest():
     xbmcvfs = sys.modules["xbmcvfs"]
     files = ["Spider-Noir.S01E01.mkv", "Spider-Noir.S01E05.mkv"]
