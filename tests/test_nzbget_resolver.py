@@ -187,9 +187,15 @@ def test_resolve_smb_video_keeps_literal_spaces_unencoded_in_returned_url():
         st.st_size.return_value = 9000
         return st
 
+    def fake_file(path):
+        assert " " in path, "the readability probe must receive the raw path"
+        handle = MagicMock()
+        handle.readBytes.return_value = b"data"
+        return handle
+
     with patch.object(xbmcvfs, "listdir", side_effect=fake_listdir), patch.object(
         xbmcvfs, "Stat", side_effect=fake_stat
-    ):
+    ), patch.object(xbmcvfs, "File", side_effect=fake_file):
         url = resolve_smb_video(folder, monitor=_Monitor())
     assert url == (
         "smb://host/completed/Logan 2017 2160p WEB-DL DV HDR-FLUX/"
