@@ -139,7 +139,6 @@ from resources.lib.router_poster import (  # noqa: F401
 from resources.lib.router_scriptplay import (  # noqa: F401
     _script_play_auto_select,
     _script_play_filter_autoselect_tag,
-    _script_play_filtered_or_prompt,
     _script_play_log_route,
     _script_play_picker_and_resolve,
     _script_play_recover_episode_info,
@@ -778,9 +777,9 @@ def _handle_script_play(params):
     )
     if prepared is None:
         return
-    filtered, total_count, completed_jobs = prepared
+    filtered, all_rows, total_count, completed_jobs = prepared
     _script_play_picker_and_resolve(
-        params, filtered, title, year, total_count, completed_jobs
+        params, filtered, all_rows, title, year, total_count, completed_jobs
     )
 
 
