@@ -111,7 +111,6 @@ from resources.lib.router_play import (  # noqa: F401
     _attach_nzbget_dupe,
     _ensure_nzbget_completed_hint,
     _extract_search_params,
-    _filtered_or_prompt,
     _handle_play_auto_select,
     _handle_play_filter_and_select,
     _handle_play_resolve_selection,

@@ -1772,7 +1772,6 @@ def test_handle_play_pack_keeps_unfiltered_providers_separately_selectable():
     ) as dialog, patch(
         "xbmcaddon.Addon"
     ) as addon:
-        prompt.return_value.yesno.return_value = True
         addon.return_value.getSetting.return_value = "false"
         _handle_play_filter_and_select(
             7,
@@ -1783,10 +1782,17 @@ def test_handle_play_pack_keeps_unfiltered_providers_separately_selectable():
             pack_result=_local_pack_row(),
         )
 
+    # Every provider was filtered out: the filtered picker view holds only the
+    # local pack row, while the unfiltered providers stay reachable via the
+    # show-all toggle (the all_results kwarg). The old "show unfiltered?" yes/no
+    # prompt is gone -- the picker opens directly in show-all mode instead.
     displayed = dialog.call_args.args[0]
     assert displayed[0]["_season_pack"]["job_id"] == "41"
-    assert displayed[1:] == providers
-    prompt.return_value.yesno.assert_called_once()
+    assert displayed[1:] == []
+    all_rows = dialog.call_args.kwargs["all_results"]
+    assert all_rows[0]["_season_pack"]["job_id"] == "41"
+    assert all_rows[1:] == providers
+    prompt.assert_not_called()
 
 
 def test_handle_search_pack_keeps_unfiltered_providers_separately_selectable():
@@ -1804,7 +1810,6 @@ def test_handle_search_pack_keeps_unfiltered_providers_separately_selectable():
     ) as addon, patch(
         "xbmcplugin.endOfDirectory"
     ):
-        prompt.return_value.yesno.return_value = True
         addon.return_value.getSetting.return_value = "false"
         _handle_search_filter_and_select(
             7,
@@ -1816,10 +1821,17 @@ def test_handle_search_pack_keeps_unfiltered_providers_separately_selectable():
             pack_result=_local_pack_row(),
         )
 
+    # Every provider was filtered out: the filtered picker view holds only the
+    # local pack row, while the unfiltered providers stay reachable via the
+    # show-all toggle (the all_results kwarg). The old "show unfiltered?" yes/no
+    # prompt is gone -- the picker opens directly in show-all mode instead.
     displayed = dialog.call_args.args[0]
     assert displayed[0]["_season_pack"]["job_id"] == "41"
-    assert displayed[1:] == providers
-    prompt.return_value.yesno.assert_called_once()
+    assert displayed[1:] == []
+    all_rows = dialog.call_args.kwargs["all_results"]
+    assert all_rows[0]["_season_pack"]["job_id"] == "41"
+    assert all_rows[1:] == providers
+    prompt.assert_not_called()
 
 
 def test_script_play_pack_keeps_unfiltered_providers_separately_selectable():
