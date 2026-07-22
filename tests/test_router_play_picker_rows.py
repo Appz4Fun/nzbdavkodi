@@ -80,7 +80,7 @@ def test_prepare_picker_rows_prepends_pack_to_both_views():
 
 
 def test_deleted_prompt_helpers_are_gone():
-    import resources.lib.router_play as router_play
+    from resources.lib import router_play
 
     assert not hasattr(router_play, "_filtered_or_prompt")
     assert not hasattr(router_play, "_available_filtered_rows")
