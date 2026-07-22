@@ -7,6 +7,10 @@ from resources.lib.results_dialog import (
     _AVAILABLE_LABEL,
     _BG_A,
     _BG_B,
+    ACTION_CONTEXT_MENU,
+    ACTION_SELECT,
+    LIST_ID,
+    ResultsDialog,
     _available_text,
     _build_result_item,
     _format_date,
@@ -104,61 +108,172 @@ def test_ordinary_result_keeps_sdr_and_mkv_defaults():
 
 
 # ---------------------------------------------------------------------------
-# show_results_dialog
+# show_results_dialog (returns the selected dict from the dialog)
 # ---------------------------------------------------------------------------
 
 
 def test_show_results_dialog_returns_none_on_cancel():
-    """show_results_dialog returns None when user cancels (selected_index -1)."""
     results = [_make_result()]
-
     with patch("resources.lib.results_dialog.ResultsDialog") as MockDialog:
         mock_instance = MagicMock()
-        mock_instance.get_selected_index.return_value = -1
+        mock_instance.get_selected_result.return_value = None
         MockDialog.return_value = mock_instance
-
-        result = show_results_dialog(
-            results, title="Movie", year="2024", total_count=10
-        )
-        assert result is None
-
-
-def test_show_results_dialog_returns_selected():
-    """show_results_dialog returns selected result dict when user picks a row."""
-    selected = _make_result(link="http://nzb/123")
-    results = [selected]
-
-    with patch("resources.lib.results_dialog.ResultsDialog") as MockDialog:
-        mock_instance = MagicMock()
-        mock_instance.get_selected_index.return_value = 0
-        MockDialog.return_value = mock_instance
-
-        result = show_results_dialog(results, title="Movie", year="2024", total_count=1)
-        assert result == selected
-
-
-def test_show_results_dialog_calls_doModal():
-    """show_results_dialog must call doModal() on the dialog."""
-    results = [_make_result()]
-
-    with patch("resources.lib.results_dialog.ResultsDialog") as MockDialog:
-        mock_instance = MagicMock()
-        mock_instance.get_selected_index.return_value = -1
-        MockDialog.return_value = mock_instance
-
-        show_results_dialog(results)
+        assert show_results_dialog(results, title="Movie") is None
         mock_instance.doModal.assert_called_once()
 
 
-def test_show_results_dialog_empty_results_returns_none():
-    """show_results_dialog returns None for empty results list."""
+def test_show_results_dialog_returns_selected_dict():
+    selected = _make_result(link="http://nzb/123")
     with patch("resources.lib.results_dialog.ResultsDialog") as MockDialog:
         mock_instance = MagicMock()
-        mock_instance.get_selected_index.return_value = -1
+        mock_instance.get_selected_result.return_value = selected
         MockDialog.return_value = mock_instance
+        assert show_results_dialog([selected], title="Movie") is selected
 
-        result = show_results_dialog([], title="Movie", year="2024", total_count=0)
-        assert result is None
+
+def test_show_results_dialog_threads_all_results_kwarg():
+    results = [_make_result()]
+    all_results = [results[0], _make_result(title="Hidden.2024.720p")]
+    with patch("resources.lib.results_dialog.ResultsDialog") as MockDialog:
+        mock_instance = MagicMock()
+        mock_instance.get_selected_result.return_value = None
+        MockDialog.return_value = mock_instance
+        show_results_dialog(results, all_results=all_results)
+        assert MockDialog.call_args.kwargs["all_results"] is all_results
+
+
+# ---------------------------------------------------------------------------
+# ResultsDialog toggle behavior (real class via _FakeWindowXMLDialog)
+# ---------------------------------------------------------------------------
+
+
+class _Action:  # pylint: disable=too-few-public-methods
+    def __init__(self, action_id):
+        self._id = action_id
+
+    def getId(self):
+        return self._id
+
+
+def _make_dialog(results, all_results):
+    return ResultsDialog(
+        "results-dialog.xml",
+        "",
+        "Default",
+        "1080i",
+        results=results,
+        title="Movie",
+        year="2024",
+        total_count=len(all_results),
+        all_results=all_results,
+    )
+
+
+def _row(title, reject=None):
+    row = _make_result(title=title)
+    row["_filter_reject"] = reject
+    return row
+
+
+def test_dialog_opens_filtered_and_toggles_to_show_all():
+    kept = _row("Kept.2024.1080p.x265")
+    hidden = _row("Hidden.2024.1080p.x264", reject="codec")
+    dialog = _make_dialog([kept], [hidden, kept])
+    dialog.onInit()
+
+    list_control = dialog.getControl(LIST_ID)
+    first_items = list_control.addItems.call_args.args[0]
+    assert len(first_items) == 1
+    assert "1 of" in dialog.getProperty("filter_info")
+    assert "Show all (1 hidden)" in dialog.getProperty("footer_hints")
+
+    list_control.getSelectedPosition.return_value = 0
+    dialog.onAction(_Action(ACTION_CONTEXT_MENU))
+
+    second_items = list_control.addItems.call_args.args[0]
+    assert len(second_items) == 2
+    assert dialog.getProperty("filter_info") == "Showing all 2 sources (filters off)"
+    assert "Show filtered" in dialog.getProperty("footer_hints")
+    assert dialog._closed is False
+
+
+def test_toggle_preserves_focused_row_by_identity():
+    row_a = _row("A.2024.1080p.x265")
+    row_b = _row("B.2024.1080p.x265")
+    hidden = _row("H.2024.1080p.x264", reject="codec")
+    dialog = _make_dialog([row_a, row_b], [hidden, row_a, row_b])
+    dialog.onInit()
+
+    list_control = dialog.getControl(LIST_ID)
+    list_control.getSelectedPosition.return_value = 1  # row_b focused
+    dialog.onAction(_Action(ACTION_CONTEXT_MENU))
+    list_control.selectItem.assert_called_with(2)  # row_b's index in show-all
+
+
+def test_selection_from_show_all_returns_hidden_row():
+    kept = _row("Kept.2024.1080p.x265")
+    hidden = _row("Hidden.2024.1080p.x264", reject="codec")
+    dialog = _make_dialog([kept], [hidden, kept])
+    dialog.onInit()
+
+    list_control = dialog.getControl(LIST_ID)
+    list_control.getSelectedPosition.return_value = 0
+    dialog.onAction(_Action(ACTION_CONTEXT_MENU))  # now showing all
+    list_control.getSelectedPosition.return_value = 0  # the hidden row
+    dialog.onAction(_Action(ACTION_SELECT))
+
+    assert dialog.get_selected_result() is hidden
+    assert dialog._closed is True
+
+
+def test_context_menu_cancels_when_no_all_results():
+    kept = _row("Kept.2024.1080p.x265")
+    dialog = ResultsDialog(
+        "results-dialog.xml",
+        "",
+        "Default",
+        "1080i",
+        results=[kept],
+        title="Movie",
+        total_count=1,
+    )
+    dialog.onInit()
+    dialog.onAction(_Action(ACTION_CONTEXT_MENU))
+    assert dialog._closed is True
+    assert dialog.get_selected_result() is None
+
+
+def test_zero_survivors_opens_in_show_all_with_toggle_disabled():
+    hidden = _row("Hidden.2024.1080p.x264", reject="codec")
+    dialog = _make_dialog([], [hidden])
+    dialog.onInit()
+
+    items = dialog.getControl(LIST_ID).addItems.call_args.args[0]
+    assert len(items) == 1
+    assert dialog.getProperty("filter_info") == "Showing all 1 sources (filters off)"
+    assert (
+        dialog.getProperty("footer_hints") == "[Enter] Download & Play     [Esc] Back"
+    )
+    dialog.onAction(_Action(ACTION_CONTEXT_MENU))  # no toggle -> cancel
+    assert dialog._closed is True
+
+
+def test_build_result_item_sets_filter_reason_chip():
+    item = MagicMock()
+    result = _make_result()
+    result["_filter_reject"] = "codec"
+    with patch("resources.lib.results_dialog.xbmcgui.ListItem", return_value=item):
+        _build_result_item(result, 0)
+    item.setProperty.assert_any_call(
+        "filter_reason", "[COLOR FFFBBF24]FILTERED: codec[/COLOR]"
+    )
+
+
+def test_build_result_item_blank_filter_reason_for_kept_rows():
+    item = MagicMock()
+    with patch("resources.lib.results_dialog.xbmcgui.ListItem", return_value=item):
+        _build_result_item(_make_result(), 0)
+    item.setProperty.assert_any_call("filter_reason", "")
 
 
 # ---------------------------------------------------------------------------
