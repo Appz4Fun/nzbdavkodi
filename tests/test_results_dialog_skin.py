@@ -150,3 +150,26 @@ def test_focus_indicator_appearance_is_high_contrast_and_correctly_placed():
     bg = focused.find("./control[@type='image']")
     assert bg is not None
     assert children.index(accent) > children.index(bg)
+
+
+def test_results_dialog_row_layouts_render_filter_reason():
+    """Both row layouts must bind the FILTERED chip property on line 2."""
+    root = ET.parse(_DIALOG_XML_PATH).getroot()
+    results_list = _control(root, "list", "50")
+    assert results_list is not None, "results list control id=50 missing"
+    for layout_name in ("itemlayout", "focusedlayout"):
+        layout = results_list.find("./" + layout_name)
+        assert layout is not None, layout_name
+        labels = [
+            control.findtext("label")
+            for control in layout.findall("./control[@type='label']")
+        ]
+        assert "$INFO[ListItem.Property(filter_reason)]" in labels, layout_name
+
+
+def test_results_dialog_footer_hints_are_window_property_driven():
+    """Python owns the hint text so it can advertise the show-all toggle."""
+    root = ET.parse(_DIALOG_XML_PATH).getroot()
+    hints = _control(root, "label", "6")
+    assert hints is not None, "footer hints label id=6 missing"
+    assert hints.findtext("label") == "$INFO[Window.Property(footer_hints)]"
