@@ -38,6 +38,11 @@ _FALLBACK_STRINGS = {
     30110: "{} sources found",
     30111: "Sorted by relevance",
     30112: "Showing {} of {} sources after filters",
+    30367: "Showing all {} sources (filters off)",
+    30368: "[Enter] Download & Play     [C] Show all ({} hidden)     [Esc] Back",
+    30369: "[Enter] Download & Play     [C] Show filtered     [Esc] Back",
+    30370: "[Enter] Download & Play     [Esc] Back",
+    30371: "FILTERED: {}",
     # 30115/30116/30121 are surfaced from the service-side retry/error
     # handler when strings.po hasn't been loaded yet (early in service
     # startup). Without these, the user saw a blank notification body.
