@@ -178,11 +178,12 @@ class PlayerPoller(threading.Thread):
 # recovery or the measurement can never observe it.
 # Measurement search window per fault. Deliberately wider than the
 # 180s pass bound the extreme test asserts for pure-addon recoveries:
-# an event whose outage contains rig-specific Kodi PROCESS DEATHS
-# (exit-255, absent on production hardware) is allowed up to 820s by
-# the test (160s per death), so measurement must keep looking past
+# an event whose outage contains rig-specific relaunch churn (exit-255
+# crashes, or legitimate player-stops against standby-less targets
+# under back-to-back cutover load) is allowed up to 1000s by the test
+# (160s per relaunch in-window), so measurement must keep looking past
 # 180s to report the actual resume instead of "never resumed".
-RESUME_WINDOW_SECONDS = 860.0
+RESUME_WINDOW_SECONDS = 1040.0
 
 
 def correlate(timeline: list[dict], fault_events: list[dict]) -> list[dict]:
