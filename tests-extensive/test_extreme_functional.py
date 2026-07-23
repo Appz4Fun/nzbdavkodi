@@ -290,43 +290,52 @@ def _proxy_bytes_forwarded() -> int | None:
         return None
 
 
+def _proxy_traffic_stalled(lv: dict) -> bool:
+    """Return whether the proxy has forwarded no bytes for 180s+.
+
+    Ground-truth, ACTIVE-PLAYER-INDEPENDENT stall detector: called every
+    watchdog tick regardless of what ``Player.GetActivePlayers`` reports,
+    because that RPC's own truthiness gated the old bogus-playback check
+    (only run "if active:") and a Kodi-internal hang/flicker in the
+    active-player state can starve it for many minutes (soak50
+    attempt-1 run-5: 0 proxy requests for ~7 min while a "player gone
+    20s" relaunch never fired — GetActivePlayers apparently never
+    stayed reliably empty long enough to trip the plain gone-detector,
+    and the byte-stall check that SHOULD have caught it at 180s never
+    ran because it was nested under that same flaky truthiness).
+    """
+    now = time.monotonic()
+    proxy_bytes = _proxy_bytes_forwarded()
+    if proxy_bytes is None:
+        return False
+    if proxy_bytes != lv["bytes"]:
+        lv["bytes"] = proxy_bytes
+        lv["bytes_mono"] = now
+        return False
+    if now - lv["bytes_mono"] >= 180:
+        print(
+            "[extreme] no proxy bytes forwarded for {:.0f}s — "
+            "stream stalled, forcing gone-detection".format(now - lv["bytes_mono"])
+        )
+        lv["bytes_mono"] = now
+        return True
+    return False
+
+
 def _playback_liveness_check(active: list, lv: dict) -> list:
-    """Return ``active`` emptied when playback is provably bogus or stuck.
+    """Return ``active`` emptied when playback is provably stuck.
 
-    Three failure shapes the plain active-player check cannot see, each
+    Two failure shapes the plain active-player check cannot see, each
     routed into the relaunch path by emptying ``active`` (``lv`` is the
-    watchdog's tracker dict, mutated in place):
+    watchdog's tracker dict, mutated in place; the byte-stall shape is
+    handled separately by ``_proxy_traffic_stalled``, unconditionally):
 
-    - BOGUS playback: Kodi advancing its clock at speed 1 on locally-
-      fabricated data while consuming ZERO upstream bytes (attempt-11
-      run-1: 50 min of "playback" after recovery_exhausted with no
-      proxy traffic). The fault proxy's bytes_forwarded counter is
-      ground truth; no forwarded bytes for 180s = not real playback,
-      and the zombie player is stopped explicitly.
     - WEDGED player: answers GetActivePlayers but errors on
       GetProperties forever — a sustained error streak, not a hiccup.
     - FROZEN playback time: >75s without movement (beyond any healthy
       in-window recovery pause) while claiming to be active.
     """
     now = time.monotonic()
-    proxy_bytes = _proxy_bytes_forwarded()
-    if proxy_bytes is not None:
-        if proxy_bytes != lv["bytes"]:
-            lv["bytes"] = proxy_bytes
-            lv["bytes_mono"] = now
-        elif now - lv["bytes_mono"] >= 180:
-            print(
-                "[extreme] player active but no proxy bytes forwarded "
-                "for {:.0f}s — bogus playback, stopping player".format(
-                    now - lv["bytes_mono"]
-                )
-            )
-            lv["bytes_mono"] = now
-            try:
-                _kodi_rpc("Player.Stop", {"playerid": active[0]["playerid"]})
-            except Exception:  # noqa: BLE001
-                pass
-            return []
     play_time = _active_play_time_seconds(active)
     if play_time is None:
         lv["err_streak"] += 1
@@ -1032,10 +1041,11 @@ def test_extreme_fallback_run(stack_ready, run_dir):
     # happened. Updated on every successful re-arm.
     sched_final_at = schedule[-1]["at_seconds"]
     sched_posted_mono = time.monotonic()
-    # Liveness tracker for _playback_liveness_check: proxy-bytes ground
-    # truth (bogus playback), frozen playback time, and sustained
-    # GetProperties error streaks each route the player into the
-    # relaunch path instead of silently absorbing re-arms.
+    # Liveness tracker shared by _proxy_traffic_stalled (unconditional
+    # proxy-bytes ground truth) and _playback_liveness_check (frozen
+    # playback time, sustained GetProperties error streaks) — each
+    # routes the player into the relaunch path instead of silently
+    # absorbing re-arms or idling out the measured window.
     liveness = {
         "bytes": None,
         "bytes_mono": time.monotonic(),
@@ -1054,7 +1064,17 @@ def test_extreme_fallback_run(stack_ready, run_dir):
                 active = _kodi_rpc("Player.GetActivePlayers").get("result", [])
             except Exception:  # noqa: BLE001
                 active = None  # Kodi down/restarting
-            if active:
+            # Unconditional, active-independent: a wedged/flickering
+            # GetActivePlayers must not starve this check (see
+            # _proxy_traffic_stalled's docstring).
+            if _proxy_traffic_stalled(liveness):
+                if active:
+                    try:
+                        _kodi_rpc("Player.Stop", {"playerid": active[0]["playerid"]})
+                    except Exception:  # noqa: BLE001
+                        pass
+                active = []
+            elif active:
                 active = _playback_liveness_check(active, liveness)
             if active:
                 player_gone_since = None
