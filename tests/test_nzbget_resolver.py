@@ -167,6 +167,42 @@ def test_resolve_smb_video_returns_largest_file_url():
     assert url == "smb://host/completed/The.Movie/movie.mkv"
 
 
+def test_resolve_smb_video_keeps_literal_spaces_unencoded_in_returned_url():
+    # NZBGet's DestDir mirrors the NZB post title verbatim, so real release
+    # folders routinely contain literal spaces. Kodi's own SMB VFS percent-
+    # encodes the path internally before it hits the wire, so this module
+    # must NOT pre-encode: doing so double-encodes ("%20" becomes literal
+    # "%2520" on the wire) and 404s with "No such file or directory" even
+    # though the identical raw path lists/stats/reads fine through xbmcvfs.
+    xbmcvfs = sys.modules["xbmcvfs"]
+    folder = "smb://host/completed/Logan 2017 2160p WEB-DL DV HDR-FLUX"
+
+    def fake_listdir(path):
+        assert path == folder, "listdir must receive the raw, unencoded path"
+        return [], ["Logan 2017 2160p WEB-DL DV HDR-FLUX.mkv"]
+
+    def fake_stat(path):
+        assert " " in path, "the read/stat probe must receive the raw path"
+        st = MagicMock()
+        st.st_size.return_value = 9000
+        return st
+
+    def fake_file(path):
+        assert " " in path, "the readability probe must receive the raw path"
+        handle = MagicMock()
+        handle.readBytes.return_value = b"data"
+        return handle
+
+    with patch.object(xbmcvfs, "listdir", side_effect=fake_listdir), patch.object(
+        xbmcvfs, "Stat", side_effect=fake_stat
+    ), patch.object(xbmcvfs, "File", side_effect=fake_file):
+        url = resolve_smb_video(folder, monitor=_Monitor())
+    assert url == (
+        "smb://host/completed/Logan 2017 2160p WEB-DL DV HDR-FLUX/"
+        "Logan 2017 2160p WEB-DL DV HDR-FLUX.mkv"
+    )
+
+
 def test_resolve_smb_video_recognizes_raw_bluray_stream_file():
     # Full Blu-ray disc rips (e.g. scene "-BLoz" releases) commonly land the
     # main title as a raw .m2ts stream (e.g. "00000.m2ts") rather than a
