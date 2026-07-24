@@ -116,6 +116,22 @@ def _build_result_item(result, row_index):
     return li
 
 
+def _provider_only(results):
+    """``results`` with the synthetic local season-pack row excluded.
+
+    ``_prepend_pack`` inserts that row into both the filtered and
+    all-rows views, so it is always non-empty/truthy even when zero
+    online provider results survived filtering. Callers deciding
+    "did anything real pass the filters" must check this, not the raw
+    list.
+    """
+    return [
+        row
+        for row in results
+        if not (isinstance(row, dict) and row.get("_season_pack"))
+    ]
+
+
 class ResultsDialog(xbmcgui.WindowXMLDialog):
     """Full-screen NZB results selection dialog with a show-all toggle."""
 
@@ -125,7 +141,7 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
         self.title = kwargs.get("title", "")
         self.year = kwargs.get("year", "")
         self.total_count = kwargs.get("total_count", 0)
-        self.show_all = not self.results and bool(self.all_results)
+        self.show_all = not _provider_only(self.results) and bool(self.all_results)
         self.selected_result = None
         super().__init__(*args)
 

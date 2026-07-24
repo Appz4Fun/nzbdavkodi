@@ -197,6 +197,42 @@ def test_dialog_opens_filtered_and_toggles_to_show_all():
     assert dialog._closed is False
 
 
+def test_pack_only_with_zero_provider_survivors_opens_in_show_all():
+    """A synthetic pack row must not be mistaken for a surviving provider.
+
+    ``_prepend_pack`` puts the local pack row in both views; when every
+    ONLINE provider was filtered out, ``results`` still holds that one
+    pack row (non-empty), so a naive ``not results`` check would wrongly
+    stay in filtered mode instead of opening in show-all (#449 review).
+    """
+    pack = _make_result(
+        title="Already downloaded season pack",
+        _meta={},
+        _season_pack={"backend": "nzbdav", "job_id": "nzo-1"},
+    )
+    hidden = _row("Hidden.2024.1080p.x264", reject="codec")
+    dialog = _make_dialog([pack], [pack, hidden])
+    dialog.onInit()
+
+    assert dialog.show_all is True
+    items = dialog.getControl(LIST_ID).addItems.call_args.args[0]
+    assert len(items) == 2
+
+
+def test_pack_with_surviving_providers_still_opens_filtered():
+    """Sanity check: a pack row alongside a REAL surviving provider must
+    not trigger the zero-survivors show-all override."""
+    pack = _make_result(
+        title="Already downloaded season pack",
+        _meta={},
+        _season_pack={"backend": "nzbdav", "job_id": "nzo-1"},
+    )
+    kept = _row("Kept.2024.1080p.x265")
+    dialog = _make_dialog([pack, kept], [pack, kept])
+
+    assert dialog.show_all is False
+
+
 def test_toggle_preserves_focused_row_by_identity():
     row_a = _row("A.2024.1080p.x265")
     row_b = _row("B.2024.1080p.x265")
