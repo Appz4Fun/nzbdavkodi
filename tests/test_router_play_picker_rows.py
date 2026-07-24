@@ -84,3 +84,119 @@ def test_deleted_prompt_helpers_are_gone():
 
     assert not hasattr(router_play, "_filtered_or_prompt")
     assert not hasattr(router_play, "_available_filtered_rows")
+
+
+# ---------------------------------------------------------------------------
+# Resolution/fallback pool stays scoped to `filtered`, never the all-rows
+# superset (#449 review: a same-titled repost can still fail the SIZE filter
+# even though title-derived fields like codec/resolution can't differ, so
+# widening the auto-select/backup pool to all_rows could let a filter-
+# rejected upload back in as an automatic fallback the user never chose).
+# The dialog's all_results kwarg and DL-availability tagging are unaffected
+# by this — those stay on the all-rows superset (Task 3-6 behavior).
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.router_play._handle_play_auto_select")
+@patch("xbmcaddon.Addon")
+def test_handle_play_auto_select_pool_excludes_filtered_rows(
+    mock_addon_cls, mock_auto_select
+):
+    from resources.lib.router_play import _handle_play_filter_and_select
+
+    mock_addon_cls.return_value.getSetting.side_effect = lambda key: (
+        "true" if key == "auto_select_best" else "false"
+    )
+    kept = [_result("Kept.1080p.x265")]
+    hidden = [_result("Hidden.1080p.x264", reject="codec")]
+    with patch(
+        "resources.lib.filter.filter_results",
+        return_value=_filter_results_stub(kept, hidden),
+    ):
+        _handle_play_filter_and_select(9, kept + hidden, "Movie", "2024", MagicMock())
+
+    mock_auto_select.assert_called_once()
+    pool_arg = mock_auto_select.call_args.args[2]
+    assert pool_arg == kept
+    assert hidden[0] not in pool_arg
+
+
+@patch("resources.lib.router_play._handle_play_resolve_selection")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("xbmcaddon.Addon")
+def test_handle_play_manual_selection_pool_excludes_filtered_rows(
+    mock_addon_cls, mock_dialog, mock_resolve_selection
+):
+    from resources.lib.router_play import _handle_play_filter_and_select
+
+    mock_addon_cls.return_value.getSetting.return_value = "false"
+    kept = [_result("Kept.1080p.x265")]
+    hidden = [_result("Hidden.1080p.x264", reject="codec")]
+    mock_dialog.return_value = kept[0]
+    with patch(
+        "resources.lib.filter.filter_results",
+        return_value=_filter_results_stub(kept, hidden),
+    ):
+        _handle_play_filter_and_select(9, kept + hidden, "Movie", "2024", MagicMock())
+
+    # The dialog itself still sees the full superset (unaffected by this fix).
+    assert mock_dialog.call_args.kwargs["all_results"] == kept + hidden
+
+    mock_resolve_selection.assert_called_once()
+    pool_arg = mock_resolve_selection.call_args.args[2]
+    assert pool_arg == kept
+    assert hidden[0] not in pool_arg
+
+
+@patch("resources.lib.router_play._handle_search_auto_select")
+@patch("xbmcaddon.Addon")
+def test_handle_search_auto_select_pool_excludes_filtered_rows(
+    mock_addon_cls, mock_auto_select
+):
+    from resources.lib.router_play import _handle_search_filter_and_select
+
+    mock_addon_cls.return_value.getSetting.side_effect = lambda key: (
+        "true" if key == "auto_select_best" else "false"
+    )
+    kept = [_result("Kept.1080p.x265")]
+    hidden = [_result("Hidden.1080p.x264", reject="codec")]
+    with patch(
+        "resources.lib.filter.filter_results",
+        return_value=_filter_results_stub(kept, hidden),
+    ):
+        _handle_search_filter_and_select(
+            9, {}, kept + hidden, "Movie", "2024", MagicMock()
+        )
+
+    mock_auto_select.assert_called_once()
+    pool_arg = mock_auto_select.call_args.args[2]
+    assert pool_arg == kept
+    assert hidden[0] not in pool_arg
+
+
+@patch("resources.lib.router_play._handle_search_resolve_selection")
+@patch("resources.lib.results_dialog.show_results_dialog")
+@patch("xbmcaddon.Addon")
+def test_handle_search_manual_selection_pool_excludes_filtered_rows(
+    mock_addon_cls, mock_dialog, mock_resolve_selection
+):
+    from resources.lib.router_play import _handle_search_filter_and_select
+
+    mock_addon_cls.return_value.getSetting.return_value = "false"
+    kept = [_result("Kept.1080p.x265")]
+    hidden = [_result("Hidden.1080p.x264", reject="codec")]
+    mock_dialog.return_value = kept[0]
+    with patch(
+        "resources.lib.filter.filter_results",
+        return_value=_filter_results_stub(kept, hidden),
+    ):
+        _handle_search_filter_and_select(
+            9, {}, kept + hidden, "Movie", "2024", MagicMock()
+        )
+
+    assert mock_dialog.call_args.kwargs["all_results"] == kept + hidden
+
+    mock_resolve_selection.assert_called_once()
+    pool_arg = mock_resolve_selection.call_args.args[2]
+    assert pool_arg == kept
+    assert hidden[0] not in pool_arg

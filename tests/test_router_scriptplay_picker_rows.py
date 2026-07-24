@@ -39,9 +39,9 @@ def test_available_rows_nothing_at_all_notifies_and_stops():
 
 
 def test_deleted_scriptplay_prompt_helper_is_gone():
-    import resources.lib.router_scriptplay as scriptplay
+    from resources.lib import router_scriptplay
 
-    assert not hasattr(scriptplay, "_script_play_filtered_or_prompt")
+    assert not hasattr(router_scriptplay, "_script_play_filtered_or_prompt")
 
 
 @patch("resources.lib.router_scriptplay._script_play_completed_jobs")
@@ -74,3 +74,51 @@ def test_picker_and_resolve_passes_all_results():
     ) as dialog:
         _script_play_picker_and_resolve({}, kept, all_rows, "Movie", "2000", 2, None)
     assert dialog.call_args.kwargs["all_results"] is all_rows
+
+
+# ---------------------------------------------------------------------------
+# Resolution/fallback pool stays scoped to `filtered`, never the all-rows
+# superset (#449 review: same reasoning as test_router_play_picker_rows.py's
+# equivalent block). The dialog's all_results kwarg and DL-availability
+# tagging are unaffected -- those stay on the all-rows superset.
+# ---------------------------------------------------------------------------
+
+
+@patch("resources.lib.router_scriptplay._script_play_auto_select")
+def test_filter_autoselect_tag_auto_select_pool_excludes_filtered_rows(
+    mock_auto_select,
+):
+    import resources.lib.router as _router
+
+    kept = [_result("Kept.1080p.x265")]
+    hidden = [_result("Hidden.1080p.x264", reject="codec")]
+    with patch(
+        "resources.lib.filter.filter_results", return_value=(kept, kept + hidden)
+    ), patch.object(_router, "_get_script_setting", lambda key, default="": "true"):
+        _script_play_filter_autoselect_tag(
+            None, {}, kept + hidden, "Movie", MagicMock(), pack_result=None
+        )
+
+    mock_auto_select.assert_called_once()
+    pool_arg = mock_auto_select.call_args.args[2]
+    assert pool_arg == kept
+    assert hidden[0] not in pool_arg
+
+
+@patch("resources.lib.router_scriptplay._script_play_resolve_selected")
+def test_picker_and_resolve_selection_pool_excludes_filtered_rows(mock_resolve):
+    kept = [_result("Kept.1080p.x265")]
+    hidden = [_result("Hidden.1080p.x264", reject="codec")]
+    all_rows = kept + hidden
+    with patch(
+        "resources.lib.results_dialog.show_results_dialog", return_value=kept[0]
+    ) as dialog:
+        _script_play_picker_and_resolve({}, kept, all_rows, "Movie", "2000", 2, None)
+
+    # The dialog itself still sees the full superset (unaffected by this fix).
+    assert dialog.call_args.kwargs["all_results"] == all_rows
+
+    mock_resolve.assert_called_once()
+    pool_arg = mock_resolve.call_args.args[2]
+    assert pool_arg == kept
+    assert hidden[0] not in pool_arg

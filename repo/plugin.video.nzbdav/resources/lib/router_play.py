@@ -350,7 +350,7 @@ def _handle_play_filter_and_select(
         _router._get_addon_setting(addon, "auto_select_best", "false").lower() == "true"
         and filtered
     ):
-        _handle_play_auto_select(handle, filtered[0], all_rows, identity)
+        _handle_play_auto_select(handle, filtered[0], filtered, identity)
         return
 
     # Tag results already downloaded in the active backend (nzbdav / NZBGet).
@@ -368,7 +368,7 @@ def _handle_play_filter_and_select(
 
     if selected:
         _handle_play_resolve_selection(
-            handle, selected, all_rows, completed_jobs, identity
+            handle, selected, filtered, completed_jobs, identity
         )
     else:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
@@ -795,7 +795,7 @@ def _handle_search_filter_and_select(
         _router._get_addon_setting(addon, "auto_select_best", "false").lower() == "true"
         and filtered
     ):
-        _handle_search_auto_select(params, filtered[0], all_rows)
+        _handle_search_auto_select(params, filtered[0], filtered)
         # Same hang class as C1 (router.py): /search is a directory route, so
         # Kodi blocks until endOfDirectory fires. Mark the directory as
         # not-succeeded since playback already ran via resolve_and_play.
@@ -826,7 +826,7 @@ def _handle_search_tag_and_picker(
     )
 
     if selected:
-        _handle_search_resolve_selection(params, selected, all_rows, completed_jobs)
+        _handle_search_resolve_selection(params, selected, filtered, completed_jobs)
 
     # Must end the directory or Kodi hangs
     xbmcplugin.endOfDirectory(handle, succeeded=False)

@@ -122,7 +122,7 @@ def _script_play_picker_and_resolve(
         _router._script_play_stage("picker cancelled")
         return
     _router._script_play_stage("picker selected")
-    _script_play_resolve_selected(params, selected, all_rows, completed_jobs)
+    _script_play_resolve_selected(params, selected, filtered, completed_jobs)
 
 
 def _script_play_search_results(
@@ -244,7 +244,7 @@ def _script_play_filter_autoselect_tag(
     ):
         # resolve_and_play blocks on the download; drop the indicator first.
         _router._close_loading_dialog(loading)
-        _script_play_auto_select(params, filtered[0], all_rows)
+        _script_play_auto_select(params, filtered[0], filtered)
         return None
 
     # Tag the all-rows superset so DL tags / completed-reuse stay valid for
