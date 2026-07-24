@@ -315,6 +315,11 @@ def matches_filters(result, meta, settings):
     return first_rejecting_filter(result, meta, settings) is None
 
 
+def _group_filter_passes(meta, settings):
+    excluded = settings["exclude_release_group"]
+    return not (meta["group"] and meta["group"].lower() in excluded)
+
+
 def first_rejecting_filter(result, meta, settings):
     """Name of the first filter that rejects this result, or ``None``.
 
@@ -322,23 +327,24 @@ def first_rejecting_filter(result, meta, settings):
     the reported reason is the filter that would have rejected first. The
     labels are technical tokens rendered verbatim in the picker's
     ``FILTERED:`` chip (not localized, mirroring the ASCII ``DL`` tag).
+
+    A table of lazy checks (rather than a chain of ``if`` statements) keeps
+    this function's own cyclomatic complexity low -- the branching lives in
+    each named predicate, which is measured separately.
     """
-    if not _resolution_filter_passes(meta, settings):
-        return "resolution"
-    if not _hdr_filter_passes(meta, settings):
-        return "HDR"
-    if not _audio_filter_passes(meta, settings):
-        return "audio"
-    if not _codec_filter_passes(meta, settings):
-        return "codec"
-    if not _language_filter_passes(meta, settings):
-        return "language"
-    if not _keyword_filters_pass(result["title"].lower(), settings):
-        return "keyword"
-    if meta["group"] and meta["group"].lower() in settings["exclude_release_group"]:
-        return "group"
-    if not _size_filter_passes(result, settings):
-        return "size"
+    checks = (
+        (lambda: _resolution_filter_passes(meta, settings), "resolution"),
+        (lambda: _hdr_filter_passes(meta, settings), "HDR"),
+        (lambda: _audio_filter_passes(meta, settings), "audio"),
+        (lambda: _codec_filter_passes(meta, settings), "codec"),
+        (lambda: _language_filter_passes(meta, settings), "language"),
+        (lambda: _keyword_filters_pass(result["title"].lower(), settings), "keyword"),
+        (lambda: _group_filter_passes(meta, settings), "group"),
+        (lambda: _size_filter_passes(result, settings), "size"),
+    )
+    for passes, label in checks:
+        if not passes():
+            return label
     return None
 
 
