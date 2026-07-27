@@ -67,9 +67,9 @@ reachability.
 ## NZBGet
 
 An alternative backend to nzbdav. When enabled, NZB-DAV downloads through NZBGet
-and plays from an SMB share. See [NZBGet backend](../features/nzbget-backend.md).
-The URL, username, password, category, and SMB fields appear only after you
-enable the backend.
+and plays from an SMB share or a local/mounted path. See [NZBGet backend](../features/nzbget-backend.md).
+The URL, username, password, category, and completed-folder fields appear only
+after you enable the backend.
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
@@ -78,9 +78,9 @@ enable the backend.
 | NZBGet Username | `nzbget_username` | `nzbget` | NZBGet control username. |
 | NZBGet Password | `nzbget_password` | *(empty)* | NZBGet control password. Stored hidden. |
 | NZBGet Category | `nzbget_category` | *(empty)* | Category to submit under; also used to locate the completed file. |
-| SMB Completed Folder | `nzbget_smb_root` | *(empty)* | SMB URL of NZBGet's completed-downloads base. |
+| Completed Folder (SMB or Local Path) | `nzbget_smb_root` | *(empty)* | `smb://` URL or local/mounted path of NZBGet's completed-downloads base. |
 
-**Actions:** *Test NZBGet Connection*, *Test SMB Share*.
+**Actions:** *Test NZBGet Connection*, *Test Completed Folder*.
 
 ## Indexers
 

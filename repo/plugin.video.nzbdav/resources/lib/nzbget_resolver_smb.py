@@ -29,7 +29,9 @@ VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".m2ts", ".wmv", ".mo
 def nzbget_smb_target(smb_root, dest_dir, category="", completed_base=""):
     """Map NZBGet's server-local DestDir onto the SMB root.
 
-    ``smb_root`` points at NZBGet's *completed* base dir, exposed over SMB.
+    ``smb_root`` points at NZBGet's *completed* base dir, exposed over SMB --
+    or, equally, a plain local/mounted absolute path standing in for it (an
+    NFS or local mount onto the same completed-downloads directory).
 
     Preferred mapping (exact): when ``completed_base`` (NZBGet's configured
     global completed DestDir) is known and is a prefix of ``dest_dir``, map the
@@ -285,18 +287,20 @@ def _smb_video_is_readable(path):
 
 
 def _warn_unreadable_smb_video(path):
-    """Log + toast that a visible video never became readable over SMB.
+    """Log + toast that a visible video never became readable.
 
     A selection that stays listable-but-unreadable past the resolve budget
-    is the stuck-session signature (Kodi's cached SMB session gets
+    is often the SMB stuck-session signature (Kodi's cached SMB session gets
     "Permission denied" while fresh sessions read the same file fine), so
-    name the fix instead of leaving only the generic no-video message.
+    name that fix instead of leaving only the generic no-video message --
+    ``path`` may equally be a local/mounted root, where the advice to
+    restart Kodi is still harmless even though there is no SMB session to
+    reset.
     """
     _core.xbmc.log(
-        "NZB-DAV: video is listable but not readable over SMB: {} -- if "
-        "this persists, restart Kodi to reset its cached SMB session".format(
-            _core._redact_text(path)
-        ),
+        "NZB-DAV: video is listable but not readable through Kodi's VFS: {} "
+        "-- if this persists, restart Kodi (for smb:// roots this resets "
+        "its cached SMB session)".format(_core._redact_text(path)),
         _core.xbmc.LOGERROR,
     )
     try:

@@ -541,6 +541,135 @@ def test_nzbget_reuse_preserves_valid_structured_smb_root_without_resubmitting(
     submit.assert_not_called()
 
 
+_LOCAL_COMPLETED_ROOTS = (
+    (
+        "/mnt/20tb/nzbget/downloads/tv/Show.S01",
+        "/mnt/20tb/nzbget/downloads",
+        "/storage/20tb/nzbget/downloads",
+        "/storage/20tb/nzbget/downloads/tv/Show.S01",
+    ),
+    (
+        "/mnt/20tb/nzbget/downloads/tv/Show.S01",
+        "/mnt/20tb/nzbget/downloads",
+        "/storage/20tb/nzbget/downloads/",
+        "/storage/20tb/nzbget/downloads/tv/Show.S01",
+    ),
+    (
+        r"C:\Downloads\shows\Show",
+        r"c:\downloads",
+        r"C:\completed",
+        "C:/completed/shows/Show",
+    ),
+    (
+        r"\\SERVER\Share\Downloads\Show",
+        r"\\server\share\downloads",
+        r"\\workstation\media\completed",
+        "//workstation/media/completed/Show",
+    ),
+    (
+        "/srv/base/Show",
+        "/srv/base",
+        "/mnt/My Media/completed",
+        "/mnt/My Media/completed/Show",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("native_folder", "completed_base", "smb_root", "expected"),
+    _LOCAL_COMPLETED_ROOTS,
+)
+def test_nzbget_cached_mapping_accepts_local_completed_roots(
+    native_folder, completed_base, smb_root, expected
+):
+    # An NFS/local mount standing in for the SMB share (e.g. a hard NFS mount
+    # that makes NZBGet's completed folder look like a plain local path):
+    # same cached-reuse fast path, just not an smb:// URL.
+    record = _record(folder=native_folder)
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": smb_root}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value=completed_base,
+    ):
+        assert season_pack_reuse._nzbget_folder_for_record(record, getter) == expected
+
+
+@pytest.mark.parametrize(
+    "smb_root",
+    [
+        "relative/path",
+        "/srv/base/../etc",
+        "/srv/./x",
+        "",
+        "/",
+        "nfs://server/export",
+        "smb:/host/share",
+    ],
+)
+def test_nzbget_cached_mapping_rejects_unsafe_local_roots(smb_root):
+    assert (
+        season_pack_reuse._exact_cached_smb_mapping(
+            smb_root,
+            "/srv/base/Show",
+            "/srv/base",
+        )
+        is None
+    )
+
+
+def test_nzbget_cached_mapping_deduplicates_category_on_local_root():
+    record = _record(folder="/srv/base/movies/Show")
+
+    def getter(key, default=""):
+        return {
+            "nzbget_smb_root": "/storage/dl/movies",
+            "nzbget_category": "movies",
+        }.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value="/srv/base",
+    ):
+        mapped = season_pack_reuse._nzbget_folder_for_record(record, getter)
+
+    assert mapped == "/storage/dl/movies/Show"
+
+
+def test_nzbget_reuse_preserves_local_root_without_resubmitting():
+    smb_root = "/storage/20tb/nzbget/downloads"
+    record = _record(folder="/srv/base/Show")
+    inventory = _Inventory("{}/Show/Spider-Noir.S01E01.mkv".format(smb_root))
+
+    def getter(key, default=""):
+        return {"nzbget_smb_root": smb_root}.get(key, default)
+
+    with patch(
+        "resources.lib.season_pack_reuse.nzbget_api.lookup_completed_job_exact",
+        return_value=ExactJobLookup.valid(
+            {"nzbid": "41", "dest_dir": "/srv/base/Show"}
+        ),
+    ), patch(
+        "resources.lib.season_pack_reuse.nzbget_api.completed_base_dir",
+        return_value="/srv/base",
+    ), patch(
+        "resources.lib.season_pack_reuse._smb_inventory", return_value=inventory
+    ) as scan, patch(
+        "resources.lib.season_pack_reuse.season_pack.upsert", return_value=True
+    ), patch(
+        "resources.lib.nzbget_api.append_nzb"
+    ) as submit:
+        result = season_pack_reuse.reuse_exact_job(
+            record, _context(), "nzbget", settings_getter=getter
+        )
+
+    assert result.state == "valid"
+    scan.assert_called_once_with("{}/Show".format(smb_root), requested_episode=(1, 1))
+    submit.assert_not_called()
+
+
 @pytest.mark.parametrize("smb_root", _AMBIGUOUS_SMB_ROOTS)
 def test_nzbget_reuse_rejects_ambiguous_smb_root_without_scan_or_delete(smb_root):
     record = _record(folder="/srv/base/Show")

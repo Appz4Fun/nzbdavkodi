@@ -172,8 +172,29 @@ def _smb_segment_safe(raw_segment):
     return "/" not in segment and "\\" not in segment
 
 
+def _safe_local_root(root):
+    """Canonical absolute native path for a local/mounted completed root.
+
+    The non-URL counterpart of the smb:// branch below: accepts the same
+    POSIX / Windows-drive / UNC shapes ``_canonical_native_path`` already
+    proves for ``dest_dir``/``completed_base``, rejecting relative paths and
+    ``.``/``..`` traversal. Requires at least one path segment so a bare
+    filesystem root can never become the join prefix.
+    """
+    canonical = _canonical_native_path(root)
+    if canonical is None or not canonical[2]:
+        return None
+    return canonical[0]
+
+
 def _safe_smb_root(value):
     root = str(value or "").strip().replace("\\", "/").rstrip("/")
+    if not root.casefold().startswith("smb://"):
+        # Not an smb:// root -- try it as a local/mounted completed path (an
+        # NFS/local mount standing in for the SMB share). Native paths may
+        # legitimately contain spaces, so the URL-ambiguity check below must
+        # not run against this branch.
+        return _safe_local_root(root)
     if _ambiguous_url_component(root):
         return None
     split_root = _split_smb_root(root)
@@ -228,7 +249,11 @@ def _without_duplicate_category(relative, smb_root, category):
 
 
 def _exact_cached_smb_mapping(smb_root, native_folder, completed_base, category=""):
-    """Map a canonical strict completed-base child without path traversal."""
+    """Map a canonical strict completed-base child without path traversal.
+
+    ``smb_root`` may be an ``smb://`` URL or an absolute native path (a
+    local disk path, or a local/NFS mount standing in for the SMB share).
+    """
     target = _canonical_native_path(native_folder)
     base = _canonical_native_path(completed_base)
     smb_root = _safe_smb_root(smb_root)
