@@ -39,8 +39,8 @@ You need only one of these to start. For details on how each behaves, see
 
 NZB-DAV can use **NZBGet** as the download and playback backend instead of
 nzbdav. In this mode NZB-DAV submits to NZBGet, waits for post-processing, and
-plays the finished file from an SMB share. The nzbdav streaming and fallback
-features don't apply in NZBGet mode. See [NZBGet backend](../features/nzbget-backend.md).
+plays the finished file from an SMB share or a local/mounted path. The nzbdav
+streaming and fallback features don't apply in NZBGet mode. See [NZBGet backend](../features/nzbget-backend.md).
 
 ## About dependencies
 

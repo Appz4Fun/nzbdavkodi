@@ -104,6 +104,27 @@ def test_smb_target_empty_destdir_returns_none():
     assert nzbget_smb_target("smb://host/completed", "") is None
 
 
+def test_smb_target_accepts_local_completed_root():
+    # A local/mounted path standing in for the SMB share (e.g. an NFS hard
+    # mount) works identically -- the mapping is pure string manipulation
+    # with no smb:// assumption.
+    target = nzbget_smb_target(
+        "/storage/20tb/nzbget/downloads",
+        "/mnt/20tb/nzbget/downloads/tv/Show.S01",
+        category="tv",
+        completed_base="/mnt/20tb/nzbget/downloads",
+    )
+    assert target == "/storage/20tb/nzbget/downloads/tv/Show.S01"
+
+
+def test_smb_target_accepts_local_completed_root_fallback_heuristic():
+    target = nzbget_smb_target(
+        "/storage/20tb/nzbget/downloads",
+        "/mnt/20tb/nzbget/downloads/Release",
+    )
+    assert target == "/storage/20tb/nzbget/downloads/Release"
+
+
 def test_pick_largest_video_chooses_biggest_video_extension():
     files = ["sample.mkv", "movie.mkv", "readme.txt"]
     sizes = {"sample.mkv": 50, "movie.mkv": 8000, "readme.txt": 1}

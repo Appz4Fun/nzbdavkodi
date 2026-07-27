@@ -2,14 +2,15 @@
 
 By default, NZB-DAV downloads and streams through nzbdav. As an alternative, it
 can use **NZBGet** as the backend: it submits the NZB to NZBGet, waits for
-NZBGet to download and post-process it, and then plays the finished file from an
-SMB share.
+NZBGet to download and post-process it, and then plays the finished file from
+a local/mounted path or an SMB share.
 
 !!! warning "NZBGet mode replaces the streaming pipeline"
     In NZBGet mode, the nzbdav-specific features don't apply. There's no live
     WebDAV streaming, no local stream proxy tiers, and no mid-playback stream
     switching. NZBGet fully downloads and post-processes the file first, then
-    you play it from the completed folder over SMB. Use this mode only if
+    you play it from the completed folder (a local/mounted path or an SMB
+    share). Use this mode only if
     NZBGet is your download client. Broken-download protection is provided by
     [Smart Duplicates failover](#smart-duplicates-failover) instead.
 
@@ -24,10 +25,10 @@ On the **NZBGet** tab:
 | **NZBGet Username** | `nzbget` | NZBGet control username. |
 | **NZBGet Password** | *(empty)* | NZBGet control password. |
 | **NZBGet Category** | *(empty)* | The category to submit under. NZBGet nests completed downloads in a category subfolder, and NZB-DAV uses this to find the file. |
-| **SMB Completed Folder** | *(empty)* | The SMB URL of NZBGet's completed downloads base, for example `smb://server/downloads/completed`. |
+| **Completed Folder (SMB or Local Path)** | *(empty)* | NZBGet's completed downloads base, for example `smb://server/downloads/completed` — or a local/mounted path (e.g. an NFS mount), for example `/storage/downloads/completed`. |
 
-Use **Test NZBGet Connection** to verify the control API, and **Test SMB Share**
-to verify the completed folder is reachable.
+Use **Test NZBGet Connection** to verify the control API, and **Test Completed
+Folder** to verify the completed folder is reachable.
 
 <!--
 Screenshot placeholder — Capture the NZBGet settings tab with the backend
@@ -44,9 +45,9 @@ flowchart LR
     B --> C[NZBGet downloads]
     C --> D[Post-processing<br/>par2 repair + unpack]
     D --> E{History status}
-    E -->|SUCCESS| F[Locate file on SMB share]
+    E -->|SUCCESS| F[Locate file on completed folder]
     E -->|WARNING/FAILED| G[Report failure]
-    F --> H[Kodi plays from SMB]
+    F --> H[Kodi plays from local path or SMB]
 ```
 
 - **Submission** uses NZBGet's JSON-RPC `append` method with HTTP Basic auth.
@@ -56,8 +57,9 @@ flowchart LR
   `SUCCESS` status. A `WARNING` result (including repairable or damaged
   downloads where repair didn't complete) is treated as failure, so you're never
   handed a corrupt file.
-- **File discovery** maps NZBGet's completed directory onto your SMB share,
-  accounting for the category subfolder, then scans for a playable video. For
+- **File discovery** maps NZBGet's completed directory onto your configured
+  completed folder (SMB share or local/mounted path), accounting for the
+  category subfolder, then scans for a playable video. For
   episode requests, reliably named files are matched to the exact requested
   season and episode instead of choosing the largest video in the folder.
 
@@ -122,11 +124,11 @@ season are also remembered as season packs. Later episode pickers place an
 that exact episode is present. The record is isolated by the `nzbget` backend,
 the exact NZBGet `NZBID`, and that job's `DestDir`; files from another job are
 never merged just because its name looks the same. Selecting the row validates
-that exact successful history item and SMB folder again, then plays the exact
-requested episode without a new submission.
+that exact successful history item and completed folder again, then plays the
+exact requested episode without a new submission.
 
 A confirmed missing job, changed folder, or reachable folder without the
-requested episode removes the stale record. Temporary NZBGet, SMB,
+requested episode removes the stale record. Temporary NZBGet, share/mount,
 authentication, or network errors fail that reuse attempt without erasing the
 record. Ordinary online results remain available in either case.
 
