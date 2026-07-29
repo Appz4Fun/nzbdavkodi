@@ -8,6 +8,7 @@ from unittest.mock import patch
 from resources.lib.filter import (
     _has_filter_metadata_shape,
     _sort_results,
+    filter_requested_content,
     filter_results,
     matches_filters,
     parse_title_metadata,
@@ -32,6 +33,40 @@ def _make_result(title, size="5000000000", pubdate="", link="http://example.com/
         "pubdate": pubdate,
         "age": "1 day",
     }
+
+
+def test_strict_identity_filter_rejects_wrong_title_episode_and_extras():
+    identity = {
+        "type": "episode",
+        "title": "The Good the Bad and the Ugly",
+        "year": "2025",
+        "season": "1",
+        "episode": "3",
+    }
+    wanted = _make_result(
+        "The.Good.the.Bad.and.the.Ugly.2025.S01E03.1080p.WEB-DL-GROUP"
+    )
+    rows = [
+        wanted,
+        _make_result(
+            "The.Rookie.S01E03.The.Good.the.Bad.and.the.Ugly.1080p.WEB-DL-GROUP"
+        ),
+        _make_result("The.Good.the.Bad.and.the.Ugly.2025.S01E04.1080p.WEB-DL-GROUP"),
+        _make_result("The.Good.the.Bad.and.the.Ugly.2025.S01E03.Behind.the.Scenes"),
+    ]
+    assert filter_requested_content(rows, identity) == [wanted]
+
+
+def test_strict_identity_filter_rejects_episode_and_wrong_year_for_movie():
+    identity = {"type": "movie", "title": "Interstellar", "year": "2014"}
+    wanted = _make_result("Interstellar.2014.1080p.BluRay-GROUP")
+    rows = [
+        wanted,
+        _make_result("Doctor.Who.S01E02.The.Interstellar.Song.Contest.1080p"),
+        _make_result("Interstellar.2025.1080p.WEB-DL-GROUP"),
+        _make_result("Another.Movie.2014.1080p.WEB-DL-GROUP"),
+    ]
+    assert filter_requested_content(rows, identity) == [wanted]
 
 
 def test_filter_uses_module_scope_kodi_imports():

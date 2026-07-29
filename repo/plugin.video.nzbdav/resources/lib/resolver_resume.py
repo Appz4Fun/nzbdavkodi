@@ -165,7 +165,7 @@ def _set_playback_monitor_properties(
 
 
 def _resolve_direct_no_proxy(
-    handle, stream_url, stream_headers, monitor_key, resume_seconds
+    handle, stream_url, stream_headers, monitor_key, resume_seconds, params=None
 ):
     """Resolve a direct (no service-proxy) stream and start handle playback."""
     bust_url = _resolver._cache_bust_url(stream_url)
@@ -185,7 +185,9 @@ def _resolve_direct_no_proxy(
     _resolver.xbmcplugin.setResolvedUrl(handle, True, li)
 
 
-def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0):
+def _finish_direct_playback(
+    handle, prepared, resume_key="", resume_seconds=0.0, params=None
+):
     """Finish resolver playback on the Kodi thread.
 
     ``resume_seconds`` is the already-chosen offset (the resume lookup/prompt
@@ -223,6 +225,7 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
             )
             bust_url = _resolver._cache_bust_url(stream_url)
             li = _resolver._make_playable_listitem(bust_url, stream_headers)
+            _resolver._apply_playback_identity(li, params)
             _apply_resume_start_offset(li, resume_seconds)
             play_url = _resolver._build_play_url(bust_url, stream_headers)
             _set_playback_monitor_properties(
@@ -234,6 +237,7 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
         li = _resolver.xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _resolver._apply_proxy_mime(li, stream_url, stream_info)
+        _resolver._apply_playback_identity(li, params)
         _apply_resume_start_offset(li, resume_seconds)
 
         _set_playback_monitor_properties(
@@ -243,11 +247,11 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
         return
 
     _resolve_direct_no_proxy(
-        handle, stream_url, stream_headers, monitor_key, resume_seconds
+        handle, stream_url, stream_headers, monitor_key, resume_seconds, params
     )
 
 
-def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
+def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0, params=None):
     """Finish service-side playback on the Kodi thread.
 
     ``resume_seconds`` is the already-chosen offset (the resume lookup/prompt
@@ -276,6 +280,7 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
             )
             bust_url = _resolver._cache_bust_url(stream_url)
             li = _resolver._make_playable_listitem(bust_url, stream_headers)
+            _resolver._apply_playback_identity(li, params)
             _apply_resume_start_offset(li, resume_seconds)
             play_url = _resolver._build_play_url(bust_url, stream_headers)
             _set_playback_monitor_properties(
@@ -287,6 +292,7 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
         li = _resolver.xbmcgui.ListItem(path=proxy_url)
         li.setContentLookup(False)
         _resolver._apply_proxy_mime(li, stream_url, stream_info)
+        _resolver._apply_playback_identity(li, params)
         _apply_resume_start_offset(li, resume_seconds)
         _set_playback_monitor_properties(
             home, proxy_url, stream_url, monitor_key, resume_seconds
@@ -297,6 +303,8 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
 
     bust_url = _resolver._cache_bust_url(stream_url)
     li = _resolver._make_playable_listitem(bust_url, stream_headers)
+    _resolver._apply_playback_identity(li, params)
+    _resolver._apply_playback_identity(li, params)
     _apply_resume_start_offset(li, resume_seconds)
     play_url = _resolver._build_play_url(bust_url, stream_headers)
     _resolver.xbmc.log(

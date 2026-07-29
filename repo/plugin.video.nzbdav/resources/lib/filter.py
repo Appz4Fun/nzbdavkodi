@@ -4,6 +4,7 @@
 """Result filtering and sorting using PTT for title parsing."""
 
 import math
+import re
 import time
 from copy import deepcopy
 from types import SimpleNamespace
@@ -512,6 +513,118 @@ def filter_results(results, settings_getter=None):
         shown=len(filtered),
     )
     return filtered, all_parsed
+
+
+_CONTENT_EXTRA_MARKERS = re.compile(
+    r"\b(?:behind[\W_]+the[\W_]+scenes|making[\W_]+of|featurette|"
+    r"documentary|interview|trailer|sample|extras?)\b",
+    re.I,
+)
+_SEASON_EPISODE_RE = re.compile(
+    r"(?<![A-Za-z0-9])S(\d{1,2})[\W_]*E(\d{1,3})(?![A-Za-z0-9])",
+    re.I,
+)
+_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+
+
+def _content_phrase_pattern(title):
+    """Return a boundary-safe release-title pattern for a requested title."""
+    words = re.findall(r"[A-Za-z0-9]+", str(title or "").lower())
+    words = [word for word in words if len(word) > 1 or word.isdigit()]
+    if not words:
+        return None
+    return re.compile(
+        r"(?<![A-Za-z0-9])"
+        + r"[\W_]+".join(re.escape(word) for word in words)
+        + r"(?![A-Za-z0-9])",
+        re.I,
+    )
+
+
+def _requested_episode_pair(identity):
+    """Return the requested numeric episode pair when both fields are valid."""
+    season = str(identity.get("season", "") or "")
+    episode = str(identity.get("episode", "") or "")
+    try:
+        return int(season), int(episode)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candidate_episode_pair(episode_match):
+    """Return the release's numeric episode pair when it has one."""
+    if episode_match is None:
+        return None
+    return int(episode_match.group(1)), int(episode_match.group(2))
+
+
+def _episode_identity_matches(candidate_title, phrase_match, identity):
+    """Return whether an episode candidate has the requested identity."""
+    episode_match = _SEASON_EPISODE_RE.search(candidate_title)
+    requested_pair = _requested_episode_pair(identity)
+    actual_pair = _candidate_episode_pair(episode_match)
+    if requested_pair is not None and actual_pair != requested_pair:
+        return False
+    # The requested show name must not occur only as another show's episode
+    # title (for example The.Rookie.S01E03.<requested title>).
+    if phrase_match is None or episode_match is None:
+        return True
+    return phrase_match.start() <= episode_match.start()
+
+
+def _media_type_matches(candidate_title, phrase_match, identity):
+    """Return whether movie/episode markers agree with the request."""
+    content_type = str(identity.get("type", "") or "").lower()
+    season = str(identity.get("season", "") or "")
+    episode = str(identity.get("episode", "") or "")
+    if content_type == "episode" or (season and episode):
+        return _episode_identity_matches(candidate_title, phrase_match, identity)
+    return content_type != "movie" or _SEASON_EPISODE_RE.search(candidate_title) is None
+
+
+def _year_matches(candidate_title, identity):
+    """Return whether an explicit release year agrees with the request."""
+    requested_year = str(identity.get("year", "") or "")
+    candidate_years = set(_YEAR_RE.findall(candidate_title))
+    return not (
+        requested_year and candidate_years and requested_year not in candidate_years
+    )
+
+
+def result_matches_requested_content(result, identity):
+    """Fail closed on an obvious wrong-title, movie, or episode result."""
+    if not isinstance(result, dict):
+        return False
+    candidate_title = str(result.get("title", "") or "")
+    phrase = _content_phrase_pattern(identity.get("title", ""))
+    phrase_match = phrase.search(candidate_title) if phrase is not None else None
+    if phrase is not None and phrase_match is None:
+        return False
+
+    if not _media_type_matches(candidate_title, phrase_match, identity):
+        return False
+    if not _year_matches(candidate_title, identity):
+        return False
+    return not _CONTENT_EXTRA_MARKERS.search(candidate_title)
+
+
+def filter_requested_content(results, identity):
+    """Keep only rows that strictly match the requested content identity."""
+    rows = results or []
+    requested_identity = identity or {}
+    matched = [
+        result
+        for result in rows
+        if result_matches_requested_content(result, requested_identity)
+    ]
+    rejected = len(rows) - len(matched)
+    if rejected:
+        xbmc.log(
+            "NZB-DAV: Strict identity filter rejected {} of {} candidates for "
+            "'{}'".format(rejected, len(rows), requested_identity.get("title", "")),
+            xbmc.LOGINFO,
+        )
+    return matched
 
 
 def _pubdate_sort_key(result):

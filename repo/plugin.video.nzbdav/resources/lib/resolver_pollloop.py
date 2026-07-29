@@ -81,6 +81,59 @@ def _wait_between_polls(monitor, wait_seconds, nzo_id, settings_getter):
     return _resolver._POLL_CONTINUE
 
 
+def _poll_observation_unavailable(job_status, history, webdav_error):
+    """Return whether every backend observation failed for this poll."""
+    return (
+        job_status is None
+        and history is None
+        and webdav_error in ("server_error", "connection_error")
+    )
+
+
+def _surface_poll_observation_timeout(nzo_id, settings_getter):
+    """Surface a bounded backend-observation failure without cancelling the job."""
+    message = _resolver._string(_resolver._ERROR_MESSAGES["connection_error"])
+    _resolver.xbmc.log(
+        "NZB-DAV: Backend state remained unavailable for {}s; "
+        "stopping local poll for nzo_id={} without cancelling the remote "
+        "job".format(_resolver._POLL_OBSERVABILITY_TIMEOUT_SECONDS, nzo_id),
+        _resolver.xbmc.LOGERROR,
+    )
+    if settings_getter is None:
+        _resolver.xbmcgui.Dialog().ok(_resolver._addon_name(), message)
+    else:
+        _resolver._notify(_resolver._addon_name(), message, 5000)
+
+
+def _advance_observation_outage(
+    started, elapsed, job_status, history, webdav_error, nzo_id, settings_getter
+):
+    """Advance or reset the bounded total-observation outage."""
+    if not _poll_observation_unavailable(job_status, history, webdav_error):
+        return -1.0, False
+    if started < 0:
+        started = elapsed
+    if elapsed - started < _resolver._POLL_OBSERVABILITY_TIMEOUT_SECONDS:
+        return started, False
+    _surface_poll_observation_timeout(nzo_id, settings_getter)
+    return started, True
+
+
+def _poll_history_kwargs(poll_ctx, monitor):
+    """Build history-resolution options for one poll."""
+    kwargs = {
+        "monitor": monitor,
+        "settings_getter": poll_ctx.settings_getter,
+        "modal_failures": poll_ctx.settings_getter is None,
+        "download_size": poll_ctx.download_size,
+    }
+    if poll_ctx.episode_context is not None:
+        kwargs["episode_context"] = poll_ctx.episode_context
+    elif poll_ctx.requested_episode is not None:
+        kwargs["requested_episode"] = poll_ctx.requested_episode
+    return kwargs
+
+
 def _notify_primary_submitted(on_primary_submitted, nzo_id):
     """Fire the primary-submitted callback, never letting it break the poll loop."""
     if on_primary_submitted is None:
@@ -185,18 +238,20 @@ def _poll_until_ready(
     no_video_retries = 0
     max_no_video_retries = 5
     near_complete_fast_repolls = 0
+    observation_error_started = -1.0
 
     def _mark_dead(nzo):
         if poll_ctx.dead is not None:
             poll_ctx.dead.add(nzb_url=nzb_url, nzo_id=nzo)
 
-    def _run_one_poll():
+    def _run_one_poll(elapsed):
         """Run one poll iteration.
 
         Returns the ``(stream_url, stream_headers)`` tuple to return from
         ``_poll_until_ready``, or ``_POLL_CONTINUE`` to keep looping.
         """
         nonlocal last_status, no_video_retries, near_complete_fast_repolls
+        nonlocal observation_error_started
         job_status, history, webdav_error = _resolver._poll_once(
             nzo_id,
             title,
@@ -213,16 +268,7 @@ def _poll_until_ready(
             _mark_dead_on_terminal_job_status(job_status, nzo_id, _mark_dead)
             return None, None
 
-        history_kwargs = {
-            "monitor": monitor,
-            "settings_getter": poll_ctx.settings_getter,
-            "modal_failures": poll_ctx.settings_getter is None,
-            "download_size": poll_ctx.download_size,
-        }
-        if poll_ctx.episode_context is not None:
-            history_kwargs["episode_context"] = poll_ctx.episode_context
-        elif poll_ctx.requested_episode is not None:
-            history_kwargs["requested_episode"] = poll_ctx.requested_episode
+        history_kwargs = _poll_history_kwargs(poll_ctx, monitor)
         should_stop, stream_url, stream_headers, no_video_retries = (
             _resolver._handle_history_result(
                 history, title, no_video_retries, max_no_video_retries, **history_kwargs
@@ -235,6 +281,18 @@ def _poll_until_ready(
             return stream_url, stream_headers
         if should_stop:
             _mark_dead_on_failed_history(history, nzo_id, _mark_dead)
+            return None, None
+
+        observation_error_started, observation_timed_out = _advance_observation_outage(
+            observation_error_started,
+            elapsed,
+            job_status,
+            history,
+            webdav_error,
+            nzo_id,
+            poll_ctx.settings_getter,
+        )
+        if observation_timed_out:
             return None, None
 
         if _resolver._handle_webdav_error(nzo_id, webdav_error):
@@ -260,6 +318,6 @@ def _poll_until_ready(
             iteration, elapsed, download_timeout, dialog, nzo_id, title
         ):
             return None, None
-        result = _run_one_poll()
+        result = _run_one_poll(elapsed)
         if result is not _resolver._POLL_CONTINUE:
             return result
