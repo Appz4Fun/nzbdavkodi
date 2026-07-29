@@ -541,20 +541,28 @@ def _content_phrase_pattern(title):
     )
 
 
-def _episode_identity_matches(candidate_title, phrase_match, identity):
-    """Return whether an episode candidate has the requested identity."""
+def _requested_episode_pair(identity):
+    """Return the requested numeric episode pair when both fields are valid."""
     season = str(identity.get("season", "") or "")
     episode = str(identity.get("episode", "") or "")
-    episode_match = _SEASON_EPISODE_RE.search(candidate_title)
     try:
-        requested_pair = (int(season), int(episode))
+        return int(season), int(episode)
     except (TypeError, ValueError):
-        requested_pair = None
-    actual_pair = (
-        (int(episode_match.group(1)), int(episode_match.group(2)))
-        if episode_match is not None
-        else None
-    )
+        return None
+
+
+def _candidate_episode_pair(episode_match):
+    """Return the release's numeric episode pair when it has one."""
+    if episode_match is None:
+        return None
+    return int(episode_match.group(1)), int(episode_match.group(2))
+
+
+def _episode_identity_matches(candidate_title, phrase_match, identity):
+    """Return whether an episode candidate has the requested identity."""
+    episode_match = _SEASON_EPISODE_RE.search(candidate_title)
+    requested_pair = _requested_episode_pair(identity)
+    actual_pair = _candidate_episode_pair(episode_match)
     if requested_pair is not None and actual_pair != requested_pair:
         return False
     # The requested show name must not occur only as another show's episode
