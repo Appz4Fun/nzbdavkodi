@@ -93,6 +93,8 @@ _POLL_NEAR_COMPLETE_FAST_REPOLL_SECONDS = 0.1
 
 _POLL_NEAR_COMPLETE_FAST_REPOLL_COUNT = 5
 
+_POLL_OBSERVABILITY_TIMEOUT_SECONDS = 60
+
 _PLAYBACK_CLEANUP_HANDOFF_GRACE_SECONDS = 0.25
 
 _PLAYBACK_PREPARE_HANDOFF_GRACE_SECONDS = 8.0
@@ -439,9 +441,11 @@ from resources.lib.resolver_pollloop import (  # noqa: E402,F401
     _mark_dead_on_failed_history,
     _mark_dead_on_terminal_job_status,
     _notify_primary_submitted,
+    _poll_observation_unavailable,
     _poll_until_ready,
     _record_download_soft,
     _submit_and_announce,
+    _surface_poll_observation_timeout,
     _wait_between_polls,
 )
 from resources.lib.resolver_prepare import (  # noqa: E402,F401

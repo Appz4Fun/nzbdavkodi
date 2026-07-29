@@ -81,6 +81,30 @@ def _wait_between_polls(monitor, wait_seconds, nzo_id, settings_getter):
     return _resolver._POLL_CONTINUE
 
 
+def _poll_observation_unavailable(job_status, history, webdav_error):
+    """Return whether every backend observation failed for this poll."""
+    return (
+        job_status is None
+        and history is None
+        and webdav_error in ("server_error", "connection_error")
+    )
+
+
+def _surface_poll_observation_timeout(nzo_id, settings_getter):
+    """Surface a bounded backend-observation failure without cancelling the job."""
+    message = _resolver._string(_resolver._ERROR_MESSAGES["connection_error"])
+    _resolver.xbmc.log(
+        "NZB-DAV: Backend state remained unavailable for {}s; "
+        "stopping local poll for nzo_id={} without cancelling the remote "
+        "job".format(_resolver._POLL_OBSERVABILITY_TIMEOUT_SECONDS, nzo_id),
+        _resolver.xbmc.LOGERROR,
+    )
+    if settings_getter is None:
+        _resolver.xbmcgui.Dialog().ok(_resolver._addon_name(), message)
+    else:
+        _resolver._notify(_resolver._addon_name(), message, 5000)
+
+
 def _notify_primary_submitted(on_primary_submitted, nzo_id):
     """Fire the primary-submitted callback, never letting it break the poll loop."""
     if on_primary_submitted is None:
@@ -185,18 +209,20 @@ def _poll_until_ready(
     no_video_retries = 0
     max_no_video_retries = 5
     near_complete_fast_repolls = 0
+    observation_error_started = None
 
     def _mark_dead(nzo):
         if poll_ctx.dead is not None:
             poll_ctx.dead.add(nzb_url=nzb_url, nzo_id=nzo)
 
-    def _run_one_poll():
+    def _run_one_poll(elapsed):
         """Run one poll iteration.
 
         Returns the ``(stream_url, stream_headers)`` tuple to return from
         ``_poll_until_ready``, or ``_POLL_CONTINUE`` to keep looping.
         """
         nonlocal last_status, no_video_retries, near_complete_fast_repolls
+        nonlocal observation_error_started
         job_status, history, webdav_error = _resolver._poll_once(
             nzo_id,
             title,
@@ -237,6 +263,18 @@ def _poll_until_ready(
             _mark_dead_on_failed_history(history, nzo_id, _mark_dead)
             return None, None
 
+        if _poll_observation_unavailable(job_status, history, webdav_error):
+            if observation_error_started is None:
+                observation_error_started = elapsed
+            if (
+                elapsed - observation_error_started
+                >= _resolver._POLL_OBSERVABILITY_TIMEOUT_SECONDS
+            ):
+                _surface_poll_observation_timeout(nzo_id, poll_ctx.settings_getter)
+                return None, None
+        else:
+            observation_error_started = None
+
         if _resolver._handle_webdav_error(nzo_id, webdav_error):
             # Deliberately NOT calling cancel_job here. The WebDAV auth
             # failure is an addon-side observation problem (the addon
@@ -260,6 +298,6 @@ def _poll_until_ready(
             iteration, elapsed, download_timeout, dialog, nzo_id, title
         ):
             return None, None
-        result = _run_one_poll()
+        result = _run_one_poll(elapsed)
         if result is not _resolver._POLL_CONTINUE:
             return result
