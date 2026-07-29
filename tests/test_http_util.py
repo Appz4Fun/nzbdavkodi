@@ -317,6 +317,21 @@ def test_redact_text_hides_getnzb_path_credentials():
     assert "&r=REDACTED" in result
 
 
+def test_redact_text_scopes_getnzb_path_credentials_to_url():
+    """Short Newznab credential names must not redact unrelated message data."""
+    msg = (
+        "fetch failed for "
+        "https://indexer.example/getnzb/id.nzb&i=12345&r=secretkey123 "
+        "while callback metadata remained &i=keep&r=visible"
+    )
+    result = redact_text(msg)
+
+    assert "12345" not in result
+    assert "secretkey123" not in result
+    assert "&i=REDACTED&r=REDACTED" in result
+    assert "metadata remained &i=keep&r=visible" in result
+
+
 def test_redact_text_redacts_digit_prefixed_values():
     """The ``\\1=REDACTED`` backreference must not misfire when the secret value
     begins with a digit — the literal ``=`` terminates the group, so there is no
