@@ -41,6 +41,16 @@ _EMBEDDED_CRED_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Some Newznab indexers return download URLs shaped like
+# ``/getnzb/id.nzb&i=ACCOUNT&r=APIKEY``. Because there is no ``?``, both
+# credentials are parsed as part of the URL path rather than query params.
+# Restrict the short ``i``/``r`` names to getnzb-looking paths so ordinary
+# application URLs using those names are not over-redacted.
+_GETNZB_PATH_CRED_RE = re.compile(
+    r"([&;](?:i|r))=([^&\s\"'<>]+)",
+    re.IGNORECASE,
+)
+
 # Catch ``scheme://user:password@host`` userinfo embedded in free-form text.
 # urllib / socket / xbmcvfs errors sometimes echo the failing URL — e.g. the
 # NZBGet JSON-RPC URL or the ``smb://user:pass@host/...`` completed-folder
@@ -91,9 +101,10 @@ def redact_url(url):
     # WebDAV stack used to accept). Strip the password half before
     # logging. TODO.md §H.2-H2d.
     netloc = _redact_netloc_userinfo(parts.netloc)
-    return urlunsplit(
-        (parts.scheme, netloc, parts.path, urlencode(query), parts.fragment)
-    )
+    path = parts.path
+    if "getnzb" in path.lower() or ".nzb&" in path.lower():
+        path = _GETNZB_PATH_CRED_RE.sub(r"\1=REDACTED", path)
+    return urlunsplit((parts.scheme, netloc, path, urlencode(query), parts.fragment))
 
 
 def _redact_netloc_userinfo(netloc):
@@ -146,6 +157,8 @@ def redact_text(text):
     # ``\1`` is the key group; a backreference replacement avoids a per-match
     # Python callback on this hot logging/error path.
     redacted = _EMBEDDED_CRED_RE.sub(r"\1=REDACTED", str(text))
+    if "getnzb" in redacted.lower() or ".nzb&" in redacted.lower():
+        redacted = _GETNZB_PATH_CRED_RE.sub(r"\1=REDACTED", redacted)
     return _EMBEDDED_URL_RE.sub(_redact_url_userinfo_span, redacted)
 
 
