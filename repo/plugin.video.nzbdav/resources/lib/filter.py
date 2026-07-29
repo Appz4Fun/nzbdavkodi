@@ -550,18 +550,18 @@ def _episode_identity_matches(candidate_title, phrase_match, identity):
         requested_pair = (int(season), int(episode))
     except (TypeError, ValueError):
         requested_pair = None
-    if requested_pair is not None and (
-        episode_match is None
-        or (int(episode_match.group(1)), int(episode_match.group(2))) != requested_pair
-    ):
+    actual_pair = (
+        (int(episode_match.group(1)), int(episode_match.group(2)))
+        if episode_match is not None
+        else None
+    )
+    if requested_pair is not None and actual_pair != requested_pair:
         return False
     # The requested show name must not occur only as another show's episode
     # title (for example The.Rookie.S01E03.<requested title>).
-    return not (
-        phrase_match is not None
-        and episode_match is not None
-        and phrase_match.start() > episode_match.start()
-    )
+    if phrase_match is None or episode_match is None:
+        return True
+    return phrase_match.start() <= episode_match.start()
 
 
 def _media_type_matches(candidate_title, phrase_match, identity):

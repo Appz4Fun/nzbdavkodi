@@ -488,6 +488,22 @@ def _release_retry_identity(candidate):
     return link, release_key
 
 
+def _append_unique_retry(retries, candidate, selected, seen_links, seen_releases):
+    """Append one usable, distinct retry row and return whether it was added."""
+    if candidate is selected:
+        return False
+    identity = _release_retry_identity(candidate)
+    if identity is None:
+        return False
+    link, release_key = identity
+    if link in seen_links or release_key in seen_releases:
+        return False
+    seen_links.add(link)
+    seen_releases.add(release_key)
+    retries.append(candidate)
+    return True
+
+
 def _attach_retry_candidates(resolver_params, selected, results, max_candidates=5):
     """Attach distinct retry releases from the already-filtered picker pool."""
     selected_link = str(selected.get("link", "") or "")
@@ -495,16 +511,10 @@ def _attach_retry_candidates(resolver_params, selected, results, max_candidates=
     seen_releases = {_release_retry_key(selected)}
     retries = []
     for candidate in results or []:
-        identity = _release_retry_identity(candidate)
-        if candidate is selected or identity is None:
-            continue
-        link, release_key = identity
-        if link in seen_links or release_key in seen_releases:
-            continue
-        seen_links.add(link)
-        seen_releases.add(release_key)
-        retries.append(candidate)
-        if len(retries) >= max_candidates:
+        added = _append_unique_retry(
+            retries, candidate, selected, seen_links, seen_releases
+        )
+        if added and len(retries) >= max_candidates:
             break
     if retries:
         resolver_params["_retry_candidates"] = retries
