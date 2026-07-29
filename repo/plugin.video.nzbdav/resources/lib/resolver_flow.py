@@ -198,13 +198,24 @@ def _invoke_poll_until_ready(
         download_pubdate=params_src.get("_download_pubdate"),
         download_size=params_src.get("_download_size"),
     )
-    return _resolver._poll_until_ready(
+    retry_candidates = params_src.get("_retry_candidates", [])
+    if not retry_candidates:
+        return _resolver._poll_until_ready(
+            nzb_url,
+            title,
+            dialog,
+            poll_interval,
+            download_timeout,
+            poll_ctx=poll_ctx,
+        )
+    return _resolver._poll_with_release_retries(
         nzb_url,
         title,
+        retry_candidates,
         dialog,
         poll_interval,
         download_timeout,
-        poll_ctx=poll_ctx,
+        poll_ctx,
     )
 
 

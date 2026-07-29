@@ -487,6 +487,10 @@ from resources.lib.resolver_resume import (  # noqa: E402,F401
     _set_playback_monitor_properties,
     _show_cache_prompt_after_playback,
 )
+from resources.lib.resolver_retry import (  # noqa: E402,F401
+    _poll_with_release_retries,
+    _retry_attempts,
+)
 from resources.lib.resolver_submit import (  # noqa: E402,F401
     _adopt_queued_or_completed_job,
     _await_adoptable_probe_result,

@@ -328,10 +328,11 @@ def _available_filtered_rows(filtered, all_parsed, title, notify, pack_result):
     return [] if pack_result is not None else None
 
 
-def _prepare_picker_rows(results, title, notify, pack_result):
+def _prepare_picker_rows(results, title, notify, pack_result, identity=None):
     """Filter provider rows and prepend one exact local-pack row."""
-    from resources.lib.filter import filter_results
+    from resources.lib.filter import filter_requested_content, filter_results
 
+    results = filter_requested_content(results, identity) if identity else results
     filtered, all_parsed = filter_results(results)
     filtered = _available_filtered_rows(
         filtered, all_parsed, title, notify, pack_result
@@ -362,7 +363,9 @@ def _handle_play_filter_and_select(
         xbmc.LOGDEBUG,
     )
 
-    prepared = _prepare_picker_rows(results, title, notify, pack_result)
+    prepared = _prepare_picker_rows(
+        results, title, notify, pack_result, identity=identity
+    )
     if prepared is None:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
@@ -435,6 +438,7 @@ def _handle_play_auto_select(handle, best, filtered, identity=None):
         "_fallback_candidates": [],
         "_fallback_candidate_loader": _selection_fallback_loader(target, provider_rows),
     }
+    _attach_retry_candidates(resolver_params, target, provider_rows)
     _attach_episode_context(resolver_params, identity or {})
     _attach_nzbget_dupe(resolver_params, target, provider_rows, identity)
     _ensure_nzbget_completed_hint(target)
@@ -463,6 +467,43 @@ def _identity_from_params(params):
 def _normalize_release_name(title):
     """Case/whitespace-normalized release name for same-name matching (#372)."""
     return " ".join(str(title or "").split()).casefold()
+
+
+def _release_retry_key(result):
+    """Collapse cosmetic duplicate listings of one release."""
+    title = str((result or {}).get("title", "") or "").lower()
+    title = re.sub(r"\s*\[fallback-\d+-[0-9a-f]+\]\s*$", "", title)
+    title = re.sub(r"[\W_]+", " ", title)
+    return " ".join(title.split())
+
+
+def _attach_retry_candidates(resolver_params, selected, results, max_candidates=5):
+    """Attach distinct retry releases from the already-filtered picker pool."""
+    selected_link = str(selected.get("link", "") or "")
+    seen_links = {selected_link}
+    seen_releases = {_release_retry_key(selected)}
+    retries = []
+    for candidate in results or []:
+        if candidate is selected or not isinstance(candidate, dict):
+            continue
+        link = str(candidate.get("link", "") or "")
+        release_key = _release_retry_key(candidate)
+        if (
+            not link
+            or link in seen_links
+            or not release_key
+            or release_key in seen_releases
+        ):
+            continue
+        seen_links.add(link)
+        seen_releases.add(release_key)
+        retries.append(candidate)
+        if len(retries) >= max_candidates:
+            break
+    if retries:
+        resolver_params["_retry_candidates"] = retries
+    else:
+        resolver_params.pop("_retry_candidates", None)
 
 
 _IMDB_DIGITS_RE = re.compile(r"(\d+)")
@@ -777,6 +818,7 @@ def _handle_play_resolve_selection(
         "_fallback_candidates": [],
         "_fallback_candidate_loader": _selection_fallback_loader(target, provider_rows),
     }
+    _attach_retry_candidates(resolver_params, target, provider_rows)
     _attach_episode_context(resolver_params, identity or {})
     _attach_nzbget_dupe(resolver_params, target, provider_rows, identity)
     _apply_completed_job_hint(resolver_params, target, completed_jobs)
@@ -802,7 +844,10 @@ def _handle_search_filter_and_select(
         ),
         xbmc.LOGDEBUG,
     )
-    prepared = _prepare_picker_rows(results, title, notify, pack_result)
+    identity = _identity_from_params(params)
+    prepared = _prepare_picker_rows(
+        results, title, notify, pack_result, identity=identity
+    )
     if prepared is None:
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
@@ -857,6 +902,7 @@ def _handle_search_auto_select(params, best, filtered):
     resolver_params["_fallback_candidate_loader"] = _selection_fallback_loader(
         target, provider_rows
     )
+    _attach_retry_candidates(resolver_params, target, provider_rows)
     _attach_nzbget_dupe(
         resolver_params, target, provider_rows, _identity_from_params(params)
     )
@@ -878,6 +924,7 @@ def _handle_search_resolve_selection(params, selected, filtered, completed_jobs)
     resolver_params["_fallback_candidate_loader"] = _selection_fallback_loader(
         target, provider_rows
     )
+    _attach_retry_candidates(resolver_params, target, provider_rows)
     _attach_nzbget_dupe(
         resolver_params, target, provider_rows, _identity_from_params(params)
     )
