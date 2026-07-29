@@ -124,22 +124,14 @@ def _redact_netloc_userinfo(netloc):
     return "{}@{}".format(userinfo, host)
 
 
-def _redact_url_userinfo_span(match):
-    """Strip the password from a URL span's ``user:pass@host`` userinfo.
+def _redact_url_span(match):
+    """Redact credentials only within a matched URL span.
 
-    Reuses the same ``rpartition('@')`` / ``partition(':')`` logic as
-    ``redact_url`` so an ``@`` *inside* the password (or an empty username)
-    can't leak. Spans with no userinfo round-trip unchanged.
+    Reusing ``redact_url`` covers both URL userinfo and non-standard Newznab
+    path credentials without applying short ``i``/``r`` parameter names to
+    unrelated text elsewhere in the same message.
     """
-    span = match.group(0)
-    try:
-        parts = urlsplit(span)
-    except (ValueError, TypeError):
-        return span
-    if not parts.netloc or "@" not in parts.netloc:
-        return span
-    netloc = _redact_netloc_userinfo(parts.netloc)
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    return redact_url(match.group(0))
 
 
 def redact_text(text):
@@ -157,9 +149,7 @@ def redact_text(text):
     # ``\1`` is the key group; a backreference replacement avoids a per-match
     # Python callback on this hot logging/error path.
     redacted = _EMBEDDED_CRED_RE.sub(r"\1=REDACTED", str(text))
-    if "getnzb" in redacted.lower() or ".nzb&" in redacted.lower():
-        redacted = _GETNZB_PATH_CRED_RE.sub(r"\1=REDACTED", redacted)
-    return _EMBEDDED_URL_RE.sub(_redact_url_userinfo_span, redacted)
+    return _EMBEDDED_URL_RE.sub(_redact_url_span, redacted)
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
