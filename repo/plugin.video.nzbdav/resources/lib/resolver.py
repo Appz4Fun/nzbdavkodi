@@ -377,6 +377,13 @@ from resources.lib.resolver_history import (  # noqa: E402,F401
     _status_dialog_message,
     _stub_min_size_floor,
 )
+from resources.lib.resolver_metadata import (  # noqa: E402,F401
+    _apply_playback_identity,
+    _episode_identity,
+    _fallback_info,
+    _stable_unique_ids,
+    _tmdb_helper_metadata,
+)
 from resources.lib.resolver_playback import (  # noqa: E402,F401
     _add_own_plugin_target_ids,
     _add_request_headers,

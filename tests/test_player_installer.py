@@ -132,7 +132,9 @@ def test_player_json_uses_script_handoff_instead_of_plugin_media_url():
     assert "plugin.video.nzbdav" in PLAYER_JSON["play_episode"]
     assert "type=episode" in PLAYER_JSON["play_episode"]
     assert "title={showname_url}" in PLAYER_JSON["play_episode"]
-    assert "tmdb_id={tmdb_id}" in PLAYER_JSON["play_episode"]
+    assert "tmdb_id={tmdb}" in PLAYER_JSON["play_episode"]
+    assert "show_tmdb_id={tmdb}" in PLAYER_JSON["play_episode"]
+    assert "episode_tmdb_id={eptmdb}" in PLAYER_JSON["play_episode"]
     roundtripped = json.loads(json.dumps(PLAYER_JSON))
     assert roundtripped["name"] == PLAYER_JSON["name"]
 
@@ -153,6 +155,14 @@ def test_player_schema_version_bumped_for_tvdb_token():
 
     assert _PLAYER_SCHEMA_VERSION >= 7
     assert PLAYER_JSON["schema_version"] == _PLAYER_SCHEMA_VERSION
+
+
+def test_episode_player_distinguishes_show_and_episode_tmdb_ids():
+    action = PLAYER_JSON["play_episode"]
+    assert "show_tmdb_id={tmdb}" in action
+    assert "episode_tmdb_id={eptmdb}" in action
+    assert "tmdb_id={tmdb_id}" not in action
+    assert PLAYER_JSON["schema_version"] >= 8
 
 
 @patch("resources.lib.player_installer.xbmcaddon")

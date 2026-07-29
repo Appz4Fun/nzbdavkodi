@@ -343,7 +343,11 @@ def _resolve_play_ready_stream(
         return dialog
     _resolver._arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
     _resolver._finish_direct_playback(
-        handle, prepared, resume_key=release_id, resume_seconds=chosen
+        handle,
+        prepared,
+        resume_key=release_id,
+        resume_seconds=chosen,
+        params=params,
     )
     # Playback handed off to Kodi: start the fallback worker's "minutes
     # into playback" countdown now, not from the earlier primary submit.
@@ -513,7 +517,10 @@ def _resolve_and_play_ready_stream(
         return dialog
     _resolver._arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
     _resolver._finish_player_playback(
-        prepared, resume_key=release_id, resume_seconds=chosen
+        prepared,
+        resume_key=release_id,
+        resume_seconds=chosen,
+        params=resume_params,
     )
     # Playback handed off to the player: start the fallback worker's
     # "minutes into playback" countdown now, not from the primary submit.

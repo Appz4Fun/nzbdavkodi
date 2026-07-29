@@ -2647,7 +2647,11 @@ def test_resolve_starts_fallback_worker_after_primary_submit_and_uses_snapshot(
         legacy_key="http://webdav/content/primary/movie.mp4",
     )
     mock_finish_playback.assert_called_once_with(
-        1, prepared_playback, resume_key="rel-id", resume_seconds=321.0
+        1,
+        prepared_playback,
+        resume_key="rel-id",
+        resume_seconds=321.0,
+        params=ANY,
     )
     mock_stop_fallback.assert_not_called()
 
@@ -2729,7 +2733,7 @@ def test_resolve_attaches_fallback_handoff_for_mkv_streams(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0
+        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0, params=ANY
     )
 
 
@@ -2787,7 +2791,7 @@ def test_resolve_routes_plain_mkv_through_proxy_without_fallbacks(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0
+        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0, params=ANY
     )
 
 
@@ -3267,7 +3271,7 @@ def test_resolve_keeps_service_config_lookup_on_resolver_thread(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0
+        1, {"state": "prepared"}, resume_key="", resume_seconds=0.0, params=ANY
     )
     mock_clear_state.assert_called_once()
 
@@ -3541,7 +3545,7 @@ def test_resolve_and_play_does_not_wait_forever_for_stuck_bookmark_cleanup(
     mock_start_prepare.assert_called_once()
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        {"state": "prepared"}, resume_key="", resume_seconds=0.0
+        {"state": "prepared"}, resume_key="", resume_seconds=0.0, params=ANY
     )
     cleanup_can_finish.set()
 
@@ -3607,7 +3611,10 @@ def test_resolve_and_play_routes_plain_mkv_through_proxy_without_fallbacks(
         legacy_key="http://webdav/content/primary/movie.mkv",
     )
     mock_finish_playback.assert_called_once_with(
-        {"state": "prepared"}, resume_key="rel-id", resume_seconds=456.0
+        {"state": "prepared"},
+        resume_key="rel-id",
+        resume_seconds=456.0,
+        params=ANY,
     )
 
 
@@ -3683,7 +3690,7 @@ def test_resolve_and_play_attaches_fallback_handoff_for_mkv_streams(
     )
     mock_wait_prepare.assert_called_once_with({"state": "prepare"})
     mock_finish_playback.assert_called_once_with(
-        {"state": "prepared"}, resume_key="", resume_seconds=0.0
+        {"state": "prepared"}, resume_key="", resume_seconds=0.0, params=ANY
     )
 
 
