@@ -541,6 +541,48 @@ def _content_phrase_pattern(title):
     )
 
 
+def _episode_identity_matches(candidate_title, phrase_match, identity):
+    """Return whether an episode candidate has the requested identity."""
+    season = str(identity.get("season", "") or "")
+    episode = str(identity.get("episode", "") or "")
+    episode_match = _SEASON_EPISODE_RE.search(candidate_title)
+    try:
+        requested_pair = (int(season), int(episode))
+    except (TypeError, ValueError):
+        requested_pair = None
+    if requested_pair is not None and (
+        episode_match is None
+        or (int(episode_match.group(1)), int(episode_match.group(2))) != requested_pair
+    ):
+        return False
+    # The requested show name must not occur only as another show's episode
+    # title (for example The.Rookie.S01E03.<requested title>).
+    return not (
+        phrase_match is not None
+        and episode_match is not None
+        and phrase_match.start() > episode_match.start()
+    )
+
+
+def _media_type_matches(candidate_title, phrase_match, identity):
+    """Return whether movie/episode markers agree with the request."""
+    content_type = str(identity.get("type", "") or "").lower()
+    season = str(identity.get("season", "") or "")
+    episode = str(identity.get("episode", "") or "")
+    if content_type == "episode" or (season and episode):
+        return _episode_identity_matches(candidate_title, phrase_match, identity)
+    return content_type != "movie" or _SEASON_EPISODE_RE.search(candidate_title) is None
+
+
+def _year_matches(candidate_title, identity):
+    """Return whether an explicit release year agrees with the request."""
+    requested_year = str(identity.get("year", "") or "")
+    candidate_years = set(_YEAR_RE.findall(candidate_title))
+    return not (
+        requested_year and candidate_years and requested_year not in candidate_years
+    )
+
+
 def result_matches_requested_content(result, identity):
     """Fail closed on an obvious wrong-title, movie, or episode result."""
     if not isinstance(result, dict):
@@ -551,53 +593,27 @@ def result_matches_requested_content(result, identity):
     if phrase is not None and phrase_match is None:
         return False
 
-    content_type = str(identity.get("type", "") or "").lower()
-    season = str(identity.get("season", "") or "")
-    episode = str(identity.get("episode", "") or "")
-    episode_match = _SEASON_EPISODE_RE.search(candidate_title)
-    if content_type == "episode" or (season and episode):
-        try:
-            requested_pair = (int(season), int(episode))
-        except (TypeError, ValueError):
-            requested_pair = None
-        if requested_pair is not None and (
-            episode_match is None
-            or (int(episode_match.group(1)), int(episode_match.group(2)))
-            != requested_pair
-        ):
-            return False
-        if (
-            phrase_match is not None
-            and episode_match is not None
-            and phrase_match.start() > episode_match.start()
-        ):
-            # The requested show name occurs only as another show's episode
-            # title (for example The.Rookie.S01E03.<requested title>).
-            return False
-    elif content_type == "movie" and episode_match is not None:
+    if not _media_type_matches(candidate_title, phrase_match, identity):
         return False
-
-    requested_year = str(identity.get("year", "") or "")
-    candidate_years = set(_YEAR_RE.findall(candidate_title))
-    if requested_year and candidate_years and requested_year not in candidate_years:
+    if not _year_matches(candidate_title, identity):
         return False
     return not _CONTENT_EXTRA_MARKERS.search(candidate_title)
 
 
 def filter_requested_content(results, identity):
     """Keep only rows that strictly match the requested content identity."""
+    rows = results or []
+    requested_identity = identity or {}
     matched = [
         result
-        for result in results or []
-        if result_matches_requested_content(result, identity or {})
+        for result in rows
+        if result_matches_requested_content(result, requested_identity)
     ]
-    rejected = len(results or []) - len(matched)
+    rejected = len(rows) - len(matched)
     if rejected:
         xbmc.log(
             "NZB-DAV: Strict identity filter rejected {} of {} candidates for "
-            "'{}'".format(
-                rejected, len(results or []), (identity or {}).get("title", "")
-            ),
+            "'{}'".format(rejected, len(rows), requested_identity.get("title", "")),
             xbmc.LOGINFO,
         )
     return matched

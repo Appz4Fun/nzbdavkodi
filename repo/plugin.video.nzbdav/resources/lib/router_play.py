@@ -477,6 +477,17 @@ def _release_retry_key(result):
     return " ".join(title.split())
 
 
+def _release_retry_identity(candidate):
+    """Return the usable link/release identity for a retry row."""
+    if not isinstance(candidate, dict):
+        return None
+    link = str(candidate.get("link", "") or "")
+    release_key = _release_retry_key(candidate)
+    if not link or not release_key:
+        return None
+    return link, release_key
+
+
 def _attach_retry_candidates(resolver_params, selected, results, max_candidates=5):
     """Attach distinct retry releases from the already-filtered picker pool."""
     selected_link = str(selected.get("link", "") or "")
@@ -484,16 +495,11 @@ def _attach_retry_candidates(resolver_params, selected, results, max_candidates=
     seen_releases = {_release_retry_key(selected)}
     retries = []
     for candidate in results or []:
-        if candidate is selected or not isinstance(candidate, dict):
+        identity = _release_retry_identity(candidate)
+        if candidate is selected or identity is None:
             continue
-        link = str(candidate.get("link", "") or "")
-        release_key = _release_retry_key(candidate)
-        if (
-            not link
-            or link in seen_links
-            or not release_key
-            or release_key in seen_releases
-        ):
+        link, release_key = identity
+        if link in seen_links or release_key in seen_releases:
             continue
         seen_links.add(link)
         seen_releases.add(release_key)
