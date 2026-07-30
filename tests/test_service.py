@@ -207,14 +207,32 @@ def test_on_playback_seek_updates_retry_resume_position():
     Real repro from CoreELEC: seeking ~30 minutes into a movie failed
     before the 1 Hz service tick refreshed ``_last_position``, so the
     auto-retry jumped back to an older saved point (~1 minute).
+
+    Kodi reports the seek target in milliseconds, so 30 minutes arrives as
+    1_800_000 and must be stored as 1800.0 seconds.
     """
     player = NzbdavPlayer()
     player._state = PlaybackState.MONITORING
     player._last_position = 60.0
 
-    player.onPlayBackSeek(1800, 1740)
+    player.onPlayBackSeek(1_800_000, 1_740_000)
 
     assert player._last_position == 1800.0
+
+
+def test_on_playback_seek_converts_milliseconds_to_seconds():
+    """Guard the unit boundary: ms in, seconds out.
+
+    Observed on Windows/Kodi 21: a seek to ~23 minutes of a 70 minute
+    episode arrived as 1379045 and was stored verbatim, so the retry path
+    tried to resume 1379045 seconds in — far past the end of the file.
+    """
+    player = NzbdavPlayer()
+    player._state = PlaybackState.MONITORING
+
+    player.onPlayBackSeek(1_379_045, 199_347)
+
+    assert player._last_position == pytest.approx(1379.045)
 
 
 @patch("service.xbmcgui")
@@ -230,7 +248,7 @@ def test_retry_playback_uses_latest_seek_position(mock_gui):
     player.play = MagicMock()
     player.isPlaying = MagicMock(return_value=True)
 
-    player.onPlayBackSeek(1800, 1740)
+    player.onPlayBackSeek(1_800_000, 1_740_000)
     ok = player._retry_playback(max_retries=3, retry_delay=0)
 
     assert ok is True

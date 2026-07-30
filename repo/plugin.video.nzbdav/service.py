@@ -415,12 +415,19 @@ class NzbdavPlayer(xbmc.Player):
         ``_last_position`` via ``getTime()``. Without this callback the retry
         path falls back to the older saved position and appears to "jump
         backwards" after a failed seek.
+
+        Kodi passes ``time`` and ``seek_offset`` in **milliseconds**, while
+        every other position in this class (``getTime()``, ``_last_position``,
+        ``_save_position``, the ``StartOffset`` handed to a retry) is in
+        seconds. Converting here keeps a single unit throughout; without it a
+        seek stored a value 1000x too large and the retry then tried to resume
+        far past the end of the file, which failed instantly and looped.
         """
         with self._state_lock:
             if self._state not in (PlaybackState.MONITORING, PlaybackState.ERROR):
                 return
             try:
-                self._last_position = max(0.0, float(time))
+                self._last_position = max(0.0, float(time) / 1000.0)
             except (TypeError, ValueError):
                 pos_failed = True
             else:
@@ -434,7 +441,7 @@ class NzbdavPlayer(xbmc.Player):
             "NZB-DAV: Playback seek for '{}' -> {:.0f}s (offset={:.0f}s)".format(
                 title,
                 position,
-                float(seek_offset),
+                float(seek_offset) / 1000.0,
             ),
             xbmc.LOGINFO,
         )
