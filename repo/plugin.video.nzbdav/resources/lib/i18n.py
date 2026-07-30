@@ -16,6 +16,7 @@ _FALLBACK_STRINGS = {
     30087: "No results found for {}",
     30088: "Filtering results...",
     30089: "No results after filtering for {}",
+    30367: "Searching for {}...",
     30091: "Clear Cache",
     30092: "Settings",
     30093: "Install NZB-DAV Player To",

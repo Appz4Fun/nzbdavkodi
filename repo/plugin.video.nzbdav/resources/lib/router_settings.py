@@ -47,7 +47,11 @@ def _open_loading_dialog(title):
 
     try:
         dialog = xbmcgui.DialogProgressBG()
-        dialog.create(_router._addon_name(), _router._fmt(30083, title or ""))
+        # Provider-agnostic: this fires for every search regardless of which
+        # provider(s) are actually configured (NZBHydra2, Prowlarr, direct
+        # indexers, any combination). #30083 hardcoded "NZBHydra" here even
+        # when NZBHydra2 was disabled and only direct indexers ran.
+        dialog.create(_router._addon_name(), _router._fmt(30367, title or ""))
         return dialog
     except Exception:  # pylint: disable=broad-except
         return None
