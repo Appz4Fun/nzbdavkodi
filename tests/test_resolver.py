@@ -1452,6 +1452,94 @@ def test_fallback_worker_append_swallows_on_append_errors():
     assert any(j.get("nzo_id") == "a" for j in state["jobs"])
 
 
+def test_fallback_submit_jobs_snapshot_skips_wait_when_gated_on_playback_start():
+    """A ``wait_for_playback`` worker gates ALL submission behind
+    ``state["playback_started"]``, which the caller of this exact snapshot
+    only sets afterward (see ``_signal_fallback_playback_started`` in
+    ``_resolve_and_play_ready_stream``, called strictly later in the same
+    synchronous flow). Waiting the full grace period here can never observe
+    a job -- it was a guaranteed ~8s no-op stall before every completed-job
+    fast-path handoff. Confirms the wait is skipped (0s) in that case."""
+    from resources.lib.resolver import _fallback_submit_jobs_snapshot
+
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [],
+        "thread": MagicMock(is_alive=MagicMock(return_value=True)),
+        "finished": threading.Event(),
+        "playback_started": threading.Event(),  # not set
+        "wait_for_playback": True,
+    }
+
+    with patch(
+        "resources.lib.resolver_fallback_jobs._await_fallback_worker_finish"
+    ) as mock_wait:
+        _fallback_submit_jobs_snapshot(state, wait_seconds=8.0)
+
+    mock_wait.assert_called_once_with(state["thread"], state["finished"], 0)
+
+
+def test_fallback_submit_jobs_snapshot_waits_when_not_gated_on_playback():
+    """A worker that does NOT require ``wait_for_playback`` (the download
+    submit-and-poll path) starts submitting immediately, so the full grace
+    period genuinely lets it populate jobs -- must not be shortened."""
+    from resources.lib.resolver import _fallback_submit_jobs_snapshot
+
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [],
+        "thread": MagicMock(is_alive=MagicMock(return_value=True)),
+        "finished": threading.Event(),
+        "playback_started": threading.Event(),
+        "wait_for_playback": False,
+    }
+
+    with patch(
+        "resources.lib.resolver_fallback_jobs._await_fallback_worker_finish"
+    ) as mock_wait:
+        _fallback_submit_jobs_snapshot(state, wait_seconds=8.0)
+
+    mock_wait.assert_called_once_with(state["thread"], state["finished"], 8.0)
+
+
+def test_fallback_submit_jobs_snapshot_waits_full_once_playback_already_started():
+    """Once playback has actually started, a ``wait_for_playback`` worker is
+    unblocked and may be mid-submission -- the full wait is useful again."""
+    from resources.lib.resolver import _fallback_submit_jobs_snapshot
+
+    playback_started = threading.Event()
+    playback_started.set()
+    state = {
+        "lock": threading.Lock(),
+        "jobs": [],
+        "thread": MagicMock(is_alive=MagicMock(return_value=True)),
+        "finished": threading.Event(),
+        "playback_started": playback_started,
+        "wait_for_playback": True,
+    }
+
+    with patch(
+        "resources.lib.resolver_fallback_jobs._await_fallback_worker_finish"
+    ) as mock_wait:
+        _fallback_submit_jobs_snapshot(state, wait_seconds=8.0)
+
+    mock_wait.assert_called_once_with(state["thread"], state["finished"], 8.0)
+
+
+def test_start_fallback_submit_worker_records_wait_for_playback_flag():
+    """The snapshot skip above relies on this flag being recorded at
+    creation time; guard against it silently disappearing in a refactor."""
+    from resources.lib.resolver import _start_fallback_submit_worker
+
+    with patch("resources.lib.resolver._submit_fallback_candidates"):
+        state = _start_fallback_submit_worker(
+            candidates=[{"nzb_url": "x"}], wait_for_playback=True
+        )
+        state["thread"].join(timeout=2)
+
+    assert state["wait_for_playback"] is True
+
+
 def test_arm_live_fallback_push_noops_without_service_port():
     from resources.lib.resolver import _arm_live_fallback_push
 

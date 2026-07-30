@@ -90,9 +90,26 @@ def _await_fallback_worker_finish(thread, finished, wait_seconds):
 
 
 def _fallback_submit_jobs_snapshot(state, wait_seconds=0.5):
-    """Return fallback jobs submitted so far, waiting briefly for completion."""
+    """Return fallback jobs submitted so far, waiting briefly for completion.
+
+    A ``wait_for_playback`` worker (see ``_start_fallback_submit_worker``)
+    gates ALL submission work behind ``state["playback_started"]``, which is
+    only set by ``_signal_fallback_playback_started`` after this exact
+    snapshot call returns (it runs from the same synchronous prepare/handoff
+    sequence, strictly earlier). Waiting the full ``wait_seconds`` here can
+    therefore never observe a job -- it is a guaranteed-timeout wait that
+    only delays handoff. Skip it in that case; the worker still submits its
+    real burst once playback is signaled, just as before.
+    """
     if not state:
         return []
+    playback_started = state.get("playback_started")
+    if (
+        state.get("wait_for_playback")
+        and playback_started is not None
+        and not playback_started.is_set()
+    ):
+        wait_seconds = 0
     _await_fallback_worker_finish(
         state.get("thread"), state.get("finished"), wait_seconds
     )

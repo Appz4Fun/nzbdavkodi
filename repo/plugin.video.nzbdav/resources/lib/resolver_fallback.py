@@ -540,6 +540,7 @@ def _start_fallback_submit_worker(
         "stop": _resolver.threading.Event(),
         "finished": _resolver.threading.Event(),
         "playback_started": _resolver.threading.Event(),
+        "wait_for_playback": wait_for_playback,
         "thread": None,
         "cancel_job": _cancel_job,
     }
