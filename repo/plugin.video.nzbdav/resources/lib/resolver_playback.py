@@ -150,13 +150,16 @@ def _completed_stream_head_length(url, headers, timeout):
     """Return the Content-Length via HEAD, or None on any ambiguous failure."""
     from urllib.request import Request, urlopen
 
+    from resources.lib.http_util import prefer_ipv4_connections
+
     # Any failure here is ambiguous (e.g. server rejects HEAD) — don't block.
     try:
         head = Request(url, method="HEAD")
         _add_request_headers(head, headers)
-        # nosemgrep
-        with urlopen(head, timeout=timeout) as resp:  # nosec B310
-            return int(resp.headers.get("Content-Length", 0) or 0)
+        with prefer_ipv4_connections():
+            # nosemgrep
+            with urlopen(head, timeout=timeout) as resp:  # nosec B310
+                return int(resp.headers.get("Content-Length", 0) or 0)
     except (OSError, ValueError, _resolver.http.client.HTTPException):
         return None
 
@@ -166,19 +169,22 @@ def _completed_stream_midfile_present(url, headers, length, probe_bytes, timeout
     from urllib.error import HTTPError
     from urllib.request import Request, urlopen
 
+    from resources.lib.http_util import prefer_ipv4_connections
+
     start = length // 2
     end = min(start + probe_bytes - 1, length - 1)
     try:
         req = Request(url)
         req.add_header("Range", "bytes={}-{}".format(start, end))
         _add_request_headers(req, headers)
-        # nosemgrep
-        with urlopen(req, timeout=timeout) as resp:  # nosec B310
-            if resp.getcode() >= 400:
-                return False
-            # A success status that delivers no body == the article body is
-            # gone even though the metadata claims the file exists.
-            return bool(resp.read(1))
+        with prefer_ipv4_connections():
+            # nosemgrep
+            with urlopen(req, timeout=timeout) as resp:  # nosec B310
+                if resp.getcode() >= 400:
+                    return False
+                # A success status that delivers no body == the article body
+                # is gone even though the metadata claims the file exists.
+                return bool(resp.read(1))
     except HTTPError:
         # Definitive: the backend cannot serve the mid-file body (e.g. the
         # 404/500 seen when articles are missing).

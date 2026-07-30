@@ -2,6 +2,7 @@
 # Copyright (C) 2026 nzbdav contributors
 
 import json
+import socket
 from unittest.mock import MagicMock, patch
 
 from resources.lib.http_util import (
@@ -11,6 +12,7 @@ from resources.lib.http_util import (
     http_post_json,
     iso8601_to_rfc2822,
     notify,
+    prefer_ipv4_connections,
     pubdate_to_epoch,
     redact_text,
     redact_url,
@@ -448,6 +450,74 @@ def test_http_post_json_rejects_non_http_scheme():
 
     with pytest.raises(ValueError):
         http_post_json("file:///etc/passwd", {}, timeout=5)
+
+
+# --- prefer_ipv4_connections: IPv6-before-IPv4 loopback delay fix (~10s stall) ---
+
+
+def _fake_getaddrinfo(host, port, *args, **kwargs):
+    """Mimics real getaddrinfo("localhost", ...) ordering: IPv6 first."""
+    return [
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", port, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+    ]
+
+
+def test_prefer_ipv4_connections_sorts_ipv4_first():
+    """The whole point of the fix: within the `with` block, IPv4 results
+    must come before IPv6 ones so urllib tries the working address first
+    instead of eating a ~2s refusal on the unreachable IPv6 loopback."""
+    with patch("socket.getaddrinfo", side_effect=_fake_getaddrinfo):
+        with prefer_ipv4_connections():
+            results = socket.getaddrinfo("localhost", 3000)
+
+    families = [r[0] for r in results]
+    assert families == [socket.AF_INET, socket.AF_INET6]
+
+
+def test_prefer_ipv4_connections_does_not_drop_ipv6():
+    """Reordering must never remove IPv6 entries -- a host reachable only
+    over IPv6 still needs to be tried, just second."""
+    with patch("socket.getaddrinfo", side_effect=_fake_getaddrinfo):
+        with prefer_ipv4_connections():
+            results = socket.getaddrinfo("localhost", 3000)
+
+    assert len(results) == 2
+    assert any(r[0] == socket.AF_INET6 for r in results)
+
+
+def test_prefer_ipv4_connections_restores_original_getaddrinfo_on_exit():
+    """The monkeypatch must be scoped to the `with` block -- leaking it
+    would affect unrelated connections made after the block exits."""
+    original = socket.getaddrinfo
+    with prefer_ipv4_connections():
+        assert socket.getaddrinfo is not original
+    assert socket.getaddrinfo is original
+
+
+def test_prefer_ipv4_connections_restores_original_even_on_exception():
+    """A failed request inside the block must not leave getaddrinfo patched."""
+    import pytest
+
+    original = socket.getaddrinfo
+    with pytest.raises(RuntimeError):
+        with prefer_ipv4_connections():
+            raise RuntimeError("boom")
+    assert socket.getaddrinfo is original
+
+
+def test_prefer_ipv4_connections_preserves_ipv4_only_results():
+    """A host that only resolves to IPv4 must pass through unchanged."""
+
+    def ipv4_only(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+
+    with patch("socket.getaddrinfo", side_effect=ipv4_only):
+        with prefer_ipv4_connections():
+            results = socket.getaddrinfo("localhost", 3000)
+
+    assert len(results) == 1
+    assert results[0][0] == socket.AF_INET
 
 
 # --- clean_search_query: strip query-breaking '&' from keyword searches (#294) ---

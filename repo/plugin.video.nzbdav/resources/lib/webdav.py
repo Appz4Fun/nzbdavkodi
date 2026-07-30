@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 
 import xbmc
 
+from resources.lib.http_util import prefer_ipv4_connections
 from resources.lib.webdav_match import (
     _episode_tags,
     _hint_tokens,
@@ -109,11 +110,12 @@ def _http_head(
         encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
         req.add_header("Authorization", "Basic {}".format(encoded))
     try:
-        # nosemgrep
-        with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
-            req, timeout=30
-        ) as resp:
-            return resp.getcode()
+        with prefer_ipv4_connections():
+            # nosemgrep
+            with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
+                req, timeout=30
+            ) as resp:
+                return resp.getcode()
     except HTTPError as e:
         return e.code
 
@@ -381,11 +383,12 @@ def _folder_total_fetch_root(url, username, password):
     for header, value in _build_auth_headers(username, password).items():
         req.add_header(header, value)
 
-    # nosemgrep
-    with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
-        req, timeout=10
-    ) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
+    with prefer_ipv4_connections():
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
+            req, timeout=10
+        ) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
 
     return safe_fromstring(body)
 
@@ -781,11 +784,12 @@ def _browse_and_resolve(req, url, _depth, _visited, settings, hint_ctx):
     from resources.lib import webdav_discovery
 
     have_hint, hint_tokens, hint_episode_tags, min_video_size = hint_ctx
-    # nosemgrep
-    with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
-        req, timeout=10
-    ) as resp:
-        body = resp.read().decode("utf-8", errors="replace")
+    with prefer_ipv4_connections():
+        # nosemgrep
+        with urlopen(  # nosec B310 — URL from user's configured WebDAV setting
+            req, timeout=10
+        ) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
 
     root = webdav_discovery._parse_propfind_xml(body)
     scan = webdav_discovery._scan_propfind_responses(
