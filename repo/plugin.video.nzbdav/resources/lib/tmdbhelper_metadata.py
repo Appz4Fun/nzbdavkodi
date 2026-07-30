@@ -47,6 +47,23 @@ def _clean(value):
     return str(value or "").strip()
 
 
+def _json_safe(params):
+    """Return only the JSON-serializable primitive values in ``params``.
+
+    Resolve-stage helpers stash internal, non-serializable state on this
+    same dict — e.g. ``_fallback_candidate_loader`` is a callable — so a
+    raw ``json.dumps(params)`` can fail. Every field ``apply_metadata``
+    reads (type, title, tmdb ids, season/episode, year, imdb, tvdb) is a
+    plain string/int, so dropping anything else is safe and also guards
+    against whatever internal state gets added here in the future.
+    """
+    return {
+        key: value
+        for key, value in (params or {}).items()
+        if value is None or isinstance(value, (str, int, float, bool))
+    }
+
+
 def publish_params(params, window=None):
     """Stash ``params`` for the ListItem builder to read back (best-effort).
 
@@ -55,10 +72,11 @@ def publish_params(params, window=None):
     """
     try:
         window = window or xbmcgui.Window(_WINDOW_ID)
-        if not params:
+        safe_params = _json_safe(params)
+        if not safe_params:
             window.clearProperty(_PROPERTY)
             return
-        window.setProperty(_PROPERTY, json.dumps(params))
+        window.setProperty(_PROPERTY, json.dumps(safe_params))
     except Exception as error:  # pylint: disable=broad-except
         xbmc.log(
             "NZB-DAV: Could not publish metadata params: {}".format(error),

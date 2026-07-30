@@ -142,6 +142,25 @@ def test_publish_writes_json_and_clears_when_empty():
     window.clearProperty.assert_called_once_with("nzbdav.metadata_params")
 
 
+def test_publish_drops_internal_non_serializable_state():
+    """Real resolve-stage params carry internal state on the same dict —
+    e.g. ``_fallback_candidate_loader`` is a callable — that must not break
+    publishing. Regression: this previously raised inside publish_params'
+    own try/except, so the property was silently never written and no
+    metadata ever appeared, with only a WARNING in the log to show for it.
+    """
+    window = MagicMock()
+    params_with_callable = dict(EPISODE_PARAMS, _fallback_candidate_loader=lambda: None)
+
+    tmdbhelper_metadata.publish_params(params_with_callable, window=window)
+
+    key, payload = window.setProperty.call_args.args
+    assert key == "nzbdav.metadata_params"
+    written = json.loads(payload)
+    assert "_fallback_candidate_loader" not in written
+    assert written["show_tmdb_id"] == "94997"
+
+
 @patch("resources.lib.tmdbhelper_metadata.apply_metadata")
 def test_apply_from_published_params_reads_back_the_property(mock_apply):
     window = MagicMock()
