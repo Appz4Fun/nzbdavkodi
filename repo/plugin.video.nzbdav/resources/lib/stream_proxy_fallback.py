@@ -21,6 +21,7 @@ from urllib.parse import urlsplit  # noqa: E402
 from urllib.request import Request  # noqa: E402
 
 import resources.lib.stream_proxy as _sp  # noqa: E402
+from resources.lib.http_util import prefer_ipv4_connections  # noqa: E402
 from resources.lib.stream_proxy import (  # noqa: E402
     _CONTENT_RANGE_ZERO_RE,
     _SEEK_THRESHOLD,
@@ -122,18 +123,19 @@ def _probe_content_length_hint(url, auth_header, content_length_hint):
         req = Request(url)
         _sp._add_request_headers(req, auth_header)
         req.add_header("Range", "bytes=0-0")
-        # nosemgrep
-        with _sp.urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-            req, timeout=10
-        ) as resp:
-            cr = resp.headers.get("Content-Range", "")
-            status = getattr(resp, "status", None)
-            if status is None:
-                status = resp.getcode()
-            match = _CONTENT_RANGE_ZERO_RE.match(cr.strip())
-            stream_length = int(match.group(1)) if match else 0
-            if status == 206 and stream_length == content_length_hint:
-                return content_length_hint
+        with prefer_ipv4_connections():
+            # nosemgrep
+            with _sp.urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                req, timeout=10
+            ) as resp:
+                cr = resp.headers.get("Content-Range", "")
+                status = getattr(resp, "status", None)
+                if status is None:
+                    status = resp.getcode()
+                match = _CONTENT_RANGE_ZERO_RE.match(cr.strip())
+                stream_length = int(match.group(1)) if match else 0
+                if status == 206 and stream_length == content_length_hint:
+                    return content_length_hint
     except (OSError, ValueError):
         pass
     return 0
@@ -145,12 +147,13 @@ def _probe_content_length_tail(url, auth_header):
         req = Request(url)
         _sp._add_request_headers(req, auth_header)
         req.add_header("Range", "bytes=-1")
-        # nosemgrep
-        with _sp.urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-            req, timeout=10
-        ) as resp:
-            cr = resp.headers.get("Content-Range", "")
-            return int(cr.split("/")[1]) if "/" in cr else 0
+        with prefer_ipv4_connections():
+            # nosemgrep
+            with _sp.urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                req, timeout=10
+            ) as resp:
+                cr = resp.headers.get("Content-Range", "")
+                return int(cr.split("/")[1]) if "/" in cr else 0
     except (OSError, ValueError):
         return 0
 

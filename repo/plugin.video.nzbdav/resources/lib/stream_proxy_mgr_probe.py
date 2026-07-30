@@ -12,6 +12,7 @@ call time via ``_sp.<name>`` so test monkeypatches on
 """
 
 import resources.lib.stream_proxy as _sp  # noqa: E402
+from resources.lib.http_util import prefer_ipv4_connections  # noqa: E402
 
 
 class _MgrProbeMixin:  # pylint: disable=too-few-public-methods
@@ -265,11 +266,12 @@ class _MgrProbeMixin:  # pylint: disable=too-few-public-methods
         req = _sp.Request(url, method="HEAD")
         _sp._add_request_headers(req, auth_header)
         try:
-            # nosemgrep
-            with _sp.urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
-                req, timeout=10
-            ) as resp:
-                return int(resp.headers.get("Content-Length", 0))
+            with prefer_ipv4_connections():
+                # nosemgrep
+                with _sp.urlopen(  # nosec B310 — URL from user-configured nzbdav/WebDAV setting
+                    req, timeout=10
+                ) as resp:
+                    return int(resp.headers.get("Content-Length", 0))
         except (OSError, ValueError):
             pass
         return _sp._probe_content_length_tail(url, auth_header)
