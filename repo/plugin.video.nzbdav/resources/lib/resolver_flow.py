@@ -14,6 +14,7 @@ moved name is re-exported from ``resolver``.
 """
 
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
+from resources.lib import tmdbhelper_scrobble
 
 
 def _nzbget_enabled(settings_getter=None):
@@ -331,6 +332,9 @@ def _resolve_play_ready_stream(
         _reject_resolve_handle(handle)
         return dialog
     _resolver._arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
+    # See the note in the script-play path above: identity goes out before the
+    # handoff so the scrobbler sees it when playback starts.
+    tmdbhelper_scrobble.publish_player_info(params)
     _resolver._finish_direct_playback(
         handle, prepared, resume_key=release_id, resume_seconds=chosen
     )
@@ -501,6 +505,9 @@ def _resolve_and_play_ready_stream(
         _resolver._stop_fallback_submit_worker(fallback_state, cancel_submitted=True)
         return dialog
     _resolver._arm_live_fallback_push(prepared, fallback_state, stream_url, dead=dead)
+    # Publish the TMDB identity before handing off so TMDb Helper's scrobbler
+    # can attribute this playback to Trakt; the stream URL itself carries none.
+    tmdbhelper_scrobble.publish_player_info(resume_params)
     _resolver._finish_player_playback(
         prepared, resume_key=release_id, resume_seconds=chosen
     )
