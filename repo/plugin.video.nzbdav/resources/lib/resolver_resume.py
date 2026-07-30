@@ -14,6 +14,7 @@ moved name is re-exported from ``resolver``.
 """
 
 import resources.lib.resolver as _resolver  # noqa: F401  pylint: disable=unused-import
+from resources.lib import tmdbhelper_metadata
 
 
 def _show_cache_prompt_after_playback(stream_info):
@@ -178,6 +179,7 @@ def _resolve_direct_no_proxy(
     )
     li = _resolver._make_playable_listitem(bust_url, stream_headers)
     _apply_resume_start_offset(li, resume_seconds)
+    tmdbhelper_metadata.apply_from_published_params(li)
     home = _resolver.xbmcgui.Window(10000)
     _set_playback_monitor_properties(
         home, play_url, stream_url, monitor_key, resume_seconds
@@ -224,6 +226,7 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
             bust_url = _resolver._cache_bust_url(stream_url)
             li = _resolver._make_playable_listitem(bust_url, stream_headers)
             _apply_resume_start_offset(li, resume_seconds)
+            tmdbhelper_metadata.apply_from_published_params(li)
             play_url = _resolver._build_play_url(bust_url, stream_headers)
             _set_playback_monitor_properties(
                 home, play_url, stream_url, monitor_key, resume_seconds
@@ -235,6 +238,7 @@ def _finish_direct_playback(handle, prepared, resume_key="", resume_seconds=0.0)
         li.setContentLookup(False)
         _resolver._apply_proxy_mime(li, stream_url, stream_info)
         _apply_resume_start_offset(li, resume_seconds)
+        tmdbhelper_metadata.apply_from_published_params(li)
 
         _set_playback_monitor_properties(
             home, proxy_url, stream_url, monitor_key, resume_seconds
@@ -277,6 +281,7 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
             bust_url = _resolver._cache_bust_url(stream_url)
             li = _resolver._make_playable_listitem(bust_url, stream_headers)
             _apply_resume_start_offset(li, resume_seconds)
+            tmdbhelper_metadata.apply_from_published_params(li)
             play_url = _resolver._build_play_url(bust_url, stream_headers)
             _set_playback_monitor_properties(
                 home, play_url, stream_url, monitor_key, resume_seconds
@@ -288,6 +293,7 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
         li.setContentLookup(False)
         _resolver._apply_proxy_mime(li, stream_url, stream_info)
         _apply_resume_start_offset(li, resume_seconds)
+        tmdbhelper_metadata.apply_from_published_params(li)
         _set_playback_monitor_properties(
             home, proxy_url, stream_url, monitor_key, resume_seconds
         )
@@ -298,6 +304,7 @@ def _finish_player_playback(prepared, resume_key="", resume_seconds=0.0):
     bust_url = _resolver._cache_bust_url(stream_url)
     li = _resolver._make_playable_listitem(bust_url, stream_headers)
     _apply_resume_start_offset(li, resume_seconds)
+    tmdbhelper_metadata.apply_from_published_params(li)
     play_url = _resolver._build_play_url(bust_url, stream_headers)
     _resolver.xbmc.log(
         "NZB-DAV: Playing direct (no proxy): {}".format(safe_url),
