@@ -121,8 +121,10 @@ def test_player_json_uses_script_handoff_instead_of_plugin_media_url():
     assert "plugin.video.nzbdav" in PLAYER_JSON["play_movie"]
     assert "type=movie" in PLAYER_JSON["play_movie"]
     assert "title={title_url}" in PLAYER_JSON["play_movie"]
-    # tmdb_id must be forwarded so resolver can clear TMDBHelper bookmarks
-    assert "tmdb_id={tmdb_id}" in PLAYER_JSON["play_movie"]
+    # tmdb_id must be forwarded so resolver can clear TMDBHelper bookmarks.
+    # {tmdb} is the real TMDb Helper token; {tmdb_id} is not one of its
+    # tokens and would substitute to a literal "_".
+    assert "tmdb_id={tmdb}" in PLAYER_JSON["play_movie"]
     assert PLAYER_JSON["play_episode"].startswith(
         "executebuiltin://RunScript("
         "special://home/addons/plugin.video.nzbdav/addon.py,tmdb_play,"
@@ -132,7 +134,7 @@ def test_player_json_uses_script_handoff_instead_of_plugin_media_url():
     assert "plugin.video.nzbdav" in PLAYER_JSON["play_episode"]
     assert "type=episode" in PLAYER_JSON["play_episode"]
     assert "title={showname_url}" in PLAYER_JSON["play_episode"]
-    assert "tmdb_id={tmdb_id}" in PLAYER_JSON["play_episode"]
+    assert "tmdb_id={tmdb}" in PLAYER_JSON["play_episode"]
     roundtripped = json.loads(json.dumps(PLAYER_JSON))
     assert roundtripped["name"] == PLAYER_JSON["name"]
 
@@ -146,12 +148,35 @@ def test_play_episode_forwards_tvdb_token():
     assert "tvdb=" not in PLAYER_JSON["play_movie"]
 
 
+def test_play_actions_use_real_tmdbhelper_tokens():
+    """{tmdb_id} is not a TMDb Helper token.
+
+    TMDb Helper formats these actions against a ``defaultdict(lambda: '_')``,
+    so an unknown token silently becomes a literal underscore instead of
+    failing. Guard against reintroducing one.
+    """
+    for action in ("play_movie", "play_episode"):
+        assert "{tmdb_id}" not in PLAYER_JSON[action]
+
+
+def test_play_episode_forwards_scrobble_identity():
+    """Trakt scrobbling needs the show id, the episode id and the show's tvdb.
+
+    In episode context TMDb Helper resolves {tmdb} to the *show* id and
+    {eptmdb} to the episode's own id.
+    """
+    action = PLAYER_JSON["play_episode"]
+    assert "show_tmdb_id={tmdb}" in action
+    assert "episode_tmdb_id={eptmdb}" in action
+    assert "tvdb={tvdb}" in action
+
+
 def test_player_schema_version_bumped_for_tvdb_token():
     """Adding the {tvdb} token changes the shipped action string, so the
     schema version must advance to force a re-install over older files."""
     from resources.lib.player_installer import _PLAYER_SCHEMA_VERSION
 
-    assert _PLAYER_SCHEMA_VERSION >= 7
+    assert _PLAYER_SCHEMA_VERSION >= 8
     assert PLAYER_JSON["schema_version"] == _PLAYER_SCHEMA_VERSION
 
 

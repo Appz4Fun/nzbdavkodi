@@ -32,8 +32,14 @@ TMDBHELPER_PLAYER_PATH = _player_path_for(TMDBHELPER_ADDON_ID)
 # Bump this when PLAYER_JSON's shape changes in a way that requires the
 # installer to overwrite an older generation. We ignore the user's manual
 # edits only when the stored schema_version differs from ours.
-_PLAYER_SCHEMA_VERSION = 7
+_PLAYER_SCHEMA_VERSION = 8
 
+# TMDb Helper substitutes these actions against a ``defaultdict(lambda: '_')``,
+# so an unrecognised token is silently replaced with a literal underscore rather
+# than failing. ``{tmdb_id}`` is *not* one of its tokens (see its
+# ``set_detailed_item``): the TMDB id is ``{tmdb}``, which in episode context is
+# deliberately the *show* id, while ``{eptmdb}`` is the episode's own id. The
+# identity tokens below are what lets playback be scrobbled to Trakt.
 PLAYER_JSON = {
     "name": "NZB-DAV",
     "plugin": "plugin.video.nzbdav",
@@ -43,13 +49,14 @@ PLAYER_JSON = {
     "play_movie": (
         "executebuiltin://RunScript("
         "special://home/addons/plugin.video.nzbdav/addon.py,tmdb_play,"
-        "type=movie,title={title_url},year={year},imdb={imdb},tmdb_id={tmdb_id})"
+        "type=movie,title={title_url},year={year},imdb={imdb},tmdb_id={tmdb})"
     ),
     "play_episode": (
         "executebuiltin://RunScript("
         "special://home/addons/plugin.video.nzbdav/addon.py,tmdb_play,"
         "type=episode,title={showname_url},year={showyear},season={season},"
-        "episode={episode},imdb={imdb},tmdb_id={tmdb_id},tvdb={tvdb},"
+        "episode={episode},imdb={imdb},tmdb_id={tmdb},show_tmdb_id={tmdb},"
+        "episode_tmdb_id={eptmdb},tvdb={tvdb},"
         "ep_season={ep_showseason},ep_episode={ep_showepisode})"
     ),
 }
