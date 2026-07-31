@@ -1746,7 +1746,7 @@ def test_script_play_picker_total_includes_synthetic_pack_row():
     ), patch("resources.lib.router._get_script_setting", return_value="false"), patch(
         "resources.lib.router_scriptplay._script_play_tag_available"
     ):
-        filtered, total_count, _completed = _script_play_filter_autoselect_tag(
+        prepared = _script_play_filter_autoselect_tag(
             MagicMock(),
             {},
             providers,
@@ -1755,7 +1755,9 @@ def test_script_play_picker_total_includes_synthetic_pack_row():
             pack_result=_local_pack_row(),
         )
 
+    filtered, all_rows, total_count, _completed = prepared
     assert len(filtered) == 4
+    assert len(all_rows) == 4
     assert total_count == 4
 
 
@@ -1772,7 +1774,6 @@ def test_handle_play_pack_keeps_unfiltered_providers_separately_selectable():
     ) as dialog, patch(
         "xbmcaddon.Addon"
     ) as addon:
-        prompt.return_value.yesno.return_value = True
         addon.return_value.getSetting.return_value = "false"
         _handle_play_filter_and_select(
             7,
@@ -1783,10 +1784,17 @@ def test_handle_play_pack_keeps_unfiltered_providers_separately_selectable():
             pack_result=_local_pack_row(),
         )
 
+    # Every provider was filtered out: the filtered picker view holds only the
+    # local pack row, while the unfiltered providers stay reachable via the
+    # show-all toggle (the all_results kwarg). The old "show unfiltered?" yes/no
+    # prompt is gone -- the picker opens directly in show-all mode instead.
     displayed = dialog.call_args.args[0]
     assert displayed[0]["_season_pack"]["job_id"] == "41"
-    assert displayed[1:] == providers
-    prompt.return_value.yesno.assert_called_once()
+    assert displayed[1:] == []
+    all_rows = dialog.call_args.kwargs["all_results"]
+    assert all_rows[0]["_season_pack"]["job_id"] == "41"
+    assert all_rows[1:] == providers
+    prompt.assert_not_called()
 
 
 def test_handle_search_pack_keeps_unfiltered_providers_separately_selectable():
@@ -1804,7 +1812,6 @@ def test_handle_search_pack_keeps_unfiltered_providers_separately_selectable():
     ) as addon, patch(
         "xbmcplugin.endOfDirectory"
     ):
-        prompt.return_value.yesno.return_value = True
         addon.return_value.getSetting.return_value = "false"
         _handle_search_filter_and_select(
             7,
@@ -1816,10 +1823,17 @@ def test_handle_search_pack_keeps_unfiltered_providers_separately_selectable():
             pack_result=_local_pack_row(),
         )
 
+    # Every provider was filtered out: the filtered picker view holds only the
+    # local pack row, while the unfiltered providers stay reachable via the
+    # show-all toggle (the all_results kwarg). The old "show unfiltered?" yes/no
+    # prompt is gone -- the picker opens directly in show-all mode instead.
     displayed = dialog.call_args.args[0]
     assert displayed[0]["_season_pack"]["job_id"] == "41"
-    assert displayed[1:] == providers
-    prompt.return_value.yesno.assert_called_once()
+    assert displayed[1:] == []
+    all_rows = dialog.call_args.kwargs["all_results"]
+    assert all_rows[0]["_season_pack"]["job_id"] == "41"
+    assert all_rows[1:] == providers
+    prompt.assert_not_called()
 
 
 def test_script_play_pack_keeps_unfiltered_providers_separately_selectable():
@@ -1828,13 +1842,10 @@ def test_script_play_pack_keeps_unfiltered_providers_separately_selectable():
     providers = _three_provider_rows()
     with patch(
         "resources.lib.filter.filter_results", return_value=([], providers)
-    ), patch("resources.lib.router_scriptplay.xbmcgui.Dialog") as prompt, patch(
-        "resources.lib.router._get_script_setting", return_value="false"
-    ), patch(
+    ), patch("resources.lib.router._get_script_setting", return_value="false"), patch(
         "resources.lib.router_scriptplay._script_play_tag_available"
     ):
-        prompt.return_value.yesno.return_value = True
-        filtered, total_count, _completed = _script_play_filter_autoselect_tag(
+        prepared = _script_play_filter_autoselect_tag(
             MagicMock(),
             {},
             providers,
@@ -1843,10 +1854,16 @@ def test_script_play_pack_keeps_unfiltered_providers_separately_selectable():
             pack_result=_local_pack_row(),
         )
 
+    # Every provider was filtered out: the filtered picker view holds only the
+    # local pack row, while the unfiltered providers stay reachable via the
+    # show-all toggle (the all_rows superset). The old "show unfiltered?" yes/no
+    # prompt is gone -- the picker opens directly in show-all mode instead.
+    filtered, all_rows, total_count, _completed = prepared
     assert filtered[0]["_season_pack"]["job_id"] == "41"
-    assert filtered[1:] == providers
+    assert filtered[1:] == []
+    assert all_rows[0]["_season_pack"]["job_id"] == "41"
+    assert all_rows[1:] == providers
     assert total_count == 4
-    prompt.return_value.yesno.assert_called_once()
 
 
 @patch("xbmcaddon.Addon")
@@ -2633,7 +2650,7 @@ def test_handle_script_play_threads_resolved_episode_context(mock_prepare, mock_
     from resources.lib.router import _handle_script_play
 
     chosen = {"title": "Spider-Noir.S01.2160p", "link": "http://i/pack.nzb"}
-    mock_prepare.return_value = ([chosen], 1, {})
+    mock_prepare.return_value = ([chosen], [chosen], 1, {})
 
     _handle_script_play(
         {

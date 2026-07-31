@@ -1429,3 +1429,23 @@ msgstr "The downloaded season pack is no longer available. Choose another result
 msgctxt "#30366"
 msgid "Video file is listed but not readable. If this persists, check the share or mount and restart Kodi."
 msgstr "Video file is listed but not readable. If this persists, check the share or mount and restart Kodi."
+
+msgctxt "#30367"
+msgid "Showing all {} sources (filters off)"
+msgstr "Showing all {} sources (filters off)"
+
+msgctxt "#30368"
+msgid "[Enter] Download & Play     [C] Show all ({} hidden)     [Esc] Back"
+msgstr "[Enter] Download & Play     [C] Show all ({} hidden)     [Esc] Back"
+
+msgctxt "#30369"
+msgid "[Enter] Download & Play     [C] Show filtered     [Esc] Back"
+msgstr "[Enter] Download & Play     [C] Show filtered     [Esc] Back"
+
+msgctxt "#30370"
+msgid "[Enter] Download & Play     [Esc] Back"
+msgstr "[Enter] Download & Play     [Esc] Back"
+
+msgctxt "#30371"
+msgid "FILTERED: {}"
+msgstr "FILTERED: {}"

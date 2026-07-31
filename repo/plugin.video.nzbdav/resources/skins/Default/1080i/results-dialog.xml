@@ -144,6 +144,11 @@
           <font>font12</font><textcolor>FFFFFFFF</textcolor>
           <label>$INFO[ListItem.Property(container)]</label><aligny>center</aligny>
         </control>
+        <control type="label">
+          <left>960</left><top>34</top><width>400</width><height>26</height>
+          <font>font12</font><textcolor>FFFFFFFF</textcolor>
+          <label>$INFO[ListItem.Property(filter_reason)]</label><aligny>center</aligny>
+        </control>
 
         <!-- Row separator -->
         <control type="image">
@@ -243,6 +248,12 @@
           <label>$INFO[ListItem.Property(container)]</label><aligny>center</aligny>
           <scroll>true</scroll>
         </control>
+        <control type="label">
+          <left>960</left><top>34</top><width>400</width><height>26</height>
+          <font>font12</font><textcolor>FFFFFFFF</textcolor>
+          <label>$INFO[ListItem.Property(filter_reason)]</label><aligny>center</aligny>
+          <scroll>true</scroll>
+        </control>
 
         <!-- Row separator -->
         <control type="image">
@@ -289,10 +300,10 @@
       <aligny>center</aligny>
     </control>
 
-    <!-- Footer: keyboard hints -->
+    <!-- Footer: keyboard hints (set by ResultsDialog._populate) -->
     <control type="label" id="6">
       <left>800</left><top>1040</top><width>1100</width><height>30</height>
-      <label>[Enter] Download &amp; Play     [Esc] Back</label>
+      <label>$INFO[Window.Property(footer_hints)]</label>
       <font>font10</font>
       <textcolor>FF9CA3AF</textcolor>
       <align>right</align>

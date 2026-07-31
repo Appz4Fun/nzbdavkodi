@@ -93,28 +93,6 @@ def _query_and_cache_providers(search_type, title, cache_kwargs, set_cached):
     return results, None
 
 
-def _filtered_or_prompt(all_parsed, title, notify):
-    """Resolve the list to display when filtering removed every result.
-
-    With parsed-but-filtered results, prompts to show them unfiltered and
-    returns ``all_parsed`` on yes / ``None`` on no. With nothing parsed,
-    notifies "no results" and returns ``None``. The caller treats ``None`` as
-    "abort and resolve the handle as a failure".
-    """
-    import resources.lib.router as _router
-
-    if all_parsed:
-        choice = xbmcgui.Dialog().yesno(
-            _router._addon_name(),
-            "All {} results were filtered out. Show unfiltered?".format(
-                len(all_parsed)
-            ),
-        )
-        return all_parsed if choice else None
-    notify(_router._addon_name(), _router._fmt(30087, title), 3000)
-    return None
-
-
 def _apply_completed_job_hint(resolver_params, selected, completed_jobs):
     """Thread the picker's completed-history hint into resolver params.
 
@@ -317,31 +295,29 @@ def _lookup_search_episode_args(params, search_type, title, season, episode, imd
     return title, season, episode
 
 
-def _available_filtered_rows(filtered, all_parsed, title, notify, pack_result):
-    """Return selectable provider rows, an empty local-pack pool, or ``None``."""
-    if filtered:
-        return filtered
-    if all_parsed or pack_result is None:
-        filtered = _filtered_or_prompt(all_parsed, title, notify)
-    if filtered:
-        return filtered
-    return [] if pack_result is not None else None
-
-
 def _prepare_picker_rows(results, title, notify, pack_result):
-    """Filter provider rows and prepend one exact local-pack row."""
+    """Filter provider rows; return the picker's two views plus a total count.
+
+    Returns ``(picker_rows, all_rows, total_count)`` -- ``picker_rows`` is
+    the filtered view (pack row first when present), ``all_rows`` the
+    unfiltered view the picker's show-all toggle reveals (same dict objects
+    plus the filter-rejected ones). Returns ``None`` only when there is
+    truly nothing to show (nothing parsed AND no local pack row):
+    zero-survivor filtering no longer prompts -- the picker opens directly
+    in show-all mode instead.
+    """
+    import resources.lib.router as _router
     from resources.lib.filter import filter_results
 
     filtered, all_parsed = filter_results(results)
-    filtered = _available_filtered_rows(
-        filtered, all_parsed, title, notify, pack_result
-    )
-    if filtered is None:
+    if not filtered and not all_parsed and pack_result is None:
+        notify(_router._addon_name(), _router._fmt(30087, title), 3000)
         return None
     provider_row_count = len(filtered)
     picker_rows = _prepend_pack(filtered, pack_result)
+    all_rows = _prepend_pack(all_parsed, pack_result)
     total_count = len(results) + len(picker_rows) - provider_row_count
-    return picker_rows, total_count
+    return picker_rows, all_rows, total_count
 
 
 def _handle_play_filter_and_select(
@@ -366,23 +342,28 @@ def _handle_play_filter_and_select(
     if prepared is None:
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
-    filtered, total_count = prepared
+    filtered, all_rows, total_count = prepared
 
-    # Auto-select best match if enabled
+    # Auto-select best match if enabled (only when something passed filters)
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
-    if _router._get_addon_setting(addon, "auto_select_best", "false").lower() == "true":
+    if (
+        _router._get_addon_setting(addon, "auto_select_best", "false").lower() == "true"
+        and filtered
+    ):
         _handle_play_auto_select(handle, filtered[0], filtered, identity)
         return
 
-    # Tag results already downloaded in the active backend (nzbdav / NZBGet)
-    providers = _provider_rows(filtered)
+    # Tag results already downloaded in the active backend (nzbdav / NZBGet).
+    # The all-rows superset keeps DL tags / completed-reuse valid for rows
+    # revealed by the picker's show-all toggle.
+    providers = _provider_rows(all_rows)
     completed_jobs = _router._tag_available(providers) if providers else None
 
     # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog
 
     selected = show_results_dialog(
-        filtered, title=title, year=year, total_count=total_count
+        filtered, title=title, year=year, total_count=total_count, all_results=all_rows
     )
 
     if selected:
@@ -806,7 +787,7 @@ def _handle_search_filter_and_select(
     if prepared is None:
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
-    filtered, total_count = prepared
+    filtered, all_rows, total_count = prepared
 
     # Auto-select best match if enabled
     addon = xbmcaddon.Addon("plugin.video.nzbdav")
@@ -821,22 +802,27 @@ def _handle_search_filter_and_select(
         xbmcplugin.endOfDirectory(handle, succeeded=False)
         return
 
-    _handle_search_tag_and_picker(handle, params, filtered, title, year, total_count)
+    _handle_search_tag_and_picker(
+        handle, params, filtered, all_rows, title, year, total_count
+    )
 
 
-def _handle_search_tag_and_picker(handle, params, filtered, title, year, total_count):
+def _handle_search_tag_and_picker(
+    handle, params, filtered, all_rows, title, year, total_count
+):
     """Tag, run the picker, resolve a selection, and end the directory."""
     import resources.lib.router as _router
 
-    # Tag results already downloaded in the active backend (nzbdav / NZBGet)
-    providers = _provider_rows(filtered)
+    # Tag the all-rows superset so DL tags / completed-reuse stay valid for
+    # rows revealed by the picker's show-all toggle.
+    providers = _provider_rows(all_rows)
     completed_jobs = _router._tag_available(providers) if providers else None
 
     # Show custom results dialog
     from resources.lib.results_dialog import show_results_dialog
 
     selected = show_results_dialog(
-        filtered, title=title, year=year, total_count=total_count
+        filtered, title=title, year=year, total_count=total_count, all_results=all_rows
     )
 
     if selected:

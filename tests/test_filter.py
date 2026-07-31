@@ -9,6 +9,7 @@ from resources.lib.filter import (
     _has_filter_metadata_shape,
     _sort_results,
     filter_results,
+    first_rejecting_filter,
     matches_filters,
     parse_title_metadata,
 )
@@ -1274,3 +1275,110 @@ def test_normalize_fallback_meta_preserves_channels():
     assert parsed["channels"] == "5.1"  # regex fallback extracts it
     meta = _normalize_fallback_meta(parsed)
     assert meta["channels"] == "5.1"
+
+
+# --- first_rejecting_filter / _filter_reject stamping ---
+
+
+def _hevc_only_settings():
+    """Mirror of the live-box config that hid the Memento AVC remux."""
+    return {
+        "resolutions": ["2160p", "1080p"],
+        "hdr": ["HDR10", "HDR10+", "Dolby Vision", "HLG", "SDR"],
+        "audio": ["Atmos", "TrueHD", "DTS-HD MA", "DTS:X", "DD+"],
+        "codecs": ["x265/HEVC"],
+        "languages": [],
+        "exclude_keywords": [],
+        "require_keywords": [],
+        "release_group": [],
+        "exclude_release_group": [],
+        "min_size": 0,
+        "max_size": 0,
+        "sort_order": 0,
+        "max_results": 25,
+    }
+
+
+def test_first_rejecting_filter_memento_avc_remux_names_codec():
+    """Regression: the exact release the HEVC-only box config silently hid."""
+    title = "Memento.2000.BluRay.1080p.DTS-HD.MA.5.1.AVC.HYBRID.REMUX-FraMeSToR"
+    meta = parse_title_metadata(title)
+    result = _make_result(title, size="34246891520")
+    assert first_rejecting_filter(result, meta, _hevc_only_settings()) == "codec"
+    assert matches_filters(result, meta, _hevc_only_settings()) is False
+
+
+def test_first_rejecting_filter_returns_none_for_kept_result():
+    title = "Memento.2000.1080p.BluRay.x265-GRP"
+    meta = parse_title_metadata(title)
+    result = _make_result(title)
+    assert first_rejecting_filter(result, meta, _hevc_only_settings()) is None
+    assert matches_filters(result, meta, _hevc_only_settings()) is True
+
+
+def test_first_rejecting_filter_reports_first_failure_in_order():
+    """A 720p x264 title fails resolution before codec — order matters."""
+    title = "Movie.2024.720p.WEB-DL.x264-GRP"
+    meta = parse_title_metadata(title)
+    result = _make_result(title)
+    assert first_rejecting_filter(result, meta, _hevc_only_settings()) == "resolution"
+
+
+def test_first_rejecting_filter_keyword_group_and_size_reasons():
+    title = "Movie.2024.1080p.BluRay.x265-GRP"
+    meta = parse_title_metadata(title)
+    result = _make_result(title, size=str(6 * 1024**3))
+
+    keyword = _hevc_only_settings()
+    keyword["exclude_keywords"] = ["bluray"]
+    assert first_rejecting_filter(result, meta, keyword) == "keyword"
+
+    group = _hevc_only_settings()
+    group["exclude_release_group"] = ["grp"]
+    assert first_rejecting_filter(result, meta, group) == "group"
+
+    size = _hevc_only_settings()
+    size["max_size"] = 1024  # MB; the 6 GB result exceeds it
+    assert first_rejecting_filter(result, meta, size) == "size"
+
+
+def test_first_rejecting_filter_hdr_audio_language_reasons():
+    hdr_settings = _hevc_only_settings()
+    hdr_settings["hdr"] = ["Dolby Vision"]
+    title = "Movie.2024.1080p.BluRay.x265-GRP"  # SDR title
+    meta = parse_title_metadata(title)
+    result = _make_result(title)
+    assert first_rejecting_filter(result, meta, hdr_settings) == "HDR"
+
+    audio_settings = _hevc_only_settings()
+    audio_settings["audio"] = ["TrueHD"]
+    aac_title = "Movie.2024.1080p.WEB.AAC.x265-GRP"
+    aac_meta = parse_title_metadata(aac_title)
+    assert (
+        first_rejecting_filter(_make_result(aac_title), aac_meta, audio_settings)
+        == "audio"
+    )
+
+    lang_settings = _hevc_only_settings()
+    lang_settings["languages"] = ["en"]
+    fr_title = "Movie.2024.FRENCH.1080p.BluRay.x265-GRP"
+    fr_meta = parse_title_metadata(fr_title)
+    assert (
+        first_rejecting_filter(_make_result(fr_title), fr_meta, lang_settings)
+        == "language"
+    )
+
+
+@patch("resources.lib.filter._get_filter_settings")
+def test_filter_results_stamps_filter_reject_on_both_lists(mock_settings):
+    mock_settings.return_value = _hevc_only_settings()
+    results = [
+        _make_result("Movie.2024.1080p.BluRay.x264-GRP"),
+        _make_result("Movie.2024.1080p.BluRay.x265-GRP"),
+    ]
+    filtered, all_parsed = filter_results(results)
+
+    rejects = {r["title"]: r["_filter_reject"] for r in all_parsed}
+    assert rejects["Movie.2024.1080p.BluRay.x264-GRP"] == "codec"
+    assert rejects["Movie.2024.1080p.BluRay.x265-GRP"] is None
+    assert [r["_filter_reject"] for r in filtered] == [None]

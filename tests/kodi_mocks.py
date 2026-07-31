@@ -53,6 +53,9 @@ def install_kodi_mocks() -> None:
     # (MagicMock subclasses swallow attribute assignments in __init__)
     sys.modules["xbmc"].Player = _FakePlayer
 
+    # xbmcgui.WindowXMLDialog must be a real class for the same reason.
+    sys.modules["xbmcgui"].WindowXMLDialog = _FakeWindowXMLDialog
+
     REPO_ROOT = Path(__file__).resolve().parents[1]
 
     # Add repo/plugin.video.nzbdav to the path so imports work
@@ -148,3 +151,46 @@ class _FakePlayer:
 
     def _set_time(self, value):
         self._time = float(value)
+
+
+class _FakeWindowXMLDialog:
+    """Real-class stand-in for ``xbmcgui.WindowXMLDialog``.
+
+    ``xbmcgui`` is a bare MagicMock module; subclassing one of its
+    attributes makes the subclass ITSELF a MagicMock, so the subclass
+    body's methods are unreachable and dialog behavior is untestable
+    (same failure class as the ``xbmc.Player`` note above). Minimal
+    real base: a property store, per-id control mocks, and a no-op
+    modal lifecycle.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._properties = {}
+        self._controls = {}
+        self._focus_id = None
+        self._closed = False
+
+    def setProperty(self, key, value):
+        self._properties[key] = value
+
+    def getProperty(self, key):
+        return self._properties.get(key, "")
+
+    def getControl(self, control_id):
+        control = self._controls.get(control_id)
+        if control is None:
+            control = MagicMock()
+            self._controls[control_id] = control
+        return control
+
+    def setFocusId(self, control_id):
+        self._focus_id = control_id
+
+    def getFocusId(self):
+        return self._focus_id
+
+    def doModal(self):
+        return None
+
+    def close(self):
+        self._closed = True

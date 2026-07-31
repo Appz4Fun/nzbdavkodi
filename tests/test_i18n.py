@@ -278,3 +278,23 @@ def test_settings_category_help_strings_are_defined():
             'category id={} references help="{}" with no matching '
             "msgctxt in strings.po".format(category.get("id"), help_id)
         )
+
+
+def test_picker_toggle_strings_have_fallbacks():
+    """The picker toggle strings must resolve even before strings.po loads."""
+    from unittest.mock import patch as _patch
+
+    from resources.lib import i18n
+
+    with _patch.object(i18n, "addon", return_value=None):
+        assert i18n.fmt(30367, 530) == "Showing all 530 sources (filters off)"
+        assert (
+            i18n.fmt(30368, 428)
+            == "[Enter] Download & Play     [C] Show all (428 hidden)     [Esc] Back"
+        )
+        assert (
+            i18n.string(30369)
+            == "[Enter] Download & Play     [C] Show filtered     [Esc] Back"
+        )
+        assert i18n.string(30370) == "[Enter] Download & Play     [Esc] Back"
+        assert i18n.fmt(30371, "codec") == "FILTERED: codec"

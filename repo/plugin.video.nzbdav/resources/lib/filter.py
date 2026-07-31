@@ -312,15 +312,40 @@ def matches_filters(result, meta, settings):
         ``False`` the first time any filter excludes it. Pure function
         — does not mutate any input.
     """
-    if not _meta_filters_pass(meta, settings):
-        return False
-    if not _keyword_filters_pass(result["title"].lower(), settings):
-        return False
-    if meta["group"] and meta["group"].lower() in settings["exclude_release_group"]:
-        return False
-    if not _size_filter_passes(result, settings):
-        return False
-    return True
+    return first_rejecting_filter(result, meta, settings) is None
+
+
+def _group_filter_passes(meta, settings):
+    excluded = settings["exclude_release_group"]
+    return not (meta["group"] and meta["group"].lower() in excluded)
+
+
+def first_rejecting_filter(result, meta, settings):
+    """Name of the first filter that rejects this result, or ``None``.
+
+    Checks run in ``matches_filters``' historical short-circuit order, so
+    the reported reason is the filter that would have rejected first. The
+    labels are technical tokens rendered verbatim in the picker's
+    ``FILTERED:`` chip (not localized, mirroring the ASCII ``DL`` tag).
+
+    A table of lazy checks (rather than a chain of ``if`` statements) keeps
+    this function's own cyclomatic complexity low -- the branching lives in
+    each named predicate, which is measured separately.
+    """
+    checks = (
+        (lambda: _resolution_filter_passes(meta, settings), "resolution"),
+        (lambda: _hdr_filter_passes(meta, settings), "HDR"),
+        (lambda: _audio_filter_passes(meta, settings), "audio"),
+        (lambda: _codec_filter_passes(meta, settings), "codec"),
+        (lambda: _language_filter_passes(meta, settings), "language"),
+        (lambda: _keyword_filters_pass(result["title"].lower(), settings), "keyword"),
+        (lambda: _group_filter_passes(meta, settings), "group"),
+        (lambda: _size_filter_passes(result, settings), "size"),
+    )
+    for passes, label in checks:
+        if not passes():
+            return label
+    return None
 
 
 def _resolution_filter_passes(meta, settings):
@@ -354,17 +379,6 @@ def _language_filter_passes(meta, settings):
     if settings["languages"] and meta["languages"]:
         return any(lang in settings["languages"] for lang in meta["languages"])
     return True
-
-
-def _meta_filters_pass(meta, settings):
-    """True iff the resolution/HDR/audio/codec/language filters all accept."""
-    return (
-        _resolution_filter_passes(meta, settings)
-        and _hdr_filter_passes(meta, settings)
-        and _audio_filter_passes(meta, settings)
-        and _codec_filter_passes(meta, settings)
-        and _language_filter_passes(meta, settings)
-    )
 
 
 def _keyword_filters_pass(title_lower, settings):
@@ -474,9 +488,10 @@ def _log_filter_summary(total, matched_count, shown):
 def filter_results(results, settings_getter=None):
     """Apply filters, sort, truncate. Returns (filtered, all_parsed).
 
-    Side effect: mutates each input dict by attaching a ``_meta`` key
-    holding the parsed-title metadata. Callers that iterate ``results``
-    after this call will see the extra field. ``all_parsed`` is the
+    Side effect: mutates each input dict by attaching ``_meta``
+    (parsed-title metadata) and ``_filter_reject`` (the first rejecting
+    filter's name, or ``None`` when the row passed). Callers that iterate
+    ``results`` after this call will see the extra fields. ``all_parsed`` is the
     same list of dicts (with ``_meta`` populated) in sorted order;
     ``filtered`` is the subset that passed every filter, truncated
     to ``settings["max_results"]`` if that is non-zero.
@@ -492,7 +507,9 @@ def filter_results(results, settings_getter=None):
         meta = _resolve_result_meta(result, parsed_by_title)
         result["_meta"] = meta
         all_parsed.append(result)
-        if matches_filters(result, meta, settings):
+        reject = first_rejecting_filter(result, meta, settings)
+        result["_filter_reject"] = reject
+        if reject is None:
             filtered.append(result)
 
     filtered = _sort_results(filtered, settings)

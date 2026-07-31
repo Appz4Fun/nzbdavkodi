@@ -14,7 +14,6 @@ keep resolving and no top-level import cycle is introduced.
 """
 
 import xbmc
-import xbmcgui
 
 
 def _script_play_recover_episode_info(params, title, season, episode):
@@ -105,7 +104,7 @@ def _script_play_log_route(params, search_type, title, imdb):
 
 
 def _script_play_picker_and_resolve(
-    params, filtered, title, year, total_count, completed_jobs
+    params, filtered, all_rows, title, year, total_count, completed_jobs
 ):
     """Open the RunScript picker and resolve the selection (no-op on cancel)."""
     import resources.lib.router as _router
@@ -113,7 +112,11 @@ def _script_play_picker_and_resolve(
 
     _router._script_play_stage("picker open")
     selected = show_results_dialog(
-        filtered, title=title, year=year, total_count=total_count
+        filtered,
+        title=title,
+        year=year,
+        total_count=total_count,
+        all_results=all_rows,
     )
     if not selected:
         _router._script_play_stage("picker cancelled")
@@ -168,9 +171,9 @@ def _script_play_search_filter_tag(
     """Search, filter, optionally auto-play, and tag for the RunScript flow.
 
     Runs the whole non-modal-loading-dialog phase. Returns ``None`` when the
-    caller should stop (provider error, no results, unfiltered-prompt declined,
-    or an auto-selected release was already played), otherwise the
-    ``(filtered, total_count, completed_jobs)`` payload for the picker.
+    caller should stop (provider error, no results, or an auto-selected release
+    was already played), otherwise the
+    ``(filtered, all_rows, total_count, completed_jobs)`` payload for the picker.
     """
     import resources.lib.router as _router
 
@@ -203,10 +206,10 @@ def _script_play_filter_autoselect_tag(
 ):
     """Filter, optionally auto-play, and tag for the RunScript flow.
 
-    Returns ``None`` when the caller should stop (unfiltered-prompt declined or
-    an auto-selected release was already played), otherwise the
-    ``(filtered, total_count, completed_jobs)`` payload. Extracted verbatim from
-    the body of ``_script_play_search_filter_tag``'s ``try`` block.
+    Returns ``None`` when the caller should stop (nothing to show at all, or an
+    auto-selected release was already played), otherwise the
+    ``(filtered, all_rows, total_count, completed_jobs)`` payload. Zero-survivor
+    filtering no longer prompts: the picker opens in show-all mode instead.
     """
     import resources.lib.router as _router
     from resources.lib.filter import filter_results
@@ -226,12 +229,13 @@ def _script_play_filter_autoselect_tag(
     )
 
     filtered = _script_play_available_rows(
-        loading, filtered, all_parsed, title, notify, pack_result
+        filtered, all_parsed, title, notify, pack_result
     )
     if filtered is None:
         return None
     provider_row_count = len(filtered)
     filtered = _router._prepend_pack(filtered, pack_result)
+    all_rows = _router._prepend_pack(all_parsed, pack_result)
     total_count += len(filtered) - provider_row_count
 
     if (
@@ -243,50 +247,32 @@ def _script_play_filter_autoselect_tag(
         _script_play_auto_select(params, filtered[0], filtered)
         return None
 
-    completed_jobs = _script_play_completed_jobs(_router, filtered)
-    return filtered, total_count, completed_jobs
+    # Tag the all-rows superset so DL tags / completed-reuse stay valid for
+    # rows revealed by the picker's show-all toggle.
+    completed_jobs = _script_play_completed_jobs(_router, all_rows)
+    return filtered, all_rows, total_count, completed_jobs
 
 
-def _script_play_available_rows(
-    loading, filtered, all_parsed, title, notify, pack_result
-):
-    """Return selectable provider rows, an empty local-pack pool, or ``None``."""
-    if filtered:
+def _script_play_available_rows(filtered, all_parsed, title, notify, pack_result):
+    """Return the filtered provider rows, or ``None`` when nothing exists at all.
+
+    Zero-survivor filtering no longer prompts: with parsed-but-filtered
+    rows the picker opens in show-all mode instead. ``None`` (stop, with
+    the "no results" notify) only when nothing parsed AND no local pack
+    row exists.
+    """
+    if filtered or all_parsed or pack_result is not None:
         return filtered
-    if all_parsed or pack_result is None:
-        filtered = _script_play_filtered_or_prompt(loading, all_parsed, title, notify)
-    if filtered:
-        return filtered
-    return [] if pack_result is not None else None
+    import resources.lib.router as _router
+
+    notify(_router._addon_name(), _router._fmt(30087, title), 3000)
+    return None
 
 
 def _script_play_completed_jobs(router_module, filtered):
     """Tag ordinary provider rows while leaving a pack-only picker untouched."""
     providers = router_module._provider_rows(filtered)
     return _script_play_tag_available(providers) if providers else None
-
-
-def _script_play_filtered_or_prompt(loading, all_parsed, title, notify):
-    """RunScript variant of the unfiltered-results prompt.
-
-    Closes the loading dialog before the modal yes/no so the two don't stack.
-    Returns ``all_parsed`` on yes, or ``None`` (caller stops) on no / when
-    nothing parsed.
-    """
-    import resources.lib.router as _router
-
-    if all_parsed:
-        # Close before the modal yes/no so the two don't stack.
-        _router._close_loading_dialog(loading)
-        choice = xbmcgui.Dialog().yesno(
-            _router._addon_name(),
-            "All {} results were filtered out. Show unfiltered?".format(
-                len(all_parsed)
-            ),
-        )
-        return all_parsed if choice else None
-    notify(_router._addon_name(), _router._fmt(30087, title), 3000)
-    return None
 
 
 def _script_play_tag_available(filtered):
