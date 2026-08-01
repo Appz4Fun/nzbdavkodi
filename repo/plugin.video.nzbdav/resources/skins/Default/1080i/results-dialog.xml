@@ -310,5 +310,16 @@
       <aligny>center</aligny>
     </control>
 
+    <!-- Empty state message -->
+    <control type="label">
+      <left>0</left><top>440</top><width>1920</width><height>100</height>
+      <align>center</align>
+      <aligny>center</aligny>
+      <font>font13</font>
+      <textcolor>FF9CA3AF</textcolor>
+      <label>No results found</label>
+      <visible>Integer.IsEqual(Container(50).NumItems,0)</visible>
+    </control>
+
   </controls>
 </window>
