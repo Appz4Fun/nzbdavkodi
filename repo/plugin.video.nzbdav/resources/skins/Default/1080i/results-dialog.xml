@@ -263,6 +263,17 @@
       </focusedlayout>
     </control>
 
+    <!-- Empty state handling -->
+    <control type="label">
+      <left>0</left><top>400</top><width>1920</width><height>50</height>
+      <align>center</align>
+      <aligny>center</aligny>
+      <font>font13</font>
+      <textcolor>FF9CA3AF</textcolor>
+      <label>No results found</label>
+      <visible>Integer.IsEqual(Container(50).NumItems,0)</visible>
+    </control>
+
     <!-- Scrollbar for the results list -->
     <control type="scrollbar" id="60">
       <left>1910</left><top>60</top><width>10</width><height>975</height>
