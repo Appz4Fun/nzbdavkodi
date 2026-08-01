@@ -26,12 +26,10 @@ class _DispatchMixin:  # pylint: disable=too-few-public-methods
         both sides to str("") if None.
         """
         expected_token = getattr(self.server, "prepare_token", "")
-        supplied_token = self.headers.get(_sp._PREPARE_TOKEN_HEADER)
-        if expected_token and not _sp.hmac.compare_digest(
-            supplied_token or "", expected_token or ""
-        ):
+        if not expected_token:
             return False
-        return True
+        supplied_token = self.headers.get(_sp._PREPARE_TOKEN_HEADER)
+        return _sp.hmac.compare_digest(supplied_token or "", expected_token)
 
     def _read_json_post_body(self):
         """Read + JSON-parse a POST body, returning a dict or None.
