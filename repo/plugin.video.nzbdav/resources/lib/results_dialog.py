@@ -179,8 +179,10 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
         self.setProperty("sort_info", _string(30111))
         if self.show_all:
             self.setProperty("filter_info", _fmt(30367, len(active)))
+            self.setProperty("empty_message", _fmt(30087, title_display))
         else:
             self.setProperty("filter_info", _fmt(30112, len(active), self.total_count))
+            self.setProperty("empty_message", _fmt(30089, title_display))
         self.setProperty("footer_hints", self._footer_hints())
 
         list_control = self.getControl(LIST_ID)
