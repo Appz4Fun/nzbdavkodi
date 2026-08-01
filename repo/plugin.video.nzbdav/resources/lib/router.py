@@ -749,6 +749,13 @@ def _handle_script_play(params):
     title, season, episode = _script_play_resolve_episode_args(
         params, search_type, title, season, episode, imdb
     )
+    # Threaded onto params (not just _episode_context) so the picker/
+    # auto-select resolve step can remember these numbers as "last picked"
+    # for this show regardless of which path resolved them.
+    if season:
+        params["season"] = season
+    if episode:
+        params["episode"] = episode
     _attach_episode_context(params, params, title=title, season=season, episode=episode)
     pack_result = _season_pack_result(
         params.get("_episode_context"), settings_getter=_get_script_setting
