@@ -29,9 +29,7 @@ class _DispatchMixin:  # pylint: disable=too-few-public-methods
         if not expected_token:
             return False
         supplied_token = self.headers.get(_sp._PREPARE_TOKEN_HEADER)
-        if not _sp.hmac.compare_digest(
-            supplied_token or "", expected_token or ""
-        ):
+        if not _sp.hmac.compare_digest(supplied_token or "", expected_token or ""):
             return False
         return True
 
