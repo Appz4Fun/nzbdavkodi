@@ -407,13 +407,27 @@ def _extract_mkv_frame_from_segment(segment):
     been seen.
     """
     track_number = None
+    pending_clusters = []
     for sub_id, sub_start, sub_end in _iter_ebml(segment):
         if sub_id == _EBML_ID_TRACKS:
             track_number = _find_hevc_track_number(segment[sub_start:sub_end])
-        elif sub_id == _EBML_ID_CLUSTER and track_number is not None:
-            frame = _extract_mkv_block_frame(segment[sub_start:sub_end], track_number)
-            if frame is not None:
-                return frame
+            if track_number is not None:
+                for cluster_start, cluster_end in pending_clusters:
+                    frame = _extract_mkv_block_frame(
+                        segment[cluster_start:cluster_end], track_number
+                    )
+                    if frame is not None:
+                        return frame
+                pending_clusters = []
+        elif sub_id == _EBML_ID_CLUSTER:
+            if track_number is None:
+                pending_clusters.append((sub_start, sub_end))
+            else:
+                frame = _extract_mkv_block_frame(
+                    segment[sub_start:sub_end], track_number
+                )
+                if frame is not None:
+                    return frame
     return None
 
 
