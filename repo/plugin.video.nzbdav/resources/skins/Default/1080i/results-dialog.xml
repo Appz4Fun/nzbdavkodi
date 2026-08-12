@@ -279,6 +279,17 @@
       <textureslidernibfocus></textureslidernibfocus>
     </control>
 
+    <!-- Empty state indicator for when the list has no items -->
+    <control type="label">
+      <left>0</left><top>60</top><width>1910</width><height>975</height>
+      <align>center</align>
+      <aligny>center</aligny>
+      <label>No results found</label>
+      <font>font13</font>
+      <textcolor>FF9CA3AF</textcolor>
+      <visible>Integer.IsEqual(Container(50).NumItems,0)</visible>
+    </control>
+
     <!-- Footer background -->
     <control type="image">
       <left>0</left><top>1035</top><width>1920</width><height>45</height>
