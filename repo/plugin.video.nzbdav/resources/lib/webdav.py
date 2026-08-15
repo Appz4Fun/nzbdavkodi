@@ -500,7 +500,8 @@ def _folder_total_entry_video_size(response, ns, href_path, request_path, subdir
     if _folder_total_collect_subdir(response, href_path, request_path, subdirs, ns):
         return None, False
     lowered = unquote(href_path).lower()
-    if not any(lowered.endswith(ext) for ext in _FOLDER_TOTAL_VIDEO_EXTENSIONS):
+    # ⚡ Bolt: str.endswith natively takes a tuple (faster than any() generator loop)
+    if not lowered.endswith(_FOLDER_TOTAL_VIDEO_EXTENSIONS):
         return None, False
     return _folder_total_video_size(response, ns)
 
