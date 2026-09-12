@@ -47,22 +47,16 @@ ALT_TITLES_REGEX = re.compile(
 # NOT_ONLY_NON_ENGLISH_REGEX: the first alternative used a variable-width lookbehind.
 # Replaced with a helper function _apply_not_only_non_english_regex below.
 _NOT_ONLY_NON_ENG_PART1 = re.compile(
-    rf"[a-zA-Z][^{NON_ENGLISH_CHARS}]+[{NON_ENGLISH_CHARS}].*[{NON_ENGLISH_CHARS}]"
+    rf"([a-zA-Z][^{NON_ENGLISH_CHARS}]+)[{NON_ENGLISH_CHARS}].*[{NON_ENGLISH_CHARS}]"
 )
 _NOT_ONLY_NON_ENG_PART2 = re.compile(
     rf"[{NON_ENGLISH_CHARS}].*[{NON_ENGLISH_CHARS}](?=[^{NON_ENGLISH_CHARS}]+[a-zA-Z])"
 )
-_ENGLISH_PREFIX = re.compile(rf"[a-zA-Z][^{NON_ENGLISH_CHARS}]+")
 
 
 def _apply_not_only_non_english_regex(s: str) -> str:
     """Remove non-English sections that appear inline within English text."""
-
-    def _keep_english_prefix(m: re.Match) -> str:
-        prefix = _ENGLISH_PREFIX.match(m.group(0))
-        return prefix.group(0) if prefix else ""
-
-    s = _NOT_ONLY_NON_ENG_PART1.sub(_keep_english_prefix, s)
+    s = _NOT_ONLY_NON_ENG_PART1.sub(r"\1", s)
     s = _NOT_ONLY_NON_ENG_PART2.sub("", s)
     return s
 
