@@ -56,6 +56,6 @@ jobs:
       # Must match the init action's release exactly: a version skew (init wrote
       # a 4.36.2 config, analyze ran 4.36.0) makes the analyze post-step abort
       # with "Loaded a configuration file for version X, but running version Y".
-      uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4.37.0
+      uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
       with:
         category: "/language:${{matrix.language}}"
