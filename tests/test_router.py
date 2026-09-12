@@ -620,6 +620,30 @@ def test_get_script_setting_reads_translated_profile_settings(tmp_path):
             assert router._get_script_setting("hydra_url", "") == "http://hydra:5076"
 
 
+def test_script_filters_preserve_cleared_remux_tiers_and_other_defaults(tmp_path):
+    from resources.lib.filter import _get_filter_settings
+    from resources.lib.filter_remux import DEFAULT_REMUX_GROUPS
+
+    settings_file = tmp_path / "settings.xml"
+    with patch(
+        "resources.lib.router._script_settings_paths", return_value=[str(settings_file)]
+    ):
+        for cleared in range(3):
+            settings_file.write_text(
+                '<settings><setting id="filter_remux_tier_{}" />'
+                '<setting id="hydra_url" /></settings>'.format(cleared + 1),
+                encoding="utf-8",
+            )
+            expected = [list(groups) for groups in DEFAULT_REMUX_GROUPS]
+            expected[cleared] = []
+            settings = _get_filter_settings(settings_getter=_get_script_setting)
+            assert settings["remux_tiers"] == expected
+            assert (
+                _get_script_setting("hydra_url", "http://default") == "http://default"
+            )
+            assert _get_script_setting("cache_ttl", "60") == "60"
+
+
 # --- _safe_resolve_handle + action route handle-resolution tests ---
 #
 # Action routes (install_player, clear_cache, settings, configure_*,
@@ -747,15 +771,13 @@ def test_route_settings_resolves_handle(mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
-def test_route_configure_preferred_groups_resolves_handle(mock_resolved):
-    """/configure_preferred_groups must resolve the handle after running."""
-    fake_filter = MagicMock(
-        configure_groups_dialog=MagicMock(),
-        DEFAULT_PREFERRED_GROUPS=[],
-    )
-    with patch.dict("sys.modules", {"resources.lib.filter": fake_filter}):
+def test_removed_preferred_groups_route_opens_settings_and_resolves_handle(
+    mock_resolved,
+):
+    """Old shortcuts use the settings fallback instead of an obsolete editor."""
+    with patch("resources.lib.router._addon_instance") as addon:
         route(["plugin://plugin.video.nzbdav/configure_preferred_groups", "4", ""])
-    fake_filter.configure_groups_dialog.assert_called_once()
+    addon.return_value.openSettings.assert_called_once()
     assert mock_resolved.called
     assert mock_resolved.call_args[0][0] == 4
     assert mock_resolved.call_args[0][1] is False
@@ -774,6 +796,18 @@ def test_route_configure_excluded_groups_resolves_handle(mock_resolved):
     assert mock_resolved.called
     assert mock_resolved.call_args[0][0] == 5
     assert mock_resolved.call_args[0][1] is False
+
+
+def test_cleared_excluded_groups_reopen_with_nothing_checked():
+    from resources.lib.router_dispatch import _route_configure_excluded_groups
+
+    with patch("resources.lib.filter_groups.xbmcaddon.Addon") as addon, patch(
+        "resources.lib.filter_groups.xbmcgui.Dialog"
+    ) as dialog:
+        addon.return_value.getSetting.return_value = ""
+        dialog.return_value.multiselect.return_value = None
+        _route_configure_excluded_groups({})
+    assert dialog.return_value.multiselect.call_args.kwargs["preselect"] == []
 
 
 @patch("xbmcplugin.setResolvedUrl")

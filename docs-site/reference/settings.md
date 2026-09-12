@@ -62,7 +62,7 @@ reachability.
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
-| TMDB API key (optional, improves TV results via TVDB id) | `tmdb_api_key` | *(empty)* | When set, NZB-DAV resolves a show's TVDB id and searches indexers by id for more accurate episode results. Stored hidden. |
+| TMDB API key (optional, movies and TV) | `tmdb_api_key` | *(empty)* | A TMDB key resolves missing IMDb movie IDs or TVDB series IDs from the correct TMDB movie/TV namespace. IDs supplied by TMDBHelper are used directly. Without the key, or on lookup failure, the existing IDs/title remain usable. Stored hidden. |
 
 ## NZBGet
 
@@ -125,32 +125,30 @@ See [Set up TMDBHelper](../getting-started/tmdbhelper.md).
 
 ## Quality Filters
 
-Every toggle is a boolean, and **all default to `true`** (show everything). Turn
-off what you don't want. See
-[Quality filtering](../features/quality-filtering.md) for the fail-open behavior
-and the HDR/SDR exception.
+Every format toggle defaults to `true`. **Other / Unknown** independently
+controls missing or unlisted metadata in each category, including HDR.
+See [Quality filtering](../features/quality-filtering.md) for the full options.
 
 | Group | Settings (id) |
 |-------|---------------|
-| **Resolution** | `filter_2160p` (2160p/4K), `filter_1080p`, `filter_720p`, `filter_480p` |
-| **HDR** | `filter_hdr10`, `filter_hdr10plus`, `filter_dolby_vision`, `filter_hlg`, `filter_sdr` |
-| **Audio** | `filter_atmos`, `filter_truehd`, `filter_dtshd_ma`, `filter_dtsx`, `filter_ddplus` (DD+/EAC3), `filter_dd` (DD/AC3), `filter_aac` |
-| **Video codec** | `filter_hevc` (x265/HEVC), `filter_avc` (x264/AVC), `filter_av1`, `filter_vp9`, `filter_mpeg2` |
-| **Language** | `filter_english`, `filter_spanish`, `filter_french`, `filter_german`, `filter_italian`, `filter_portuguese`, `filter_dutch`, `filter_russian`, `filter_japanese`, `filter_korean`, `filter_chinese`, `filter_arabic`, `filter_hindi` |
+| **Resolution** | `filter_4320p`, `filter_2160p`, `filter_1440p`, `filter_1080p` (p/i), `filter_720p` (p/i), `filter_576p` (p/i), `filter_540p`, `filter_480p` (p/i), `filter_360p`, `filter_240p`, `filter_unknown_resolution` |
+| **HDR** | `filter_hdr10`, `filter_hdr10plus`, `filter_dolby_vision`, `filter_hlg`, `filter_sdr`, `filter_unknown_hdr` |
+| **Audio** | `filter_atmos`, `filter_truehd`, `filter_dtshd_ma`, `filter_dtshd_hr`, `filter_dtsx`, `filter_dts`, `filter_ddplus`, `filter_dd`, `filter_aac`, `filter_flac`, `filter_pcm`, `filter_opus`, `filter_mp3`, `filter_alac`, `filter_vorbis`, `filter_mp2`, `filter_wma`, `filter_ac4`, `filter_unknown_audio` |
+| **Video codec** | `filter_hevc`, `filter_avc`, `filter_av1`, `filter_vp9`, `filter_mpeg2`, `filter_mpeg4`, `filter_vc1`, `filter_mpeg1`, `filter_vp8`, `filter_wmv`, `filter_h263`, `filter_vvc`, `filter_mjpeg`, `filter_theora`, `filter_unknown_codec` |
+| **Language** | Separate **Languages** tab after Quality Filters: 48 `filter_<language>` choices, plus `filter_unknown_language`. Spanish includes Latino. Chinese also accepts Cantonese and Urdu under the configured grouping. |
 
 ## Keyword Filters
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
-| Preferred release groups | `filter_release_group` | *(empty)* | Comma-separated groups to **boost** in Relevance ranking. Edited with *Configure Preferred Groups*. **Not a filter.** |
+| Preferred groups: Tier 1 / 2 / 3 | `filter_remux_tier_1`, `filter_remux_tier_2`, `filter_remux_tier_3` | TRaSH remux tiers 1/2/3 | Editable comma-separated group names; empty disables that tier. Relevance ranks Tier 1 before Tier 2, then Tier 3, for all releases after resolution, HDR, and REMUX priority. |
 | Excluded release groups | `filter_exclude_release_group` | *(empty)* | Comma-separated groups to **remove**. Edited with *Configure Excluded Groups*. |
 | Min size (MB, 0=no limit) | `filter_min_size` | `0` | Remove releases smaller than this. A size that can't be read counts as 0 MB. |
 | Max size (MB, 0=no limit) | `filter_max_size` | `0` | Remove releases larger than this. If max < min, the size filter is disabled. |
 | Exclude keywords (comma-separated) | `filter_exclude_keywords` | *(empty)* | Remove releases whose title contains any keyword. |
 | Required keywords (comma-separated) | `filter_require_keywords` | *(empty)* | Remove releases whose title lacks any keyword. |
 
-**Actions:** *Configure Preferred Groups*, *Configure Excluded Groups* — both
-open a multi-select of ~95 known release groups.
+**Action:** *Configure Excluded Groups* opens a multi-select of ~95 known release groups.
 
 ## Sorting
 
@@ -177,7 +175,7 @@ These tune polling, caching, stream resilience, fallback streams, and the proxy.
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
-| Cache duration (seconds, 0=disabled) | `cache_ttl` | `300` | How long to cache search results. `0` disables the cache. Clamped to 0–86400. Stores raw pre-filter results, so filter/sort changes take effect immediately. |
+| Cache duration (seconds, 0=disabled) | `cache_ttl` | `60` | How long to cache search results. `0` disables the cache. Clamped to 0–86400. Stores raw pre-filter results, so filter/sort changes take effect immediately. |
 
 ### Stream resilience
 

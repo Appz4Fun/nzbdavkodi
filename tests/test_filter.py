@@ -5,6 +5,7 @@ import ast
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from resources.lib.filter import (
     _has_filter_metadata_shape,
     _sort_results,
@@ -57,6 +58,36 @@ def test_filter_uses_module_scope_kodi_imports():
 
 
 # --- parse_title_metadata with real PTT (not mocked) ---
+
+
+@pytest.mark.parametrize(
+    "tags,expected",
+    [
+        ("DDP2.0.Atmos", ["Atmos", "DD+"]),
+        ("DD+2.0.FLAC", ["DD+", "FLAC"]),
+        ("DD Plus.FLAC", ["DD+", "FLAC"]),
+        ("DD2+.FLAC", ["DD+", "FLAC"]),
+        ("qAAC.FLAC", ["AAC", "FLAC"]),
+        ("AACx2.FLAC", ["AAC", "FLAC"]),
+        ("AC3x2.FLAC", ["DD", "FLAC"]),
+        ("EAC3x2.AC3", ["DD+", "DD"]),
+        ("DolbyD.FLAC", ["DD", "FLAC"]),
+        ("FLAC2.0x2.AAC", ["AAC", "FLAC"]),
+        ("DTS-HD.HRA", ["DTS-HD HR"]),
+        ("DTS-HD.HRA.FLAC", ["DTS-HD HR", "FLAC"]),
+        ("TRUE.FLAC", ["FLAC", "TrueHD"]),
+        ("DTS-HD.AAC", ["AAC", "DTS"]),
+        ("Clean.Audio.FLAC", ["FLAC", "HQ Clean Audio"]),
+    ],
+)
+def test_audio_aliases_survive_supplemental_format_detection(tags, expected):
+    title = "Example.Movie.2024.1080p.{}.x264-GROUP".format(tags)
+    meta = parse_title_metadata(title)
+    assert meta["audio"] == expected
+    settings = _all_pass_settings()
+    for audio in expected:
+        settings["audio"] = [audio]
+        assert matches_filters(_make_result(title), meta, settings)
 
 
 def test_parse_title_metadata_movie():
@@ -154,7 +185,7 @@ def _all_pass_settings():
     return {
         "resolutions": ["2160p", "1080p", "720p", "480p"],
         "hdr": ["HDR10", "HDR10+", "Dolby Vision", "HLG", "SDR"],
-        "audio": ["Atmos", "TrueHD", "DTS-HD MA", "DTS:X", "DD+", "DD", "AAC"],
+        "audio": ["Atmos", "TrueHD", "DTS-HD MA", "DTS:X", "DTS", "DD+", "DD", "AAC"],
         "codecs": ["x265/HEVC", "x264/AVC", "AV1", "VP9", "MPEG-2"],
         "languages": [],
         "exclude_keywords": [],
@@ -174,7 +205,7 @@ def test_filter_pipeline_realistic_titles(mock_settings):
     mock_settings.return_value = {
         "resolutions": ["1080p"],
         "hdr": ["SDR"],
-        "audio": ["Atmos", "TrueHD", "DTS-HD MA", "DTS:X", "DD+", "DD", "AAC"],
+        "audio": ["Atmos", "TrueHD", "DTS-HD MA", "DTS:X", "DTS", "DD+", "DD", "AAC"],
         "codecs": ["x265/HEVC", "x264/AVC"],
         "languages": [],
         "exclude_keywords": ["cam"],
@@ -349,7 +380,7 @@ def test_filter_preferred_release_group_boosted(mock_settings):
         "languages": [],
         "exclude_keywords": [],
         "require_keywords": [],
-        "release_group": ["SPARKS"],
+        "remux_tiers": [["SPARKS"], [], []],
         "exclude_release_group": [],
         "min_size": 0,
         "max_size": 0,
@@ -1018,7 +1049,7 @@ def test_get_filter_settings_csv_fields_split_and_stripped(mock_addon):
 
     assert settings["exclude_keywords"] == ["cam", "hdcam", "ts"]
     assert settings["require_keywords"] == []
-    assert settings["release_group"] == ["grp1", "grp2"]
+    assert "release_group" not in settings
     assert settings["exclude_release_group"] == ["nuked"]
 
 
@@ -1045,11 +1076,21 @@ def test_get_filter_settings_int_fields_fall_back_on_non_numeric(mock_addon):
 
 @patch("xbmcaddon.Addon")
 def test_get_filter_settings_returns_empty_lists_when_nothing_enabled(mock_addon):
-    """All toggles "false" / unset must produce empty lists rather than
-    partial junk — this is the fresh-install shape."""
+    """Explicitly disabled toggles produce empty known-format selections."""
     from resources.lib.filter import _get_filter_settings
 
-    mock_addon.return_value.getSetting.side_effect = lambda k: ""
+    mock_addon.return_value.getSetting.side_effect = lambda k: (
+        "false"
+        if k.startswith("filter_")
+        and k
+        not in {
+            "filter_exclude_keywords",
+            "filter_require_keywords",
+            "filter_release_group",
+            "filter_exclude_release_group",
+        }
+        else ""
+    )
 
     settings = _get_filter_settings()
 
@@ -1060,7 +1101,7 @@ def test_get_filter_settings_returns_empty_lists_when_nothing_enabled(mock_addon
     assert settings["languages"] == []
     assert settings["exclude_keywords"] == []
     assert settings["require_keywords"] == []
-    assert settings["release_group"] == []
+    assert "release_group" not in settings
     assert settings["exclude_release_group"] == []
 
 
@@ -1345,7 +1386,7 @@ def test_first_rejecting_filter_keyword_group_and_size_reasons():
 def test_first_rejecting_filter_hdr_audio_language_reasons():
     hdr_settings = _hevc_only_settings()
     hdr_settings["hdr"] = ["Dolby Vision"]
-    title = "Movie.2024.1080p.BluRay.x265-GRP"  # SDR title
+    title = "Movie.2024.1080p.BluRay.SDR.x265-GRP"
     meta = parse_title_metadata(title)
     result = _make_result(title)
     assert first_rejecting_filter(result, meta, hdr_settings) == "HDR"

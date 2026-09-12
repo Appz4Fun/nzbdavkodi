@@ -7,6 +7,7 @@ from unittest.mock import patch
 from resources.lib.tvdb_resolver import (
     _cache_path,
     _get_tmdb_api_key,
+    resolve_movie_imdb_id,
     resolve_tvdb_id,
 )
 
@@ -258,3 +259,32 @@ def test_get_tmdb_api_key_empty_without_own_setting_and_never_uses_addon():
         key = _get_tmdb_api_key(_no_key_getter)
     assert key == ""
     mock_xbmcaddon.Addon.assert_not_called()
+
+
+def test_movie_tmdb_id_uses_movie_endpoint_and_separate_cache_namespace():
+    cache = {"tmdb:603": "12345"}  # same numeric ID belongs to a different TV show
+    calls = []
+
+    def get(url, timeout=15):
+        calls.append(url)
+        assert "/movie/603/external_ids?" in url
+        return json.dumps({"id": 603, "imdb_id": "tt0133093", "tvdb_id": 99})
+
+    assert resolve_movie_imdb_id("603", _key_getter, get, cache) == "tt0133093"
+    assert resolve_movie_imdb_id("603", _no_key_getter, get, cache) == "tt0133093"
+    assert len(calls) == 1
+    assert cache["tmdb:603"] == "12345"
+
+
+def test_movie_lookup_missing_key_bad_input_and_invalid_result_are_fail_soft():
+    from unittest.mock import MagicMock
+
+    get = MagicMock(return_value='{"imdb_id": null}')
+    assert resolve_movie_imdb_id("603", _no_key_getter, get, {}) == ""
+    assert resolve_movie_imdb_id("{tmdb_id}", _key_getter, get, {}) == ""
+    get.assert_not_called()
+    cache = {}
+    assert resolve_movie_imdb_id("603", _key_getter, get, cache) == ""
+    assert not cache
+    get.side_effect = OSError("unavailable")
+    assert resolve_movie_imdb_id("603", _key_getter, get, cache) == ""

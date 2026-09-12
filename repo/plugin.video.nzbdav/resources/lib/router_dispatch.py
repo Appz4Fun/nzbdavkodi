@@ -101,25 +101,14 @@ def _route_clear_cache(_params):
     notify(_router._addon_name(), _router._string(30082), 3000)
 
 
-def _route_configure_preferred_groups(_params):
-    import resources.lib.router as _router
-    from resources.lib.filter import DEFAULT_PREFERRED_GROUPS, configure_groups_dialog
-
-    configure_groups_dialog(
-        "filter_release_group",
-        _router._string(30054),
-        DEFAULT_PREFERRED_GROUPS,
-    )
-
-
 def _route_configure_excluded_groups(_params):
     import resources.lib.router as _router
-    from resources.lib.filter import DEFAULT_EXCLUDED_GROUPS, configure_groups_dialog
+    from resources.lib.filter import configure_groups_dialog
 
     configure_groups_dialog(
         "filter_exclude_release_group",
         _router._string(30055),
-        DEFAULT_EXCLUDED_GROUPS,
+        (),  # An empty saved list means no exclusions, including when reopened.
     )
 
 
@@ -155,7 +144,6 @@ def _dispatch_action_route(path, params):
         "/install_player_other": _route_install_player_other,
         "/clear_cache": _route_clear_cache,
         "/settings": lambda _params: _router._addon_instance().openSettings(),
-        "/configure_preferred_groups": _route_configure_preferred_groups,
         "/configure_excluded_groups": _route_configure_excluded_groups,
         "/test_hydra": lambda _params: _router._test_hydra_connection(),
         "/test_prowlarr": lambda _params: _router._test_prowlarr_connection(),

@@ -21,10 +21,39 @@ from resources.lib.filter_fallback import (
     _fallback_year,
 )
 from resources.lib.filter_groups import ALL_RELEASE_GROUPS, configure_groups_dialog
+from resources.lib.filter_languages import language_filter_values
 from resources.lib.filter_normalize import (
     _normalize_fallback_meta,
     _normalize_parsed_meta,
 )
+from resources.lib.filter_options import (
+    AUDIO_SETTINGS as _AUDIO_SETTINGS,
+)
+from resources.lib.filter_options import (
+    BOOLEAN_SETTINGS,
+    UNKNOWN_SETTINGS,
+    values_filter_pass,
+)
+from resources.lib.filter_options import (
+    CODEC_SETTINGS as _CODEC_SETTINGS,
+)
+from resources.lib.filter_options import (
+    HDR_SETTINGS as _HDR_SETTINGS,
+)
+from resources.lib.filter_options import (
+    LANGUAGE_SETTINGS as _LANGUAGE_SETTINGS,
+)
+from resources.lib.filter_options import (
+    RESOLUTION_SETTINGS as _RESOLUTION_SETTINGS,
+)
+from resources.lib.filter_remux import (
+    DEFAULT_REMUX_GROUPS,
+    compile_remux_tiers,
+    read_remux_tiers,
+    remux_group_rank,
+    remux_priority,
+)
+from resources.lib.filter_tags import supplement_metadata
 
 # Re-exported so ``resources.lib.filter.<name>`` keeps resolving for callers
 # and tests after the fallback parser, groups dialog, and metadata
@@ -68,22 +97,6 @@ _FILTER_META_KEYS = frozenset(
     + _FILTER_META_INT_KEYS
 )
 
-DEFAULT_PREFERRED_GROUPS = {
-    "CiNEPHiLES",
-    "DiscoD",
-    "DON",
-    "FrameStor",
-    "hallowed",
-    "HiDt",
-    "HONE",
-    "j3rico",
-    "Kira",
-    "MainFrame",
-    "SEV",
-    "SPHD",
-    "W4NK3R",
-}
-
 DEFAULT_EXCLUDED_GROUPS = {
     "4KDVS",
     "B0MBARDiERS",
@@ -117,7 +130,7 @@ def _collect_enabled(addon, pairs):
     return [
         label
         for setting_id, label in pairs
-        if addon.getSetting(setting_id).lower() == "true"
+        if (addon.getSetting(setting_id) or "true").lower() == "true"
     ]
 
 
@@ -154,58 +167,6 @@ def _int_setting(addon, key, default):
         return default
 
 
-# Setting-key -> filter-value specs, consumed by _get_filter_settings via
-# _collect_enabled. ISO 639-1 language codes match PTT's
-# `parsed["languages"]` output (lowercase two-letter codes); `matches_filters`
-# does a direct ``lang in settings["languages"]`` membership check against PTT
-# output, so comparing "en" against "English" never matched and any enabled
-# language filter rejected every result. Closes TODO.md §H.2-H11.
-_RESOLUTION_SETTINGS = [
-    ("filter_2160p", "2160p"),
-    ("filter_1080p", "1080p"),
-    ("filter_720p", "720p"),
-    ("filter_480p", "480p"),
-]
-_HDR_SETTINGS = [
-    ("filter_hdr10", "HDR10"),
-    ("filter_hdr10plus", "HDR10+"),
-    ("filter_dolby_vision", "Dolby Vision"),
-    ("filter_hlg", "HLG"),
-    ("filter_sdr", "SDR"),
-]
-_AUDIO_SETTINGS = [
-    ("filter_atmos", "Atmos"),
-    ("filter_truehd", "TrueHD"),
-    ("filter_dtshd_ma", "DTS-HD MA"),
-    ("filter_dtsx", "DTS:X"),
-    ("filter_ddplus", "DD+"),
-    ("filter_dd", "DD"),
-    ("filter_aac", "AAC"),
-]
-_CODEC_SETTINGS = [
-    ("filter_hevc", "x265/HEVC"),
-    ("filter_avc", "x264/AVC"),
-    ("filter_av1", "AV1"),
-    ("filter_vp9", "VP9"),
-    ("filter_mpeg2", "MPEG-2"),
-]
-_LANGUAGE_SETTINGS = [
-    ("filter_english", "en"),
-    ("filter_spanish", "es"),
-    ("filter_french", "fr"),
-    ("filter_german", "de"),
-    ("filter_italian", "it"),
-    ("filter_portuguese", "pt"),
-    ("filter_dutch", "nl"),
-    ("filter_russian", "ru"),
-    ("filter_japanese", "ja"),
-    ("filter_korean", "ko"),
-    ("filter_chinese", "zh"),
-    ("filter_arabic", "ar"),
-    ("filter_hindi", "hi"),
-]
-
-
 def _resolve_size_bounds(addon):
     """Read min/max size, disabling the filter on an inverted range."""
     min_size = _int_setting(addon, "filter_min_size", 0)
@@ -226,7 +187,11 @@ def _get_filter_settings(settings_getter=None):
     if settings_getter is None:
         addon = xbmcaddon.Addon("plugin.video.nzbdav")
     else:
-        addon = SimpleNamespace(getSetting=lambda key: settings_getter(key, ""))
+        addon = SimpleNamespace(
+            getSetting=lambda key: settings_getter(
+                key, "true" if key in BOOLEAN_SETTINGS else ""
+            )
+        )
 
     resolutions = _collect_enabled(addon, _RESOLUTION_SETTINGS)
     hdr = _collect_enabled(addon, _HDR_SETTINGS)
@@ -237,6 +202,13 @@ def _get_filter_settings(settings_getter=None):
     min_size, max_size = _resolve_size_bounds(addon)
 
     return {
+        **{
+            name: (addon.getSetting(key) or "true").lower() == "true"
+            for name, key in UNKNOWN_SETTINGS.items()
+        },
+        "remux_tiers": read_remux_tiers(
+            settings_getter or (lambda key, default: addon.getSetting(key))
+        ),
         "resolutions": resolutions,
         "hdr": hdr,
         "audio": audio,
@@ -247,9 +219,6 @@ def _get_filter_settings(settings_getter=None):
         ],
         "require_keywords": [
             k.lower() for k in _csv_setting(addon, "filter_require_keywords")
-        ],
-        "release_group": [
-            g.lower() for g in _csv_setting(addon, "filter_release_group")
         ],
         "exclude_release_group": [
             g.lower() for g in _csv_setting(addon, "filter_exclude_release_group")
@@ -286,14 +255,16 @@ def parse_title_metadata(title):
     # release name doesn't kill the whole search; fall back to the
     # regex-only metadata extractor.
     try:
-        return _normalize_parsed_meta(parsed)
+        return supplement_metadata(title, _normalize_parsed_meta(parsed))
     except (TypeError, AttributeError, KeyError) as e:
         xbmc.log(
             "NZB-DAV: PTT metadata normalisation failed for '{}': {}; "
             "falling back to regex parse".format(title, e),
             xbmc.LOGWARNING,
         )
-        return _normalize_fallback_meta(_fallback_parse(title))
+        return supplement_metadata(
+            title, _normalize_fallback_meta(_fallback_parse(title))
+        )
 
 
 def matches_filters(result, meta, settings):
@@ -349,36 +320,48 @@ def first_rejecting_filter(result, meta, settings):
 
 
 def _resolution_filter_passes(meta, settings):
-    if settings["resolutions"] and meta["resolution"]:
-        return meta["resolution"] in settings["resolutions"]
-    return True
+    return values_filter_pass(
+        [meta["resolution"]] if meta["resolution"] else [],
+        settings["resolutions"],
+        _RESOLUTION_SETTINGS,
+        settings.get("unknown_resolution", True),
+    )
 
 
 def _hdr_filter_passes(meta, settings):
-    wanted = settings["hdr"]
-    if not wanted:
-        return True
-    if meta["hdr"]:
-        return any(h in wanted for h in meta["hdr"])
-    return "SDR" in wanted
+    return values_filter_pass(
+        meta["hdr"],
+        settings["hdr"],
+        _HDR_SETTINGS,
+        settings.get("unknown_hdr", True),
+    )
 
 
 def _audio_filter_passes(meta, settings):
-    if settings["audio"] and meta["audio"]:
-        return any(a in settings["audio"] for a in meta["audio"])
-    return True
+    return values_filter_pass(
+        meta["audio"],
+        settings["audio"],
+        _AUDIO_SETTINGS,
+        settings.get("unknown_audio", True),
+    )
 
 
 def _codec_filter_passes(meta, settings):
-    if settings["codecs"] and meta["codec"]:
-        return meta["codec"] in settings["codecs"]
-    return True
+    return values_filter_pass(
+        [meta["codec"]] if meta["codec"] else [],
+        settings["codecs"],
+        _CODEC_SETTINGS,
+        settings.get("unknown_codec", True),
+    )
 
 
 def _language_filter_passes(meta, settings):
-    if settings["languages"] and meta["languages"]:
-        return any(lang in settings["languages"] for lang in meta["languages"])
-    return True
+    return values_filter_pass(
+        language_filter_values(meta["languages"]),
+        settings["languages"],
+        _LANGUAGE_SETTINGS,
+        settings.get("unknown_language", True),
+    )
 
 
 def _keyword_filters_pass(title_lower, settings):
@@ -567,10 +550,10 @@ def _size_sort_key(result):
         return 0
 
 
-# Resolution rank: 4K best (0), then 1080p, 720p, 480p, unknown worst
-_RES_RANK = {"2160p": 0, "1080p": 1, "720p": 2, "480p": 3}
+# Resolution rank: highest first, from 8K down to SD, unknown worst.
+_RES_RANK = {value: rank for rank, (_, value) in enumerate(_RESOLUTION_SETTINGS)}
 
-# HDR rank: DV best (0), HDR10+ (1), HDR10 (2), HLG (3), none (4)
+# HDR rank: DV best (0), HDR10+ (1), HDR10 (2), HLG (3), SDR (4), none (5).
 _HDR_RANK = {
     "Dolby Vision": 0,
     "HDR10+": 1,
@@ -585,6 +568,10 @@ _AUDIO_RANK = {
     "Atmos": 0,
     "DTS:X": 3,
     "DTS-HD MA": 4,
+    "DTS-HD HR": 5,
+    "FLAC": 4,
+    "PCM": 4,
+    "ALAC": 4,
     "DTS": 5,
     "DD+": 6,
     "DD": 7,
@@ -610,18 +597,20 @@ def _audio_rank(audio_list):
     return min(ranks)
 
 
-def _make_relevance_key(preferred_lower):
-    """Build a sort key: resolution > HDR > preferred group > audio > size."""
+def _make_relevance_key(remux_tiers=DEFAULT_REMUX_GROUPS):
+    """Rank resolution and HDR first, then REMUX, groups, audio, and size."""
+    tier_patterns = compile_remux_tiers(remux_tiers)
 
     def _relevance_key(r):
         meta = r.get("_meta", {})
-        res_rank = _RES_RANK.get(meta.get("resolution", ""), 4)
-        is_preferred = 0 if meta.get("group", "").lower() in preferred_lower else 1
+        res_rank = _RES_RANK.get(meta.get("resolution", ""), len(_RES_RANK))
         size = -_size_sort_key(r)  # larger = better, negate for ascending sort
+        priority = remux_priority(r)
         return (
             res_rank,
             _hdr_rank(meta.get("hdr", [])),
-            is_preferred,
+            priority,
+            remux_group_rank(r, tier_patterns),
             _audio_rank(meta.get("audio", [])),
             size,
         )
@@ -659,5 +648,7 @@ def _sort_results(results, settings):
     if spec is not None:
         key, reverse = spec
         return sorted(results, key=key, reverse=reverse)
-    preferred_lower = [g.lower() for g in settings["release_group"]]
-    return sorted(results, key=_make_relevance_key(preferred_lower))
+    return sorted(
+        results,
+        key=_make_relevance_key(settings.get("remux_tiers", DEFAULT_REMUX_GROUPS)),
+    )

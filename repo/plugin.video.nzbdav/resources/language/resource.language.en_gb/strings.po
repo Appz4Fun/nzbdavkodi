@@ -67,24 +67,24 @@ msgid "2160p / 4K"
 msgstr "2160p / 4K"
 
 msgctxt "#30015"
-msgid "1080p"
-msgstr "1080p"
+msgid "1080p(i)"
+msgstr "1080p(i)"
 
 msgctxt "#30016"
-msgid "720p"
-msgstr "720p"
+msgid "720p(i)"
+msgstr "720p(i)"
 
 msgctxt "#30017"
-msgid "480p"
-msgstr "480p"
+msgid "480p(i)"
+msgstr "480p(i)"
 
 msgctxt "#30018"
 msgid "HDR"
 msgstr "HDR"
 
 msgctxt "#30019"
-msgid "HDR10"
-msgstr "HDR10"
+msgid "HDR / HDR10"
+msgstr "HDR / HDR10"
 
 msgctxt "#30020"
 msgid "HDR10+"
@@ -159,8 +159,8 @@ msgid "MPEG-2"
 msgstr "MPEG-2"
 
 msgctxt "#30038"
-msgid "Language"
-msgstr "Language"
+msgid "Languages"
+msgstr "Languages"
 
 msgctxt "#30039"
 msgid "English"
@@ -223,8 +223,8 @@ msgid "Release Groups"
 msgstr "Release Groups"
 
 msgctxt "#30054"
-msgid "Configure Preferred Groups..."
-msgstr "Configure Preferred Groups..."
+msgid "Preferred groups (non-REMUX)"
+msgstr "Preferred groups (non-REMUX)"
 
 msgctxt "#30055"
 msgid "Configure Excluded Groups..."
@@ -879,8 +879,8 @@ msgid "TV search accuracy"
 msgstr "TV search accuracy"
 
 msgctxt "#30229"
-msgid "TMDB API key (optional, improves TV results via TVDB id)"
-msgstr "TMDB API key (optional, improves TV results via TVDB id)"
+msgid "TMDB API key (optional, movies and TV)"
+msgstr "TMDB API key (optional, movies and TV)"
 
 msgctxt "#30230"
 msgid "NZBGet HealthCheck=Pause: set it to Delete, None, or Park so a broken download can fail over to a duplicate"
@@ -955,8 +955,8 @@ msgid "Verify the Prowlarr URL, API key, and indexer IDs are reachable."
 msgstr "Verify the Prowlarr URL, API key, and indexer IDs are reachable."
 
 msgctxt "#30248"
-msgid "Optional TMDB API key. When set, NZB-DAV resolves a show's TVDB id and searches indexers by id for more accurate TV episode results. Stored hidden."
-msgstr "Optional TMDB API key. When set, NZB-DAV resolves a show's TVDB id and searches indexers by id for more accurate TV episode results. Stored hidden."
+msgid "Use a TMDB API key, not a TVDB key. TMDBHelper's movie IDs are converted to IMDb IDs; TV series IDs are converted to TVDB IDs when needed. IDs already supplied by the player are used directly. Without a key or if lookup fails, searches fall back to the supplied IDs or title. Stored hidden."
+msgstr "Use a TMDB API key, not a TVDB key. TMDBHelper's movie IDs are converted to IMDb IDs; TV series IDs are converted to TVDB IDs when needed. IDs already supplied by the player are used directly. Without a key or if lookup fails, searches fall back to the supplied IDs or title. Stored hidden."
 
 msgctxt "#30249"
 msgid "Switch the entire download/playback path to NZBGet instead of nzbdav."
@@ -1131,140 +1131,140 @@ msgid "Install the NZB-DAV player file into another add-on that has a players fo
 msgstr "Install the NZB-DAV player file into another add-on that has a players folder."
 
 msgctxt "#30292"
-msgid "Include releases with no detected HDR format (plain SDR). Unlike the other quality filters, this one is not fail-open -- disabling it removes releases whose HDR format could not be identified."
-msgstr "Include releases with no detected HDR format (plain SDR). Unlike the other quality filters, this one is not fail-open -- disabling it removes releases whose HDR format could not be identified."
+msgid "Include SDR releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include SDR releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30293"
-msgid "Include 2160p/4K results. A release with undetected resolution is kept regardless of this setting."
-msgstr "Include 2160p/4K results. A release with undetected resolution is kept regardless of this setting."
+msgid "Include 2160p / 4K releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include 2160p / 4K releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30294"
-msgid "Include 1080p results. A release with undetected resolution is kept regardless of this setting."
-msgstr "Include 1080p results. A release with undetected resolution is kept regardless of this setting."
+msgid "Include both 1080p and interlaced 1080i releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include both 1080p and interlaced 1080i releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30295"
-msgid "Include 720p results. A release with undetected resolution is kept regardless of this setting."
-msgstr "Include 720p results. A release with undetected resolution is kept regardless of this setting."
+msgid "Include both 720p and interlaced 720i releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include both 720p and interlaced 720i releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30296"
-msgid "Include 480p results. A release with undetected resolution is kept regardless of this setting."
-msgstr "Include 480p results. A release with undetected resolution is kept regardless of this setting."
+msgid "Include both 480p and interlaced 480i releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include both 480p and interlaced 480i releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30297"
-msgid "Include HDR10 results. A release with undetected HDR format is kept regardless of this setting."
-msgstr "Include HDR10 results. A release with undetected HDR format is kept regardless of this setting."
+msgid "Include releases explicitly tagged HDR or HDR10. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include releases explicitly tagged HDR or HDR10. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30298"
-msgid "Include HDR10+ results. A release with undetected HDR format is kept regardless of this setting."
-msgstr "Include HDR10+ results. A release with undetected HDR format is kept regardless of this setting."
+msgid "Include HDR10+, HDR+, HDRPlus, HDR10Plus, and HDR10P title tags. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include HDR10+, HDR+, HDRPlus, HDR10Plus, and HDR10P title tags. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30299"
-msgid "Include Dolby Vision results. A release with undetected HDR format is kept regardless of this setting."
-msgstr "Include Dolby Vision results. A release with undetected HDR format is kept regardless of this setting."
+msgid "Include releases explicitly tagged DV, DoVi, or Dolby Vision. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include releases explicitly tagged DV, DoVi, or Dolby Vision. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30300"
-msgid "Include HLG results. A release with undetected HDR format is kept regardless of this setting."
-msgstr "Include HLG results. A release with undetected HDR format is kept regardless of this setting."
+msgid "Include HLG releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include HLG releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30301"
-msgid "Include Dolby Atmos results. A release with undetected audio format is kept regardless of this setting."
-msgstr "Include Dolby Atmos results. A release with undetected audio format is kept regardless of this setting."
+msgid "Include Atmos releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Atmos releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30302"
-msgid "Include TrueHD results. A release with undetected audio format is kept regardless of this setting."
-msgstr "Include TrueHD results. A release with undetected audio format is kept regardless of this setting."
+msgid "Include TrueHD releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include TrueHD releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30303"
-msgid "Include DTS-HD MA results. A release with undetected audio format is kept regardless of this setting."
-msgstr "Include DTS-HD MA results. A release with undetected audio format is kept regardless of this setting."
+msgid "Include DTS-HD MA releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include DTS-HD MA releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30304"
-msgid "Include DTS:X results. A release with undetected audio format is kept regardless of this setting."
-msgstr "Include DTS:X results. A release with undetected audio format is kept regardless of this setting."
+msgid "Include DTS:X releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include DTS:X releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30305"
-msgid "Include DD+ (EAC3) results. A release with undetected audio format is kept regardless of this setting."
-msgstr "Include DD+ (EAC3) results. A release with undetected audio format is kept regardless of this setting."
+msgid "Include DD+ (EAC3) releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include DD+ (EAC3) releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30306"
-msgid "Include DD (AC3) results. A release with undetected audio format is kept regardless of this setting."
-msgstr "Include DD (AC3) results. A release with undetected audio format is kept regardless of this setting."
+msgid "Include DD (AC3) releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include DD (AC3) releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30307"
-msgid "Include AAC results. A release with undetected audio format is kept regardless of this setting."
-msgstr "Include AAC results. A release with undetected audio format is kept regardless of this setting."
+msgid "Include AAC releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include AAC releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30308"
-msgid "Include x265/HEVC results. A release with undetected video codec is kept regardless of this setting."
-msgstr "Include x265/HEVC results. A release with undetected video codec is kept regardless of this setting."
+msgid "Include x265 / HEVC releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include x265 / HEVC releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30309"
-msgid "Include x264/AVC results. A release with undetected video codec is kept regardless of this setting."
-msgstr "Include x264/AVC results. A release with undetected video codec is kept regardless of this setting."
+msgid "Include x264 / AVC releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include x264 / AVC releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30310"
-msgid "Include AV1 results. A release with undetected video codec is kept regardless of this setting."
-msgstr "Include AV1 results. A release with undetected video codec is kept regardless of this setting."
+msgid "Include AV1 releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include AV1 releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30311"
-msgid "Include VP9 results. A release with undetected video codec is kept regardless of this setting."
-msgstr "Include VP9 results. A release with undetected video codec is kept regardless of this setting."
+msgid "Include VP9 releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include VP9 releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30312"
-msgid "Include MPEG-2 results. A release with undetected video codec is kept regardless of this setting."
-msgstr "Include MPEG-2 results. A release with undetected video codec is kept regardless of this setting."
+msgid "Include MPEG-2 releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include MPEG-2 releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30313"
-msgid "Include English results. A release with undetected language is kept regardless of this setting."
-msgstr "Include English results. A release with undetected language is kept regardless of this setting."
+msgid "Include English releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include English releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30314"
-msgid "Include Spanish results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Spanish results. A release with undetected language is kept regardless of this setting."
+msgid "Include Spanish releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Spanish releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30315"
-msgid "Include French results. A release with undetected language is kept regardless of this setting."
-msgstr "Include French results. A release with undetected language is kept regardless of this setting."
+msgid "Include French releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include French releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30316"
-msgid "Include German results. A release with undetected language is kept regardless of this setting."
-msgstr "Include German results. A release with undetected language is kept regardless of this setting."
+msgid "Include German releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include German releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30317"
-msgid "Include Italian results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Italian results. A release with undetected language is kept regardless of this setting."
+msgid "Include Italian releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Italian releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30318"
-msgid "Include Portuguese results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Portuguese results. A release with undetected language is kept regardless of this setting."
+msgid "Include Portuguese releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Portuguese releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30319"
-msgid "Include Dutch results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Dutch results. A release with undetected language is kept regardless of this setting."
+msgid "Include Dutch releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Dutch releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30320"
-msgid "Include Russian results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Russian results. A release with undetected language is kept regardless of this setting."
+msgid "Include Russian releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Russian releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30321"
-msgid "Include Japanese results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Japanese results. A release with undetected language is kept regardless of this setting."
+msgid "Include Japanese releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Japanese releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30322"
-msgid "Include Korean results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Korean results. A release with undetected language is kept regardless of this setting."
+msgid "Include Korean releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Korean releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30323"
-msgid "Include Chinese results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Chinese results. A release with undetected language is kept regardless of this setting."
+msgid "Allow Chinese releases, including Mandarin. Also accepts Cantonese and Urdu under the configured Chinese filter grouping; separate Cantonese and Urdu selections remain available."
+msgstr "Allow Chinese releases, including Mandarin. Also accepts Cantonese and Urdu under the configured Chinese filter grouping; separate Cantonese and Urdu selections remain available."
 
 msgctxt "#30324"
-msgid "Include Arabic results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Arabic results. A release with undetected language is kept regardless of this setting."
+msgid "Include Arabic releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Arabic releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30325"
-msgid "Include Hindi results. A release with undetected language is kept regardless of this setting."
-msgstr "Include Hindi results. A release with undetected language is kept regardless of this setting."
+msgid "Include Hindi releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
+msgstr "Include Hindi releases. Missing or unlisted metadata follows the Other / Unknown option in this category."
 
 msgctxt "#30326"
 msgid "Choose release groups to boost in Relevance ranking. This does not filter out other groups."
@@ -1291,8 +1291,8 @@ msgid "Remove releases unless their title contains every one of these comma-sepa
 msgstr "Remove releases unless their title contains every one of these comma-separated keywords."
 
 msgctxt "#30332"
-msgid "How to rank the filtered results."
-msgstr "How to rank the filtered results."
+msgid "Relevance ranks highest resolution first, then Dolby Vision, HDR10+, HDR/HDR10, HLG, and SDR/unknown. Ties use Hybrid REMUX, REMUX, preferred group tiers, audio, then larger size. Size and age modes sort by that property only."
+msgstr "Relevance ranks highest resolution first, then Dolby Vision, HDR10+, HDR/HDR10, HLG, and SDR/unknown. Ties use Hybrid REMUX, REMUX, preferred group tiers, audio, then larger size. Size and age modes sort by that property only."
 
 msgctxt "#30333"
 msgid "Caps how many results are requested per provider and how many appear in the picker after filtering."
@@ -1319,8 +1319,8 @@ msgid "Whether to clear other in-progress downloads before starting a new one. N
 msgstr "Whether to clear other in-progress downloads before starting a new one. Never clears this title's own in-flight job or a completed copy you're about to reuse."
 
 msgctxt "#30339"
-msgid "How long search results are cached, in seconds. 0 disables caching. Clamped to 0-86400."
-msgstr "How long search results are cached, in seconds. 0 disables caching. Clamped to 0-86400."
+msgid "How long search results are cached, in seconds. Default: 60 seconds. 0 disables caching. Clamped to 0-86400."
+msgstr "How long search results are cached, in seconds. Default: 60 seconds. 0 disables caching. Clamped to 0-86400."
 
 msgctxt "#30340"
 msgid "Automatically retry a stream that fails during playback."
@@ -1403,8 +1403,8 @@ msgid "Install the NZB-DAV player file into TMDBHelper or another add-on with a 
 msgstr "Install the NZB-DAV player file into TMDBHelper or another add-on with a players folder."
 
 msgctxt "#30360"
-msgid "Filter search results by resolution, HDR, audio, video codec, and language. Every toggle defaults on."
-msgstr "Filter search results by resolution, HDR, audio, video codec, and language. Every toggle defaults on."
+msgid "Resolution, HDR, audio, and video codec filters. All formats and Other / Unknown default to enabled. Language filters are on the following Languages tab."
+msgstr "Resolution, HDR, audio, and video codec filters. All formats and Other / Unknown default to enabled. Language filters are on the following Languages tab."
 
 msgctxt "#30361"
 msgid "Filter releases by title keywords, size, and preferred or excluded release groups."
@@ -1449,3 +1449,631 @@ msgstr "[Enter] Download & Play     [Esc] Back"
 msgctxt "#30371"
 msgid "FILTERED: {}"
 msgstr "FILTERED: {}"
+
+msgctxt "#30400"
+msgid "Unknown"
+msgstr "Unknown"
+
+msgctxt "#30401"
+msgid "Allow releases whose title has no recognized value, or a value without its own option. Disable this to require a recognized format. Known formats still follow their own selections."
+msgstr "Allow releases whose title has no recognized value, or a value without its own option. Disable this to require a recognized format. Known formats still follow their own selections."
+
+msgctxt "#30402"
+msgid "Allow releases tagged with this format. All format options are enabled by default. With no known formats selected, known-format filtering is disabled; Other / Unknown remains independent."
+msgstr "Allow releases tagged with this format. All format options are enabled by default. With no known formats selected, known-format filtering is disabled; Other / Unknown remains independent."
+
+msgctxt "#30403"
+msgid "Allow releases tagged with this language name or abbreviation, regardless of capitalization. A multilingual release passes when any selected language matches."
+msgstr "Allow releases tagged with this language name or abbreviation, regardless of capitalization. A multilingual release passes when any selected language matches."
+
+msgctxt "#30404"
+msgid "Language filters. All languages and Other / Unknown are enabled by default. Latin American Spanish uses Spanish. Chinese also accepts Cantonese and Urdu as configured; both retain their own language options."
+msgstr "Language filters. All languages and Other / Unknown are enabled by default. Latin American Spanish uses Spanish. Chinese also accepts Cantonese and Urdu as configured; both retain their own language options."
+
+msgctxt "#30405"
+msgid "4320p / 8K"
+msgstr "4320p / 8K"
+
+msgctxt "#30406"
+msgid "1440p / QHD"
+msgstr "1440p / QHD"
+
+msgctxt "#30407"
+msgid "576p(i)"
+msgstr "576p(i)"
+
+msgctxt "#30408"
+msgid "540p"
+msgstr "540p"
+
+msgctxt "#30409"
+msgid "360p"
+msgstr "360p"
+
+msgctxt "#30410"
+msgid "240p"
+msgstr "240p"
+
+msgctxt "#30411"
+msgid "Other / Unknown Resolution"
+msgstr "Other / Unknown Resolution"
+
+msgctxt "#30412"
+msgid "Other / Unknown HDR"
+msgstr "Other / Unknown HDR"
+
+msgctxt "#30413"
+msgid "DTS-HD High Resolution"
+msgstr "DTS-HD High Resolution"
+
+msgctxt "#30414"
+msgid "DTS"
+msgstr "DTS"
+
+msgctxt "#30415"
+msgid "FLAC"
+msgstr "FLAC"
+
+msgctxt "#30416"
+msgid "PCM / LPCM"
+msgstr "PCM / LPCM"
+
+msgctxt "#30417"
+msgid "Opus"
+msgstr "Opus"
+
+msgctxt "#30418"
+msgid "MP3"
+msgstr "MP3"
+
+msgctxt "#30419"
+msgid "ALAC"
+msgstr "ALAC"
+
+msgctxt "#30420"
+msgid "Vorbis"
+msgstr "Vorbis"
+
+msgctxt "#30421"
+msgid "MP2"
+msgstr "MP2"
+
+msgctxt "#30422"
+msgid "WMA"
+msgstr "WMA"
+
+msgctxt "#30423"
+msgid "AC-4"
+msgstr "AC-4"
+
+msgctxt "#30424"
+msgid "Other / Unknown Audio"
+msgstr "Other / Unknown Audio"
+
+msgctxt "#30425"
+msgid "MPEG-4 ASP / Xvid / DivX"
+msgstr "MPEG-4 ASP / Xvid / DivX"
+
+msgctxt "#30426"
+msgid "VC-1"
+msgstr "VC-1"
+
+msgctxt "#30427"
+msgid "MPEG-1"
+msgstr "MPEG-1"
+
+msgctxt "#30428"
+msgid "VP8"
+msgstr "VP8"
+
+msgctxt "#30429"
+msgid "WMV"
+msgstr "WMV"
+
+msgctxt "#30430"
+msgid "H.263"
+msgstr "H.263"
+
+msgctxt "#30431"
+msgid "VVC"
+msgstr "VVC"
+
+msgctxt "#30432"
+msgid "MJPEG"
+msgstr "MJPEG"
+
+msgctxt "#30433"
+msgid "Theora"
+msgstr "Theora"
+
+msgctxt "#30434"
+msgid "Other / Unknown Video Codec"
+msgstr "Other / Unknown Video Codec"
+
+msgctxt "#30435"
+msgid "Bengali"
+msgstr "Bengali"
+
+msgctxt "#30436"
+msgid "Bulgarian"
+msgstr "Bulgarian"
+
+msgctxt "#30437"
+msgid "Cantonese"
+msgstr "Cantonese"
+
+msgctxt "#30438"
+msgid "Croatian"
+msgstr "Croatian"
+
+msgctxt "#30439"
+msgid "Czech"
+msgstr "Czech"
+
+msgctxt "#30440"
+msgid "Danish"
+msgstr "Danish"
+
+msgctxt "#30441"
+msgid "Estonian"
+msgstr "Estonian"
+
+msgctxt "#30442"
+msgid "Finnish"
+msgstr "Finnish"
+
+msgctxt "#30443"
+msgid "Greek"
+msgstr "Greek"
+
+msgctxt "#30444"
+msgid "Gujarati"
+msgstr "Gujarati"
+
+msgctxt "#30445"
+msgid "Hebrew"
+msgstr "Hebrew"
+
+msgctxt "#30446"
+msgid "Hungarian"
+msgstr "Hungarian"
+
+msgctxt "#30447"
+msgid "Indonesian"
+msgstr "Indonesian"
+
+msgctxt "#30448"
+msgid "Kannada"
+msgstr "Kannada"
+
+msgctxt "#30449"
+msgid "Latvian"
+msgstr "Latvian"
+
+msgctxt "#30450"
+msgid "Lithuanian"
+msgstr "Lithuanian"
+
+msgctxt "#30451"
+msgid "Malay"
+msgstr "Malay"
+
+msgctxt "#30452"
+msgid "Malayalam"
+msgstr "Malayalam"
+
+msgctxt "#30453"
+msgid "Marathi"
+msgstr "Marathi"
+
+msgctxt "#30454"
+msgid "Norwegian"
+msgstr "Norwegian"
+
+msgctxt "#30455"
+msgid "Persian"
+msgstr "Persian"
+
+msgctxt "#30456"
+msgid "Polish"
+msgstr "Polish"
+
+msgctxt "#30457"
+msgid "Punjabi"
+msgstr "Punjabi"
+
+msgctxt "#30458"
+msgid "Romanian"
+msgstr "Romanian"
+
+msgctxt "#30459"
+msgid "Serbian"
+msgstr "Serbian"
+
+msgctxt "#30460"
+msgid "Slovak"
+msgstr "Slovak"
+
+msgctxt "#30461"
+msgid "Slovenian"
+msgstr "Slovenian"
+
+msgctxt "#30462"
+msgid "Swedish"
+msgstr "Swedish"
+
+msgctxt "#30463"
+msgid "Tamil"
+msgstr "Tamil"
+
+msgctxt "#30464"
+msgid "Telugu"
+msgstr "Telugu"
+
+msgctxt "#30465"
+msgid "Thai"
+msgstr "Thai"
+
+msgctxt "#30466"
+msgid "Turkish"
+msgstr "Turkish"
+
+msgctxt "#30467"
+msgid "Ukrainian"
+msgstr "Ukrainian"
+
+msgctxt "#30468"
+msgid "Urdu"
+msgstr "Urdu"
+
+msgctxt "#30469"
+msgid "Vietnamese"
+msgstr "Vietnamese"
+
+msgctxt "#30470"
+msgid "Other / Unknown Language"
+msgstr "Other / Unknown Language"
+
+msgctxt "#30471"
+msgid "Preferred groups: Tier 1"
+msgstr "Preferred groups: Tier 1"
+
+msgctxt "#30472"
+msgid "Preferred release groups, priority 1 of 3. Enter comma-separated group names. Relevance ranks Tier 1 before Tier 2, then Tier 3, after resolution, HDR and REMUX. Defaults use TRaSH Remux Tier 01. Empty leaves this tier unused. These preferences do not hide other groups."
+msgstr "Preferred release groups, priority 1 of 3. Enter comma-separated group names. Relevance ranks Tier 1 before Tier 2, then Tier 3, after resolution, HDR and REMUX. Defaults use TRaSH Remux Tier 01. Empty leaves this tier unused. These preferences do not hide other groups."
+
+msgctxt "#30473"
+msgid "Preferred groups: Tier 2"
+msgstr "Preferred groups: Tier 2"
+
+msgctxt "#30474"
+msgid "Preferred release groups, priority 2 of 3. Enter comma-separated group names. Relevance ranks Tier 1 before Tier 2, then Tier 3, after resolution, HDR and REMUX. Defaults use TRaSH Remux Tier 02. Empty leaves this tier unused. These preferences do not hide other groups."
+msgstr "Preferred release groups, priority 2 of 3. Enter comma-separated group names. Relevance ranks Tier 1 before Tier 2, then Tier 3, after resolution, HDR and REMUX. Defaults use TRaSH Remux Tier 02. Empty leaves this tier unused. These preferences do not hide other groups."
+
+msgctxt "#30475"
+msgid "Preferred groups: Tier 3"
+msgstr "Preferred groups: Tier 3"
+
+msgctxt "#30476"
+msgid "Preferred release groups, priority 3 of 3. Enter comma-separated group names. Relevance ranks Tier 1 before Tier 2, then Tier 3, after resolution, HDR and REMUX. Defaults use TRaSH Remux Tier 03. Empty leaves this tier unused. These preferences do not hide other groups."
+msgstr "Preferred release groups, priority 3 of 3. Enter comma-separated group names. Relevance ranks Tier 1 before Tier 2, then Tier 3, after resolution, HDR and REMUX. Defaults use TRaSH Remux Tier 03. Empty leaves this tier unused. These preferences do not hide other groups."
+
+msgctxt "#30477"
+msgid "[Hold OK 5s] Filters off"
+msgstr "[Hold OK 5s] Filters off"
+
+msgctxt "#30500"
+msgid "Include 8K / 4320p releases, including titles containing 7680x4320. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include 8K / 4320p releases, including titles containing 7680x4320. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30501"
+msgid "Include 1440p / QHD releases, including titles containing 2560x1440. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include 1440p / QHD releases, including titles containing 2560x1440. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30502"
+msgid "Include 576p and interlaced 576i releases. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include 576p and interlaced 576i releases. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30503"
+msgid "Include 540p releases, including 960x540. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include 540p releases, including 960x540. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30504"
+msgid "Include 360p releases, including 640x360. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include 360p releases, including 640x360. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30505"
+msgid "Include 240p releases, including 320x240. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include 240p releases, including 320x240. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30506"
+msgid "Include DTS-HD High Resolution (DTS-HD HR / HRA). This is a separate selection from DTS core and lossless DTS-HD Master Audio. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include DTS-HD High Resolution (DTS-HD HR / HRA). This is a separate selection from DTS core and lossless DTS-HD Master Audio. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30507"
+msgid "Include standard DTS / DTS core audio. DTS is classified separately from Dolby Digital and DTS-HD. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include standard DTS / DTS core audio. DTS is classified separately from Dolby Digital and DTS-HD. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30508"
+msgid "Include FLAC lossless audio, including mono and stereo remux releases. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include FLAC lossless audio, including mono and stereo remux releases. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30509"
+msgid "Include uncompressed PCM and LPCM audio. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include uncompressed PCM and LPCM audio. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30510"
+msgid "Include Opus audio. OPUS, Opus, and opus are recognized equally. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include Opus audio. OPUS, Opus, and opus are recognized equally. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30511"
+msgid "Include MP3 / MPEG Audio Layer III audio. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include MP3 / MPEG Audio Layer III audio. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30512"
+msgid "Include Apple Lossless (ALAC) audio. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include Apple Lossless (ALAC) audio. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30513"
+msgid "Include Vorbis / Ogg Vorbis audio. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include Vorbis / Ogg Vorbis audio. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30514"
+msgid "Include MP2 / MPEG Audio Layer II audio. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include MP2 / MPEG Audio Layer II audio. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30515"
+msgid "Include Windows Media Audio (WMA). Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include Windows Media Audio (WMA). Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30516"
+msgid "Include Dolby AC-4 audio. AC-4 has its own selection separate from AC-3 and E-AC-3. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include Dolby AC-4 audio. AC-4 has its own selection separate from AC-3 and E-AC-3. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30517"
+msgid "Include MPEG-4 ASP video, including Xvid and DivX. This is separate from H.264 / AVC. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include MPEG-4 ASP video, including Xvid and DivX. This is separate from H.264 / AVC. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30518"
+msgid "Include VC-1 / WVC1 video, found on some Blu-ray and HD DVD releases. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include VC-1 / WVC1 video, found on some Blu-ray and HD DVD releases. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30519"
+msgid "Include MPEG-1 video. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include MPEG-1 video. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30520"
+msgid "Include VP8 video. VP9 has its own selection. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include VP8 video. VP9 has its own selection. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30521"
+msgid "Include Windows Media Video (WMV). VC-1 has its own selection. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include Windows Media Video (WMV). VC-1 has its own selection. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30522"
+msgid "Include H.263 video. H.264 / AVC has its own selection. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include H.263 video. H.264 / AVC has its own selection. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30523"
+msgid "Include VVC / H.266 video. Matching a release does not guarantee your device can decode it. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include VVC / H.266 video. Matching a release does not guarantee your device can decode it. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30524"
+msgid "Include Motion JPEG / MJPEG video. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include Motion JPEG / MJPEG video. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30525"
+msgid "Include Theora video. Missing or unlisted metadata follows Other / Unknown in this category."
+msgstr "Include Theora video. Missing or unlisted metadata follows Other / Unknown in this category."
+
+msgctxt "#30526"
+msgid "Include Arabic releases. Matches the language name and ar, ara, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Arabic releases. Matches the language name and ar, ara, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30527"
+msgid "Include Bengali releases. Matches the language name and bn, ben, bangla, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Bengali releases. Matches the language name and bn, ben, bangla, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30528"
+msgid "Include Bulgarian releases. Matches the language name and bg, bul, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Bulgarian releases. Matches the language name and bg, bul, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30529"
+msgid "Include Cantonese releases. Matches the language name and yue, cant, without regard to capitalization. Multilingual releases pass when any selected language matches. Cantonese is also accepted when Chinese is selected."
+msgstr "Include Cantonese releases. Matches the language name and yue, cant, without regard to capitalization. Multilingual releases pass when any selected language matches. Cantonese is also accepted when Chinese is selected."
+
+msgctxt "#30530"
+msgid "Include Chinese releases. Matches the language name and zh, chi, zho, mandarin, cmn, chs, cht, without regard to capitalization. Multilingual releases pass when any selected language matches. This selection also accepts Cantonese and Urdu under your configured filter grouping; they retain their own language identities and selections."
+msgstr "Include Chinese releases. Matches the language name and zh, chi, zho, mandarin, cmn, chs, cht, without regard to capitalization. Multilingual releases pass when any selected language matches. This selection also accepts Cantonese and Urdu under your configured filter grouping; they retain their own language identities and selections."
+
+msgctxt "#30531"
+msgid "Include Croatian releases. Matches the language name and hr, hrv, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Croatian releases. Matches the language name and hr, hrv, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30532"
+msgid "Include Czech releases. Matches the language name and cs, cze, ces, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Czech releases. Matches the language name and cs, cze, ces, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30533"
+msgid "Include Danish releases. Matches the language name and da, dan, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Danish releases. Matches the language name and da, dan, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30534"
+msgid "Include Dutch releases. Matches the language name and nl, dut, nld, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Dutch releases. Matches the language name and nl, dut, nld, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30535"
+msgid "Include English releases. Matches the language name and en, eng, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include English releases. Matches the language name and en, eng, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30536"
+msgid "Include Estonian releases. Matches the language name and et, est, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Estonian releases. Matches the language name and et, est, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30537"
+msgid "Include Finnish releases. Matches the language name and fi, fin, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Finnish releases. Matches the language name and fi, fin, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30538"
+msgid "Include French releases. Matches the language name and fr, fre, fra, vff, vf, vfq, vostfr, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include French releases. Matches the language name and fr, fre, fra, vff, vf, vfq, vostfr, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30539"
+msgid "Include German releases. Matches the language name and de, ger, deu, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include German releases. Matches the language name and de, ger, deu, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30540"
+msgid "Include Greek releases. Matches the language name and el, gre, ell, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Greek releases. Matches the language name and el, gre, ell, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30541"
+msgid "Include Gujarati releases. Matches the language name and gu, guj, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Gujarati releases. Matches the language name and gu, guj, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30542"
+msgid "Include Hebrew releases. Matches the language name and he, heb, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Hebrew releases. Matches the language name and he, heb, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30543"
+msgid "Include Hindi releases. Matches the language name and hi, hin, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Hindi releases. Matches the language name and hi, hin, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30544"
+msgid "Include Hungarian releases. Matches the language name and hu, hun, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Hungarian releases. Matches the language name and hu, hun, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30545"
+msgid "Include Indonesian releases. Matches the language name and id, ind, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Indonesian releases. Matches the language name and id, ind, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30546"
+msgid "Include Italian releases. Matches the language name and it, ita, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Italian releases. Matches the language name and it, ita, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30547"
+msgid "Include Japanese releases. Matches the language name and ja, jpn, jap, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Japanese releases. Matches the language name and ja, jpn, jap, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30548"
+msgid "Include Kannada releases. Matches the language name and kn, kan, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Kannada releases. Matches the language name and kn, kan, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30549"
+msgid "Include Korean releases. Matches the language name and ko, kor, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Korean releases. Matches the language name and ko, kor, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30550"
+msgid "Include Latvian releases. Matches the language name and lv, lav, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Latvian releases. Matches the language name and lv, lav, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30551"
+msgid "Include Lithuanian releases. Matches the language name and lt, lit, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Lithuanian releases. Matches the language name and lt, lit, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30552"
+msgid "Include Malay releases. Matches the language name and ms, may, msa, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Malay releases. Matches the language name and ms, may, msa, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30553"
+msgid "Include Malayalam releases. Matches the language name and ml, mal, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Malayalam releases. Matches the language name and ml, mal, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30554"
+msgid "Include Marathi releases. Matches the language name and mr, mar, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Marathi releases. Matches the language name and mr, mar, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30555"
+msgid "Include Norwegian releases. Matches the language name and no, nor, nob, nno, nb, nn, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Norwegian releases. Matches the language name and no, nor, nob, nno, nb, nn, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30556"
+msgid "Include Persian releases. Matches the language name and fa, per, fas, farsi, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Persian releases. Matches the language name and fa, per, fas, farsi, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30557"
+msgid "Include Polish releases. Matches the language name and pl, pol, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Polish releases. Matches the language name and pl, pol, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30558"
+msgid "Include Portuguese releases. Matches the language name and pt, por, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Portuguese releases. Matches the language name and pt, por, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30559"
+msgid "Include Punjabi releases. Matches the language name and pa, pan, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Punjabi releases. Matches the language name and pa, pan, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30560"
+msgid "Include Romanian releases. Matches the language name and ro, rum, ron, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Romanian releases. Matches the language name and ro, rum, ron, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30561"
+msgid "Include Russian releases. Matches the language name and ru, rus, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Russian releases. Matches the language name and ru, rus, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30562"
+msgid "Include Serbian releases. Matches the language name and sr, srp, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Serbian releases. Matches the language name and sr, srp, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30563"
+msgid "Include Slovak releases. Matches the language name and sk, slo, slk, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Slovak releases. Matches the language name and sk, slo, slk, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30564"
+msgid "Include Slovenian releases. Matches the language name and sl, slv, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Slovenian releases. Matches the language name and sl, slv, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30565"
+msgid "Include Spanish releases. Matches the language name and es, spa, esp, latino, latin, la, castellano, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Spanish releases. Matches the language name and es, spa, esp, latino, latin, la, castellano, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30566"
+msgid "Include Swedish releases. Matches the language name and sv, swe, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Swedish releases. Matches the language name and sv, swe, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30567"
+msgid "Include Tamil releases. Matches the language name and ta, tam, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Tamil releases. Matches the language name and ta, tam, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30568"
+msgid "Include Telugu releases. Matches the language name and te, tel, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Telugu releases. Matches the language name and te, tel, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30569"
+msgid "Include Thai releases. Matches the language name and th, tha, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Thai releases. Matches the language name and th, tha, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30570"
+msgid "Include Turkish releases. Matches the language name and tr, tur, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Turkish releases. Matches the language name and tr, tur, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30571"
+msgid "Include Ukrainian releases. Matches the language name and uk, ukr, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Ukrainian releases. Matches the language name and uk, ukr, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30572"
+msgid "Include Urdu releases. Matches the language name and ur, urd, urdo, without regard to capitalization. Multilingual releases pass when any selected language matches. The spelling Urdo is accepted. Urdu is also accepted when Chinese is selected under your configured grouping."
+msgstr "Include Urdu releases. Matches the language name and ur, urd, urdo, without regard to capitalization. Multilingual releases pass when any selected language matches. The spelling Urdo is accepted. Urdu is also accepted when Chinese is selected under your configured grouping."
+
+msgctxt "#30573"
+msgid "Include Vietnamese releases. Matches the language name and vi, vie, without regard to capitalization. Multilingual releases pass when any selected language matches."
+msgstr "Include Vietnamese releases. Matches the language name and vi, vie, without regard to capitalization. Multilingual releases pass when any selected language matches."
+
+msgctxt "#30574"
+msgid "Allow releases with no recognized resolution, or an unlisted value. Enabled by default. This does not bypass selections for recognized resolution values."
+msgstr "Allow releases with no recognized resolution, or an unlisted value. Enabled by default. This does not bypass selections for recognized resolution values."
+
+msgctxt "#30575"
+msgid "Allow releases with no recognized HDR / dynamic-range tag, or an unlisted value. Enabled by default. This does not bypass selections for recognized HDR / dynamic-range tag values."
+msgstr "Allow releases with no recognized HDR / dynamic-range tag, or an unlisted value. Enabled by default. This does not bypass selections for recognized HDR / dynamic-range tag values."
+
+msgctxt "#30576"
+msgid "Allow releases with no recognized audio format, or an unlisted value. Enabled by default. This does not bypass selections for recognized audio format values."
+msgstr "Allow releases with no recognized audio format, or an unlisted value. Enabled by default. This does not bypass selections for recognized audio format values."
+
+msgctxt "#30577"
+msgid "Allow releases with no recognized video codec, or an unlisted value. Enabled by default. This does not bypass selections for recognized video codec values."
+msgstr "Allow releases with no recognized video codec, or an unlisted value. Enabled by default. This does not bypass selections for recognized video codec values."
+
+msgctxt "#30578"
+msgid "Allow releases with no recognized language, or an unlisted value. Enabled by default. This does not bypass selections for recognized language values."
+msgstr "Allow releases with no recognized language, or an unlisted value. Enabled by default. This does not bypass selections for recognized language values."

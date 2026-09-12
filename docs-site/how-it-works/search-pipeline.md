@@ -79,27 +79,33 @@ result and reused by filtering, ranking, and fallback matching.
 
 ## Filtering and ranking
 
-Filtering applies your quality, keyword, size, and excluded-group rules. Most
-quality filters **fail open** (an unparseable attribute is kept); **HDR is the
-exception** (no detectable HDR counts as SDR). See
-[Quality filtering](../features/quality-filtering.md).
+Filtering applies your format, keyword, size, and excluded-group rules. Each
+format category has a default-enabled **Other / Unknown** option. Missing HDR
+is unknown, while an explicit SDR tag is SDR. Addon-owned tag normalization
+corrects audio families, HDR aliases, dimensions, and language names without
+editing vendored PTT. See [Quality filtering](../features/quality-filtering.md).
 
-Under **Relevance** sort, results are ordered by a priority tuple:
+Under **Relevance** sort, results are ordered by this priority tuple:
 
 ```mermaid
 flowchart LR
-    A[Resolution<br/>2160 > 1080 > 720 > 480] --> B[HDR<br/>DV > HDR10+ > HDR10 > HLG > SDR]
-    B --> C[Preferred group<br/>boosted]
-    C --> D[Audio<br/>TrueHD+Atmos best ... AAC]
-    D --> E[Size<br/>larger wins tie-break]
+    A[Resolution: highest first]
+    A --> B[HDR: DV > HDR10+ > HDR10 > HLG]
+    B --> R[Hybrid REMUX > REMUX > other]
+    R --> C[Preferred tier 1 > 2 > 3]
+    C --> D[Audio]
+    D --> E[Size: larger wins]
 ```
+
+The preferred tiers apply to all releases. Explicit size or age sorting
+bypasses the relevance priorities.
 
 ## Caching
 
 The merged, **pre-filter** results are cached on disk, keyed by a SHA-256 of the
 search type, title, year, and ids. That means:
 
-- Re-opening the same title is instant within the cache duration (default 300 s).
+- Re-opening the same title is instant within the cache duration (default 60 s).
 - Changing filter or sort settings takes effect immediately — no new search
   needed, because filtering runs fresh on every read.
 - The cache self-limits to 50 MB and 1000 entries, evicting the oldest first,

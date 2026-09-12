@@ -79,7 +79,6 @@ from resources.lib.router_dispatch import (  # noqa: F401
     _redact_route_params,
     _route_clear_cache,
     _route_configure_excluded_groups,
-    _route_configure_preferred_groups,
     _route_install_player,
     _route_install_player_other,
     _route_manage_indexers,
@@ -171,6 +170,7 @@ from resources.lib.router_settings import (  # noqa: F401
     _get_addon_setting,
     _open_loading_dialog,
     _resolve_episode_tvdb_id,
+    _resolve_movie_imdb_id,
     _script_settings_paths,
     _script_stage_paths,
     _settings_getter_or_addon_default,
@@ -382,6 +382,13 @@ def _get_script_setting(key, default=""):
             if setting.get("id") != key:
                 continue
             value = setting.text
+            if value is None and key in (
+                "filter_remux_tier_1",
+                "filter_remux_tier_2",
+                "filter_remux_tier_3",
+            ):
+                # Kodi serializes a deliberately cleared tier as an empty element.
+                return ""
             return value if isinstance(value, str) else default
     return default
 
@@ -469,6 +476,7 @@ def _search_all_providers(query, settings_getter=None):
         )
 
     tvdb = _resolve_episode_tvdb_id(search_type, tvdb, tmdb_id, imdb, settings_getter)
+    imdb = _resolve_movie_imdb_id(search_type, imdb, tmdb_id, settings_getter)
 
     provider_settings_getter = _snapshot_settings_getter(
         settings_getter, _PROVIDER_SEARCH_SETTING_DEFAULTS

@@ -115,7 +115,9 @@ Full walkthrough:
   indexers, merged and de-duplicated. Optional TVDB-aware TV search resolves a
   show's id for more accurate episode results.
 - **Quality filtering and ranking** by resolution, HDR, audio, codec, language,
-  release group, size, and keywords.
+  release group, size, and keywords. Default-enabled Other / Unknown options
+  prevent unrecognized formats from disappearing. Relevance ranks resolution
+  first, then HDR, Hybrid REMUX / REMUX, and three editable TRaSH remux group tiers.
 - **Exact season-pack playback and reuse**: completed multi-episode downloads
   play the requested episode instead of the largest file, then appear as an
   already-downloaded pack for later episodes from that same backend job.
