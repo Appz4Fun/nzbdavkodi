@@ -106,18 +106,18 @@ def uppercase(input_value: str) -> str:
 
 
 month_mapping = {
-    r"\bJanu\b": "Jan",
-    r"\bFebr\b": "Feb",
-    r"\bMarc\b": "Mar",
-    r"\bApri\b": "Apr",
-    r"\bMay\b": "May",
-    r"\bJune\b": "Jun",
-    r"\bJuly\b": "Jul",
-    r"\bAugu\b": "Aug",
-    r"\bSept\b": "Sep",
-    r"\bOcto\b": "Oct",
-    r"\bNove\b": "Nov",
-    r"\bDece\b": "Dec",
+    regex.compile(r"\bJanu\b", flags=regex.IGNORECASE): "Jan",
+    regex.compile(r"\bFebr\b", flags=regex.IGNORECASE): "Feb",
+    regex.compile(r"\bMarc\b", flags=regex.IGNORECASE): "Mar",
+    regex.compile(r"\bApri\b", flags=regex.IGNORECASE): "Apr",
+    regex.compile(r"\bMay\b", flags=regex.IGNORECASE): "May",
+    regex.compile(r"\bJune\b", flags=regex.IGNORECASE): "Jun",
+    regex.compile(r"\bJuly\b", flags=regex.IGNORECASE): "Jul",
+    regex.compile(r"\bAugu\b", flags=regex.IGNORECASE): "Aug",
+    regex.compile(r"\bSept\b", flags=regex.IGNORECASE): "Sep",
+    regex.compile(r"\bOcto\b", flags=regex.IGNORECASE): "Oct",
+    regex.compile(r"\bNove\b", flags=regex.IGNORECASE): "Nov",
+    regex.compile(r"\bDece\b", flags=regex.IGNORECASE): "Dec",
 }
 
 
@@ -128,8 +128,8 @@ def convert_months(date_str: str) -> str:
     :param date_str: The input date string.
     :return: The date string with shortened month names.
     """
-    for month, shortened in month_mapping.items():
-        date_str = regex.sub(month, shortened, date_str, flags=regex.IGNORECASE)
+    for month_re, shortened in month_mapping.items():
+        date_str = month_re.sub(shortened, date_str)
     return date_str
 
 
