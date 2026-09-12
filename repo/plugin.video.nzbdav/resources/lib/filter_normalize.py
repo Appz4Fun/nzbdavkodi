@@ -48,7 +48,7 @@ _AUDIO_MAP = {
     "AC3": "DD",
     "AC-3": "DD",
     "Dolby Digital": "DD",
-    "DTS Lossy": "DD",
+    "DTS Lossy": "DTS",
     "AAC": "AAC",
 }
 
@@ -70,6 +70,8 @@ _CODEC_MAP = {
     "MPEG2": "MPEG-2",
     "MPEG-2": "MPEG-2",
     "mpeg2": "MPEG-2",
+    "xvid": "MPEG-4 ASP",
+    "divx": "MPEG-4 ASP",
 }
 
 

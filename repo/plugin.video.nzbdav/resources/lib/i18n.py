@@ -43,14 +43,15 @@ _FALLBACK_STRINGS = {
     30369: "[Enter] Download & Play     [C] Show filtered     [Esc] Back",
     30370: "[Enter] Download & Play     [Esc] Back",
     30371: "FILTERED: {}",
+    30400: "Unknown",
+    30477: "[Hold OK 5s] Filters off",
     # 30115/30116/30121 are surfaced from the service-side retry/error
     # handler when strings.po hasn't been loaded yet (early in service
     # startup). Without these, the user saw a blank notification body.
-    # 30054/30055 are settings-context-menu labels used by router.py.
+    # 30055 is the excluded-groups dialog label used by router.py.
     # All five are duplicated here from
     # `resources/language/resource.language.en_gb/strings.po` so any
     # future translator change there should be mirrored here too. TODO.md §H.2-M40.
-    30054: "Configure Preferred Groups...",
     30055: "Configure Excluded Groups...",
     30115: "Stream failed. Try an MKV version or check nzbdav server.",
     30116: "Stream failed after {} retries. Try a different source.",

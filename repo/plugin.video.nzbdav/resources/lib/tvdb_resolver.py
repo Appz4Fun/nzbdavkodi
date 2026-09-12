@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 nzbdav contributors
 
-"""Resolve a show's TheTVDB id from a TMDB id / IMDb id via the TMDB API.
+"""Resolve TVDB series IDs and IMDb movie IDs through the TMDB API.
 
 TMDBHelper normally hands us the series TVDB id for free through the
 ``{tvdb}`` player token, but the in-addon search path (and the rare case
@@ -15,6 +15,7 @@ Successful lookups are cached on disk because TVDB ids never change.
 """
 
 import json
+import re
 
 import xbmc
 import xbmcaddon
@@ -224,3 +225,39 @@ def resolve_tvdb_id(
     tvdb = _resolve_tvdb_via_api(http_get, key, tmdb_id, imdb)
     _store_tvdb(store, cache_key, tvdb, use_file)
     return tvdb
+
+
+def resolve_movie_imdb_id(tmdb_id, settings_getter=None, http_get=None, cache=None):
+    """Convert a TMDB movie ID to IMDb for indexers; retain title fallback on failure.
+
+    Movie and TV numeric TMDB IDs occupy separate namespaces, so their cache
+    keys must also be separate. Use the same optional TMDB key as TV lookups.
+    """
+    tmdb_id = str(tmdb_id or "").strip()
+    if not re.fullmatch(r"[0-9]+", tmdb_id):
+        return ""
+    cache_key = "movie:tmdb:" + tmdb_id
+    use_file = cache is None
+    store = _load_file_cache() if use_file else cache
+    cached = store.get(cache_key)
+    if isinstance(cached, str) and re.fullmatch(r"tt[0-9]+", cached):
+        return cached
+    key = _api_key_or_empty(settings_getter)
+    if not key:
+        return ""
+    try:
+        payload = _query(
+            _resolve_http_get(http_get), "/movie/{}/external_ids".format(tmdb_id), key
+        )
+        imdb = payload.get("imdb_id") if isinstance(payload, dict) else None
+        if isinstance(imdb, str) and re.fullmatch(r"tt[0-9]+", imdb):
+            _store_tvdb(store, cache_key, imdb, use_file)
+            return imdb
+    except Exception as error:  # pylint: disable=broad-except
+        from resources.lib.http_util import redact_text
+
+        xbmc.log(
+            "NZB-DAV: movie ID lookup failed: {}".format(redact_text(str(error))),
+            xbmc.LOGDEBUG,
+        )
+    return ""

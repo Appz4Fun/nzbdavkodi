@@ -173,6 +173,27 @@ def test_movie_search_does_not_resolve_tvdb(mock_addon, mock_prowlarr, mock_reso
     assert mock_prowlarr.call_args.kwargs["tvdb"] == ""
 
 
+@patch("resources.lib.tvdb_resolver.resolve_movie_imdb_id", return_value="tt0133093")
+@patch("resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None))
+@patch("xbmcaddon.Addon")
+def test_movie_tmdb_only_resolves_imdb_for_provider_search(
+    mock_addon, mock_prowlarr, mock_resolve
+):
+    mock_addon.return_value = _mock_addon(
+        nzbhydra_enabled="false", prowlarr_enabled="true"
+    )
+    _search_all_providers(SearchQuery("movie", "The Matrix", tmdb_id="603"))
+    assert mock_resolve.call_count == 1
+    assert mock_prowlarr.call_args.kwargs["imdb"] == "tt0133093"
+    assert mock_prowlarr.call_args.kwargs["tvdb"] == ""
+
+    mock_resolve.reset_mock()
+    _search_all_providers(
+        SearchQuery("movie", "The Matrix", tmdb_id="603", imdb="tt0133093")
+    )
+    mock_resolve.assert_not_called()
+
+
 @patch("resources.lib.tvdb_resolver.resolve_tvdb_id", return_value="")
 @patch("resources.lib.prowlarr.search_prowlarr", return_value=([PROWLARR_RESULT], None))
 @patch("xbmcaddon.Addon")

@@ -96,14 +96,16 @@ def test_pack_result_does_not_invent_sdr_or_mkv_metadata():
     item.setProperty.assert_any_call("container", "")
 
 
-def test_ordinary_result_keeps_sdr_and_mkv_defaults():
+def test_ordinary_result_marks_missing_hdr_unknown_and_keeps_mkv_default():
     item = MagicMock()
     result = _make_result(_meta={})
 
-    with patch("resources.lib.results_dialog.xbmcgui.ListItem", return_value=item):
+    with patch(
+        "resources.lib.results_dialog.xbmcgui.ListItem", return_value=item
+    ), patch("resources.lib.results_dialog._string", return_value="Unknown"):
         _build_result_item(result, 0)
 
-    item.setProperty.assert_any_call("hdr", "[COLOR FF6B7280]SDR[/COLOR]")
+    item.setProperty.assert_any_call("hdr", "[COLOR FF6B7280]Unknown[/COLOR]")
     item.setProperty.assert_any_call("container", "[COLOR FF34D399]MKV[/COLOR]")
 
 
@@ -262,7 +264,7 @@ def test_selection_from_show_all_returns_hidden_row():
     assert dialog._closed is True
 
 
-def test_context_menu_cancels_when_no_all_results():
+def test_context_menu_keeps_picker_open_when_no_all_results():
     kept = _row("Kept.2024.1080p.x265")
     dialog = ResultsDialog(
         "results-dialog.xml",
@@ -275,7 +277,7 @@ def test_context_menu_cancels_when_no_all_results():
     )
     dialog.onInit()
     dialog.onAction(_Action(ACTION_CONTEXT_MENU))
-    assert dialog._closed is True
+    assert dialog._closed is False
     assert dialog.get_selected_result() is None
 
 
@@ -290,8 +292,41 @@ def test_zero_survivors_opens_in_show_all_with_toggle_disabled():
     assert (
         dialog.getProperty("footer_hints") == "[Enter] Download & Play     [Esc] Back"
     )
-    dialog.onAction(_Action(ACTION_CONTEXT_MENU))  # no toggle -> cancel
-    assert dialog._closed is True
+    dialog.onAction(_Action(ACTION_CONTEXT_MENU))  # remain in the usable view
+    assert dialog._closed is False
+    assert dialog.show_all is True
+
+
+def test_c_toggles_filter_status_even_when_every_result_matches():
+    kept = _row("Kept.2024.1080p.x265")
+    dialog = _make_dialog([kept], [kept])
+    dialog.onInit()
+    dialog.onAction(_Action(0xF043))  # uppercase C delivered as a letter action
+    assert dialog.show_all is True
+    assert dialog._closed is False
+    dialog.onAction(_Action(ACTION_CONTEXT_MENU))
+    assert dialog.show_all is False
+
+
+def test_held_ok_only_shows_all_and_never_selects_or_toggles_back():
+    kept, hidden = _row("Kept"), _row("Hidden", reject="audio")
+    dialog = _make_dialog([kept], [kept, hidden])
+    with patch.object(dialog, "_ok_hold") as hold:
+        hold.defer_selection.return_value = True
+        dialog.onInit()
+        dialog.onAction(_Action(ACTION_SELECT))
+        dialog.onClick(LIST_ID)
+        dialog.onAction(_Action(ACTION_CONTEXT_MENU))
+        assert dialog.show_all is False
+        assert dialog.get_selected_result() is None
+        dialog._show_all()  # physical hold reaches five seconds
+        assert dialog.show_all is True
+        assert dialog._closed is False
+        dialog._show_all()  # continuing/repeating the hold cannot re-enable filters
+        assert dialog.show_all is True
+        assert dialog.get_selected_result() is None
+        dialog.close()
+        hold.close.assert_called_once()
 
 
 def test_build_result_item_sets_filter_reason_chip():

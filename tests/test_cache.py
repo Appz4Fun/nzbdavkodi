@@ -348,11 +348,11 @@ def test_cache_eviction_continues_when_file_disappears_before_sort(mock_cache_di
 
 @patch("resources.lib.cache._get_cache_dir")
 @patch("resources.lib.cache.xbmcaddon")
-def test_get_cached_falls_back_to_300s_when_ttl_setting_unparseable(
+def test_get_cached_falls_back_to_60s_when_ttl_setting_unparseable(
     mock_addon_mod, mock_cache_dir
 ):
     """When cache_ttl is a non-numeric string (user typo, corrupt
-    settings file), get_cached must fall back to the 300 s default
+    settings file), get_cached must fall back to the 60 s default
     rather than raising ValueError."""
     with tempfile.TemporaryDirectory() as tmpdir:
         mock_cache_dir.return_value = tmpdir
@@ -363,9 +363,9 @@ def test_get_cached_falls_back_to_300s_when_ttl_setting_unparseable(
         mock_addon_mod.Addon.return_value = addon
 
         # Write a fresh cache entry by hand so we can observe whether
-        # the fallback TTL (300 s) treats it as live.
+        # the fallback TTL (60 s) treats it as live.
         fresh = {
-            "timestamp": time.time() - 60,  # 1 min old
+            "timestamp": time.time() - 30,  # 30 seconds old
             "results": [{"title": "Fresh"}],
         }
         os.makedirs(tmpdir, exist_ok=True)
@@ -376,13 +376,13 @@ def test_get_cached_falls_back_to_300s_when_ttl_setting_unparseable(
         cached = get_cached("movie", "Fresh")
         assert (
             cached is not None
-        ), "Fallback TTL of 300 s must still accept 1-min-old entry"
+        ), "Fallback TTL of 60 s must still accept a 30-second-old entry"
         assert cached[0]["title"] == "Fresh"
 
 
 @patch("resources.lib.cache._get_cache_dir")
 @patch("resources.lib.cache.xbmcaddon")
-def test_get_cached_falls_back_to_300s_when_ttl_setting_raises_runtime(
+def test_get_cached_falls_back_to_60s_when_ttl_setting_raises_runtime(
     mock_addon_mod, mock_cache_dir
 ):
     """Kodi can raise RuntimeError from getSetting during early /play routing."""
@@ -395,7 +395,7 @@ def test_get_cached_falls_back_to_300s_when_ttl_setting_raises_runtime(
         mock_addon_mod.Addon.return_value = addon
 
         fresh = {
-            "timestamp": time.time() - 60,
+            "timestamp": time.time() - 30,
             "results": [{"title": "Fresh"}],
         }
         os.makedirs(tmpdir, exist_ok=True)
@@ -410,7 +410,7 @@ def test_get_cached_falls_back_to_300s_when_ttl_setting_raises_runtime(
 
 @patch("resources.lib.cache._get_cache_dir")
 @patch("resources.lib.cache.xbmcaddon")
-def test_set_cached_falls_back_to_300s_when_ttl_setting_raises_runtime(
+def test_set_cached_falls_back_to_60s_when_ttl_setting_raises_runtime(
     mock_addon_mod, mock_cache_dir
 ):
     """A transient Kodi getSetting RuntimeError must not abort cache writes."""

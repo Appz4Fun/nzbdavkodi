@@ -9,10 +9,13 @@ import xbmcgui
 from resources.lib.http_util import format_size as _format_size
 from resources.lib.i18n import fmt as _fmt
 from resources.lib.i18n import string as _string
+from resources.lib.results_input import OkHold
 
 # Color constants matching the mockup
 _RES_COLORS = {
+    "4320p": "FFA78BFA",
     "2160p": "FFA78BFA",
+    "1440p": "FF60A5FA",
     "1080p": "FF60A5FA",
     "720p": "FF4ADE80",
     "480p": "FFFBBF24",
@@ -74,7 +77,7 @@ def _build_result_item(result, row_index):
     if hdr_list:
         li.setProperty("hdr", _c(" ".join(hdr_list), "FFFBBF24"))
     elif not is_pack:
-        li.setProperty("hdr", _c("SDR", "FF6B7280"))
+        li.setProperty("hdr", _c(_string(30400), "FF6B7280"))
     else:
         li.setProperty("hdr", "")
 
@@ -143,20 +146,13 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
         self.total_count = kwargs.get("total_count", 0)
         self.show_all = not _provider_only(self.results) and bool(self.all_results)
         self.selected_result = None
+        self._closing = False
+        self._ok_hold = OkHold(self._show_all, self._select_focused)
         super().__init__(*args)
 
     def _toggle_available(self):
-        """Whether the context-menu press flips views instead of cancelling.
-
-        Requires a distinct, non-empty unfiltered list AND a non-empty
-        filtered list — toggling into an empty filtered view is useless,
-        so a zero-survivors picker stays pinned to show-all.
-        """
-        return (
-            bool(self.results)
-            and bool(self.all_results)
-            and list(self.all_results) != list(self.results)
-        )
+        """Keep a zero-survivors picker pinned to its non-empty show-all view."""
+        return bool(self.results) and bool(self.all_results)
 
     def _active_results(self):
         return self.all_results if self.show_all else self.results
@@ -181,7 +177,10 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             self.setProperty("filter_info", _fmt(30367, len(active)))
         else:
             self.setProperty("filter_info", _fmt(30112, len(active), self.total_count))
-        self.setProperty("footer_hints", self._footer_hints())
+        hints = self._footer_hints()
+        if self.all_results and self._ok_hold.available:
+            hints += "     " + _string(30477)
+        self.setProperty("footer_hints", hints)
 
         list_control = self.getControl(LIST_ID)
         list_control.reset()
@@ -191,6 +190,8 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
 
     def onInit(self):
         """Populate the dialog with results data."""
+        if self.all_results:
+            self._ok_hold.start()
         self._populate()
         self.setFocusId(LIST_ID)
 
@@ -215,6 +216,8 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
 
     def _select_focused(self):
         """Record the focused row of the active view and close."""
+        if self._closing:
+            return
         pos = self.getControl(LIST_ID).getSelectedPosition()
         active = self._active_results()
         if isinstance(pos, int) and 0 <= pos < len(active):
@@ -223,31 +226,41 @@ class ResultsDialog(xbmcgui.WindowXMLDialog):
             self.selected_result = None
         self.close()
 
+    def _show_all(self):
+        """A held OK always disables filters, including when already disabled."""
+        if not self._closing and self.all_results and not self.show_all:
+            self._toggle_show_all()
+
+    def close(self):
+        """Stop hold detection before the picker goes away."""
+        self._closing = True
+        self._ok_hold.close()
+        super().close()
+
     def _cancel(self):
         self.selected_result = None
         self.close()
 
     def onClick(self, controlId):
         """Handle item selection."""
-        if controlId == LIST_ID:
+        if controlId == LIST_ID and not self._ok_hold.defer_selection():
             self._select_focused()
 
     def onAction(self, action):
         """Handle keyboard/remote actions."""
         action_id = action.getId()
         if action_id in (ACTION_SELECT,):
-            if self.getFocusId() == LIST_ID:
+            if self.getFocusId() == LIST_ID and not self._ok_hold.defer_selection():
                 self._select_focused()
         elif action_id in (ACTION_PREVIOUS_MENU, ACTION_NAV_BACK):
             self._cancel()
-        elif action_id == ACTION_CONTEXT_MENU:
-            # Context menu toggles the show-all view when one exists;
-            # otherwise it keeps its close-as-cancel behavior so the user
-            # isn't trapped if they don't want any presented result.
+        elif action_id in (ACTION_CONTEXT_MENU, 0xF043):
+            # Kodi emits ContextMenu early for a native long OK press. Wait
+            # for the physical release or five seconds on supported devices.
+            if self._ok_hold.defer_selection():
+                return
             if self._toggle_available():
                 self._toggle_show_all()
-            else:
-                self._cancel()
 
     def get_selected_result(self):
         """Return the chosen result dict, or ``None`` when cancelled."""
@@ -266,10 +279,10 @@ def show_results_dialog(results, title="", year="", total_count=0, all_results=N
         total_count: Number of results before filtering, used to
             render "Showing N of M" in the dialog header.
         all_results: Optional unfiltered row list (same dict objects as
-            ``results`` plus the filter-rejected ones). When provided and
-            distinct, the context-menu button toggles the dialog between
-            the filtered and show-all views; when ``results`` is empty the
-            dialog opens directly in show-all mode.
+            ``results`` plus the filter-rejected ones). When provided with
+            a non-empty filtered list, the context-menu button toggles
+            the filter status even when both lists contain the same rows;
+            when ``results`` is empty the dialog opens directly in show-all mode.
 
     Returns:
         The chosen result dict (same object reference from whichever view
@@ -290,9 +303,11 @@ def show_results_dialog(results, title="", year="", total_count=0, all_results=N
         total_count=total_count,
         all_results=all_results,
     )
-    dialog.doModal()
-
-    selected = dialog.get_selected_result()
+    try:
+        dialog.doModal()
+        selected = dialog.get_selected_result()
+    finally:
+        dialog.close()
     del dialog
     return selected
 

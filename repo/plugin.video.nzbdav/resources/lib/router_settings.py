@@ -194,3 +194,12 @@ def _resolve_episode_tvdb_id(search_type, tvdb, tmdb_id, imdb, settings_getter):
         tvdb = resolved_tvdb
         _router._script_play_stage("resolved tvdbid={}".format(tvdb))
     return tvdb
+
+
+def _resolve_movie_imdb_id(search_type, imdb, tmdb_id, settings_getter):
+    """Use the movie namespace when TMDBHelper supplies only a TMDB ID."""
+    if search_type != "movie" or imdb or not tmdb_id:
+        return imdb
+    from resources.lib.tvdb_resolver import resolve_movie_imdb_id
+
+    return resolve_movie_imdb_id(tmdb_id, settings_getter=settings_getter)

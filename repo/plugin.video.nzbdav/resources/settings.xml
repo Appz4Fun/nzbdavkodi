@@ -668,7 +668,17 @@
 		</category>
 		<category id="quality_filters" label="30012" help="30360">
 			<group id="1" label="30013">
+				<setting id="filter_4320p" type="boolean" label="30405" help="30500">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
 				<setting id="filter_2160p" type="boolean" label="30014" help="30293">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_1440p" type="boolean" label="30406" help="30501">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
@@ -683,7 +693,32 @@
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="filter_576p" type="boolean" label="30407" help="30502">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_540p" type="boolean" label="30408" help="30503">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
 				<setting id="filter_480p" type="boolean" label="30017" help="30296">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_360p" type="boolean" label="30409" help="30504">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_240p" type="boolean" label="30410" help="30505">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_unknown_resolution" type="boolean" label="30411" help="30574">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
@@ -715,6 +750,11 @@
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="filter_unknown_hdr" type="boolean" label="30412" help="30575">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
 			</group>
 			<group id="3" label="30024">
 				<setting id="filter_atmos" type="boolean" label="30025" help="30301">
@@ -732,7 +772,17 @@
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="filter_dtshd_hr" type="boolean" label="30413" help="30506">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
 				<setting id="filter_dtsx" type="boolean" label="30028" help="30304">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_dts" type="boolean" label="30414" help="30507">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
@@ -748,6 +798,56 @@
 					<control type="toggle"/>
 				</setting>
 				<setting id="filter_aac" type="boolean" label="30031" help="30307">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_flac" type="boolean" label="30415" help="30508">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_pcm" type="boolean" label="30416" help="30509">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_opus" type="boolean" label="30417" help="30510">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_mp3" type="boolean" label="30418" help="30511">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_alac" type="boolean" label="30419" help="30512">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_vorbis" type="boolean" label="30420" help="30513">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_mp2" type="boolean" label="30421" help="30514">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_wma" type="boolean" label="30422" help="30515">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_ac4" type="boolean" label="30423" help="30516">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_unknown_audio" type="boolean" label="30424" help="30576">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
@@ -779,69 +879,301 @@
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="filter_mpeg4" type="boolean" label="30425" help="30517">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_vc1" type="boolean" label="30426" help="30518">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_mpeg1" type="boolean" label="30427" help="30519">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_vp8" type="boolean" label="30428" help="30520">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_wmv" type="boolean" label="30429" help="30521">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_h263" type="boolean" label="30430" help="30522">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_vvc" type="boolean" label="30431" help="30523">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_mjpeg" type="boolean" label="30432" help="30524">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_theora" type="boolean" label="30433" help="30525">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_unknown_codec" type="boolean" label="30434" help="30577">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
 			</group>
-			<group id="5" label="30038">
-				<setting id="filter_english" type="boolean" label="30039" help="30313">
+		</category>
+		<category id="language_filters" label="30038" help="30404">
+			<group id="1">
+				<setting id="filter_arabic" type="boolean" label="30050" help="30526">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_spanish" type="boolean" label="30040" help="30314">
+				<setting id="filter_bengali" type="boolean" label="30435" help="30527">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_french" type="boolean" label="30041" help="30315">
+				<setting id="filter_bulgarian" type="boolean" label="30436" help="30528">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_german" type="boolean" label="30042" help="30316">
+				<setting id="filter_cantonese" type="boolean" label="30437" help="30529">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_italian" type="boolean" label="30043" help="30317">
+				<setting id="filter_chinese" type="boolean" label="30049" help="30530">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_portuguese" type="boolean" label="30044" help="30318">
+				<setting id="filter_croatian" type="boolean" label="30438" help="30531">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_dutch" type="boolean" label="30045" help="30319">
+				<setting id="filter_czech" type="boolean" label="30439" help="30532">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_russian" type="boolean" label="30046" help="30320">
+				<setting id="filter_danish" type="boolean" label="30440" help="30533">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_japanese" type="boolean" label="30047" help="30321">
+				<setting id="filter_dutch" type="boolean" label="30045" help="30534">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_korean" type="boolean" label="30048" help="30322">
+				<setting id="filter_english" type="boolean" label="30039" help="30535">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_chinese" type="boolean" label="30049" help="30323">
+				<setting id="filter_estonian" type="boolean" label="30441" help="30536">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_arabic" type="boolean" label="30050" help="30324">
+				<setting id="filter_finnish" type="boolean" label="30442" help="30537">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="filter_hindi" type="boolean" label="30051" help="30325">
+				<setting id="filter_french" type="boolean" label="30041" help="30538">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_german" type="boolean" label="30042" help="30539">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_greek" type="boolean" label="30443" help="30540">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_gujarati" type="boolean" label="30444" help="30541">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_hebrew" type="boolean" label="30445" help="30542">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_hindi" type="boolean" label="30051" help="30543">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_hungarian" type="boolean" label="30446" help="30544">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_indonesian" type="boolean" label="30447" help="30545">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_italian" type="boolean" label="30043" help="30546">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_japanese" type="boolean" label="30047" help="30547">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_kannada" type="boolean" label="30448" help="30548">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_korean" type="boolean" label="30048" help="30549">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_latvian" type="boolean" label="30449" help="30550">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_lithuanian" type="boolean" label="30450" help="30551">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_malay" type="boolean" label="30451" help="30552">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_malayalam" type="boolean" label="30452" help="30553">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_marathi" type="boolean" label="30453" help="30554">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_norwegian" type="boolean" label="30454" help="30555">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_persian" type="boolean" label="30455" help="30556">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_polish" type="boolean" label="30456" help="30557">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_portuguese" type="boolean" label="30044" help="30558">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_punjabi" type="boolean" label="30457" help="30559">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_romanian" type="boolean" label="30458" help="30560">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_russian" type="boolean" label="30046" help="30561">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_serbian" type="boolean" label="30459" help="30562">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_slovak" type="boolean" label="30460" help="30563">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_slovenian" type="boolean" label="30461" help="30564">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_spanish" type="boolean" label="30040" help="30565">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_swedish" type="boolean" label="30462" help="30566">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_tamil" type="boolean" label="30463" help="30567">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_telugu" type="boolean" label="30464" help="30568">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_thai" type="boolean" label="30465" help="30569">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_turkish" type="boolean" label="30466" help="30570">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_ukrainian" type="boolean" label="30467" help="30571">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_urdu" type="boolean" label="30468" help="30572">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_vietnamese" type="boolean" label="30469" help="30573">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="filter_unknown_language" type="boolean" label="30470" help="30578">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
@@ -850,15 +1182,6 @@
 		</category>
 		<category id="keyword_filters" label="30052" help="30361">
 			<group id="1" label="30053">
-				<setting id="filter_release_group" type="string">
-					<level>0</level>
-					<default></default>
-					<constraints>
-						<allowempty>true</allowempty>
-					</constraints>
-					<visible>false</visible>
-					<control type="edit" format="string"/>
-				</setting>
 				<setting id="filter_exclude_release_group" type="string">
 					<level>0</level>
 					<default></default>
@@ -868,11 +1191,34 @@
 					<visible>false</visible>
 					<control type="edit" format="string"/>
 				</setting>
-				<setting id="action_configure_preferred_groups" type="action" label="30054" help="30326">
+				<setting id="filter_remux_tier_1" type="string" label="30471" help="30472">
 					<level>0</level>
-					<data>RunPlugin(plugin://plugin.video.nzbdav/configure_preferred_groups)</data>
-					<control type="button" format="action">
-						<close>true</close>
+					<default>3L,ATELiER,BiZKiT,BLURANiUM,BMF,CiNEPHiLES,FraMeSToR,PiRAMiDHEAD,PmP,WiLDCAT,ZQ</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30471</heading>
+					</control>
+				</setting>
+				<setting id="filter_remux_tier_2" type="string" label="30473" help="30474">
+					<level>0</level>
+					<default>NCmt,playBD,SiCFoI,SURFINBIRD,TEPES</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30473</heading>
+					</control>
+				</setting>
+				<setting id="filter_remux_tier_3" type="string" label="30475" help="30476">
+					<level>0</level>
+					<default>12GaugeShotgun,decibeL,EPSiLON,HiFi,iFT,KRaLiMaRKo,NTb,PTP,SumVision,TOA,TRiToN</default>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string">
+						<heading>30475</heading>
 					</control>
 				</setting>
 				<setting id="action_configure_excluded_groups" type="action" label="30055" help="30327">
@@ -993,7 +1339,7 @@
 			<group id="2" label="30071">
 				<setting id="cache_ttl" type="integer" label="30072" help="30339">
 					<level>0</level>
-					<default>300</default>
+					<default>60</default>
 					<control type="edit" format="integer">
 						<heading>30072</heading>
 					</control>
