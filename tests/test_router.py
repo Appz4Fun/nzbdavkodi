@@ -711,6 +711,70 @@ def test_route_search_does_not_call_safe_resolve(mock_search, mock_resolved):
 
 
 @patch("xbmcplugin.setResolvedUrl")
+def test_route_resolve_v2_loads_manifest_and_passes_all_sources(mock_resolved):
+    """The v2 handoff uses the manifest's primary URL and complete source list."""
+    resolve_and_play = MagicMock()
+    load_source_manifest = MagicMock(
+        return_value=(
+            "The Road",
+            "https://hydra/one.nzb",
+            ["https://hydra/one.nzb", "https://hydra/two.nzb"],
+        )
+    )
+    with patch.dict(
+        "sys.modules",
+        {
+            "resources.lib.resolver": MagicMock(resolve_and_play=resolve_and_play),
+            "resources.lib.source_manifest": MagicMock(
+                load_source_manifest=load_source_manifest
+            ),
+        },
+    ):
+        route(
+            [
+                "plugin://plugin.video.nzbdav/resolve-v2",
+                "-1",
+                "?manifest_url=https%3A%2F%2Fbtad%2Fmanifest%2Ftoken",
+            ]
+        )
+
+    load_source_manifest.assert_called_once_with("https://btad/manifest/token")
+    resolve_and_play.assert_called_once_with(
+        "https://hydra/one.nzb",
+        "The Road",
+        params={"_source_urls": ["https://hydra/one.nzb", "https://hydra/two.nzb"]},
+    )
+    mock_resolved.assert_not_called()
+
+
+@patch("xbmcplugin.setResolvedUrl")
+def test_route_resolve_v2_invalid_manifest_resolves_handle_without_playing(
+    mock_resolved,
+):
+    """A bad manifest must end the Kodi action cleanly instead of hanging."""
+    resolve_and_play = MagicMock()
+    with patch.dict(
+        "sys.modules",
+        {
+            "resources.lib.resolver": MagicMock(resolve_and_play=resolve_and_play),
+            "resources.lib.source_manifest": MagicMock(
+                load_source_manifest=MagicMock(return_value=None)
+            ),
+        },
+    ):
+        route(
+            [
+                "plugin://plugin.video.nzbdav/resolve-v2",
+                "12",
+                "?manifest_url=https%3A%2F%2Fbtad%2Fmanifest%2Fmissing",
+            ]
+        )
+
+    resolve_and_play.assert_not_called()
+    assert mock_resolved.call_args[0][:2] == (12, False)
+
+
+@patch("xbmcplugin.setResolvedUrl")
 def test_route_install_player_resolves_handle(mock_resolved):
     """/install_player must resolve the handle after running."""
     with patch.dict(

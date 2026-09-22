@@ -10,11 +10,19 @@ from resources.lib.http_util import http_get
 
 
 def _is_http_url(value):
-    return isinstance(value, str) and urlsplit(value).scheme in ("http", "https")
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 def load_source_manifest(manifest_url):
     """Return title, primary URL and ordered URLs, or None for an invalid manifest."""
+    if not _is_http_url(manifest_url):
+        return None
     try:
         raw = http_get(manifest_url, timeout=15, max_bytes=128 * 1024)
         data = json.loads(raw)
