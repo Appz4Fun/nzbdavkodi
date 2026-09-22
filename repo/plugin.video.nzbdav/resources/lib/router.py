@@ -281,6 +281,23 @@ def route(argv):
                 clean.get("title", ""),
                 params=clean,
             )
+        elif path == "/resolve-v2":
+            from resources.lib.resolver import resolve_and_play
+            from resources.lib.source_manifest import load_source_manifest
+
+            manifest = load_source_manifest(params.get("manifest_url", ""))
+            if manifest is None:
+                xbmc.log(
+                    "NZB-DAV: /resolve-v2 received an invalid source manifest",
+                    xbmc.LOGERROR,
+                )
+            else:
+                title, primary_url, source_urls = manifest
+                resolve_and_play(
+                    primary_url,
+                    title,
+                    params={"_source_urls": source_urls},
+                )
         elif path == "/direct_play":
             # Test/diagnostic entry: play an explicit primary stream URL
             # via the addon's stream_proxy (so failover validates each

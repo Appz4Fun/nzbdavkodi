@@ -323,7 +323,9 @@ def _resolve_failure(handle, message=None):
     xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
-def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure):
+def _run_nzbget_backend(
+    nzb_url, title, settings_getter, on_success, on_failure, source_urls=None
+):
     """Shared NZBGet flow: submit -> poll -> resolve over SMB.
 
     Calls ``on_success(video_url)`` exactly once on success, or
@@ -367,9 +369,17 @@ def _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
         # wrong job instead of the one the user chose. NZBGet's own dupe
         # handling deals with re-submitting a still-in-flight same-name job on a
         # quick retry.
-        nzbid, error = nzbget_api.append_nzb(
-            nzb_url, title, settings_getter=settings_getter
-        )
+        urls = source_urls or [nzb_url]
+        urls = [url for url in urls if isinstance(url, str) and url]
+        if nzb_url and nzb_url not in urls:
+            urls.insert(0, nzb_url)
+        error = None
+        for source_url in urls:
+            submitted_id, error = nzbget_api.append_nzb(
+                source_url, title, settings_getter=settings_getter
+            )
+            if nzbid is None and submitted_id:
+                nzbid = submitted_id
         if not nzbid:
             # Surface the specific (already-redacted) NZBGet message — auth vs
             # dupe vs "append returned 0" — per the spec error table, falling
@@ -464,7 +474,14 @@ def resolve_and_play_nzbget(handle, params, settings_getter=None, resume_seconds
     def on_failure(message):
         _resolve_failure(handle, message)
 
-    _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
+    _run_nzbget_backend(
+        nzb_url,
+        title,
+        settings_getter,
+        on_success,
+        on_failure,
+        source_urls=params.get("_source_urls"),
+    )
 
 
 def play_nzbget(nzb_url, title, params=None, settings_getter=None, resume_seconds=0.0):
@@ -488,4 +505,11 @@ def play_nzbget(nzb_url, title, params=None, settings_getter=None, resume_second
         if message:
             _notify(_addon_name(), message, 5000)
 
-    _run_nzbget_backend(nzb_url, title, settings_getter, on_success, on_failure)
+    _run_nzbget_backend(
+        nzb_url,
+        title,
+        settings_getter,
+        on_success,
+        on_failure,
+        source_urls=(params or {}).get("_source_urls"),
+    )

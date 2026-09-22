@@ -579,6 +579,26 @@ def test_play_nzbget_missing_config_does_not_start_player():
     player.play.assert_not_called()
 
 
+def test_play_nzbget_submits_every_manifest_source():
+    with patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        side_effect=[(42, None), (43, None)],
+    ) as append, patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": "failed", "status": "FAILURE/UNPACK"},
+    ):
+        play_nzbget(
+            "http://i/primary.nzb",
+            "The.Road",
+            params={"_source_urls": ["http://i/primary.nzb", "http://i/alternate.nzb"]},
+            settings_getter=_full_settings(),
+        )
+    assert [call.args[0] for call in append.call_args_list] == [
+        "http://i/primary.nzb",
+        "http://i/alternate.nzb",
+    ]
+
+
 def test_read_settings_none_uses_single_arg_getsetting():
     # Regression: real Kodi Addon.getSetting takes ONE positional id; the
     # settings_getter=None branch must not call it with a (key, default)
