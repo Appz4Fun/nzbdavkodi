@@ -9,6 +9,7 @@ here. Honors the same ``setResolvedUrl``-on-failure contract as the nzbdav
 path: exactly one resolution per exit, failures resolve False.
 """
 
+import hashlib
 import threading
 import time
 from urllib.parse import unquote
@@ -864,6 +865,38 @@ def _record_fleet_pubdates(dupe, title):
             record_download(title, pubdate)
 
 
+def _manifest_dupe_submission(nzb_url, title, params):
+    """Join explicit manifest sources to the tracked Smart-Duplicates flow.
+
+    The manifest already defines the selected group, so include every distinct
+    alternative. The existing worker still enforces DupeCheck and cancellation.
+    Hash the exact group to avoid exposing URL credentials in NZBGet's DupeKey.
+    """
+    from resources.lib.router_play import _dupe_score_base
+
+    sources = params.get("_source_urls")
+    if not isinstance(sources, list):
+        return params.get("_nzbget_dupe")
+    urls = list(
+        dict.fromkeys([nzb_url] + [u for u in sources if isinstance(u, str) and u])
+    )
+    if len(urls) < 2:
+        return None
+    key = hashlib.sha256("\n".join(sorted(urls)).encode("utf-8")).hexdigest()
+    base = _dupe_score_base()
+    backups = [
+        {"link": url, "title": title, "score": base - index}
+        for index, url in enumerate(urls[1:], 1)
+    ]
+    return {
+        "key": "btad:" + key,
+        "pick_score": base,
+        "score_base": base,
+        "backups": backups,
+        "max_backups": len(backups),
+    }
+
+
 def _run_nzbget_backend(  # pylint: disable=too-many-arguments
     nzb_url,
     title,
@@ -1005,7 +1038,7 @@ def resolve_and_play_nzbget(
             params.get("_download_size"),
         ),
         completed_job=params.get("_nzbget_completed_job"),
-        dupe=params.get("_nzbget_dupe"),
+        dupe=_manifest_dupe_submission(nzb_url, title, params),
         season_pack_record=params.get("_season_pack"),
         episode_context=params.get("_episode_context"),
     )
@@ -1054,7 +1087,7 @@ def play_nzbget(
             resolve_params.get("_download_size"),
         ),
         completed_job=resolve_params.get("_nzbget_completed_job"),
-        dupe=resolve_params.get("_nzbget_dupe"),
+        dupe=_manifest_dupe_submission(nzb_url, title, resolve_params),
         season_pack_record=resolve_params.get("_season_pack"),
         episode_context=resolve_params.get("_episode_context"),
     )
