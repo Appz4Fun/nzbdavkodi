@@ -42,10 +42,12 @@ NZBGet. **Download timeout (seconds)** defaults to 3600 and is clamped to
 60–86400. If the timeout runs out, NZB-DAV reports "Download timed out" and
 leaves the job running in NZBGet, so it can finish for a later play.
 
-!!! info "Coming in the next beta"
-    Local/mounted completed-folder paths are new on main after
-    2.0.0-beta.2 and ship in the next beta build. Earlier builds accept
-    `smb://` only.
+!!! note "Local paths on 2.0.0-beta.1 and beta.2"
+    A local or mounted path already works for playback on the current beta.
+    On those builds the setting is labelled **SMB Completed Folder** and its
+    test button **Test SMB Share**. The only beta.2 limit is season-pack
+    reuse, which needs an `smb://` root there. The next beta renames the
+    setting and adds local-path support to season-pack reuse.
 
 <!--
 Screenshot placeholder: capture the NZBGet settings tab with the backend

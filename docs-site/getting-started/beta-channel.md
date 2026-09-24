@@ -72,7 +72,7 @@ beta. The pages they link to already describe them.
 | **New relevance ranking.** Results rank by resolution, then HDR, then Hybrid REMUX / REMUX, then three editable preferred-group tiers (seeded from the TRaSH remux tiers). | [Quality filtering](../features/quality-filtering.md) |
 | **Show hidden results in the picker.** Press ++c++ (the context-menu key) to switch between filtered and all results. Hidden rows show why they were filtered. On Linux devices such as CoreELEC, you can also hold OK for five seconds. If nothing passes your filters, the picker opens on the full list instead of an empty one. | [Play your first title](first-playback.md) |
 | **Movie IMDb lookup.** With a TMDB API key set, movie searches also get the IMDb id from TMDB. The search cache now defaults to 60 seconds. | [Search and indexers](../features/search-and-indexers.md) |
-| **NZBGet local completed folder.** The NZBGet completed-downloads folder can now be a local or mounted path, not only an SMB share. | [NZBGet backend](../features/nzbget-backend.md) |
+| **NZBGet completed folder relabelled.** **SMB Completed Folder** becomes **Completed Folder (SMB or Local Path)**. Local and mounted paths already play on the current beta; the next beta also lets season-pack reuse work from them. | [NZBGet backend](../features/nzbget-backend.md) |
 | **Blu-ray `.m2ts` files** are recognized as playable video. | — |
 
 ## Joining the beta

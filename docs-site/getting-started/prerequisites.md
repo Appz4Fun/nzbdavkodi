@@ -40,8 +40,8 @@ You need only one of these to start. For details on how each behaves, see
 
 !!! info "Beta feature"
     Added in 2.0.0-beta.1 — available on the [Beta channel](beta-channel.md).
-    Using a local/mounted path instead of SMB is new on main after
-    2.0.0-beta.2 and ships in the next beta build.
+    A local/mounted completed folder works on the current beta too, where
+    the setting is labelled **SMB Completed Folder**.
 
 NZB-DAV can use **NZBGet** as the download and playback backend instead of
 nzbdav. In this mode NZB-DAV submits to NZBGet, waits for it to finish

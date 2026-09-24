@@ -112,7 +112,8 @@ After a confirmed completed-folder inventory, a folder containing at least two
 reliably named episodes from exactly one season is recorded for later reuse.
 For nzbdav/WebDAV, recording is deferred until the selected stream passes body
 validation; NZBGet records from the reachable completed-folder inventory on its
-SMB or local/mounted completed-downloads path. The catalog is stored in the add-on profile at
+SMB or local/mounted completed-downloads path (2.0.0-beta.2 records only
+from an `smb://` root; local-path recording is in the next beta). The catalog is stored in the add-on profile at
 `special://profile/addon_data/plugin.video.nzbdav/season_packs.json` and is
 bounded to the 100 most recently confirmed jobs.
 

@@ -217,9 +217,10 @@ NZB-DAV needs both the nzbdav API credentials and the WebDAV credentials.
 - **Download failed in NZBGet**: NZBGet couldn't repair or unpack the release,
   and no duplicate backup took over. Pick another release.
 
-Using a local or mounted path as the completed folder, instead of SMB, is new on
-`main` after 2.0.0-beta.2 and ships in the next beta build. For the full setup,
-see [NZBGet backend](../features/nzbget-backend.md).
+A local or mounted path works as the completed folder on the current beta too.
+There the setting is labelled **SMB Completed Folder** and the test button
+**Test SMB Share**. On 2.0.0-beta.2, season-pack reuse needs an `smb://` root.
+For the full setup, see [NZBGet backend](../features/nzbget-backend.md).
 
 ## Playback starts, then fails
 

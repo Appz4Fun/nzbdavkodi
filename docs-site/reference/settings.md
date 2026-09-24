@@ -78,9 +78,10 @@ after you enable the backend.
 
 !!! info "Beta feature"
     Added in 2.0.0-beta.1, available on the
-    [Beta channel](../getting-started/beta-channel.md). Local/mounted
-    completed-folder paths (not only `smb://`) are new on main after
-    2.0.0-beta.2 and ship in the next beta build.
+    [Beta channel](../getting-started/beta-channel.md). The current beta
+    already accepts a local/mounted completed folder for playback; it labels
+    the setting **SMB Completed Folder**. The next beta adds the new label
+    and season-pack reuse from local paths.
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
