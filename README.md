@@ -69,28 +69,42 @@ for details.
 
 NZB-DAV is distributed through the
 [Appz4Fun Kodi repository](https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo), which
-delivers automatic updates on a **Stable** or **Beta** channel.
+delivers automatic updates on one of two channels:
+
+| Channel | Repository add-on | NZB-DAV today |
+|---------|-------------------|---------------|
+| **Stable** | `repository.appz4fun.stable` | 1.2.3 |
+| **Beta** | `repository.appz4fun.beta` | 2.0.0-beta.2 (pre-releases included) |
 
 1. Open [appz4fun.github.io/Appz4Fun-Kodi-Repo](https://appz4fun.github.io/Appz4Fun-Kodi-Repo/)
-   and download the channel zip (for example `repository.appz4fun.stable-1.0.0.zip`).
+   and download the channel zip (for example `repository.appz4fun.stable-1.0.1.zip`).
 2. In Kodi: **Settings → System → Add-ons** → enable **Unknown sources**.
 3. **Settings → Add-ons → Install from zip file** → select the channel zip.
-4. **Settings → Add-ons → Install from repository → Appz4Fun Repository** →
-   install **NZB-DAV**. Future updates install automatically.
+4. **Settings → Add-ons → Install from repository → Appz4Fun Repository** (or
+   **Appz4Fun Repository (Beta)**) → **Video add-ons** → install **NZB-DAV**.
+   Future updates on that channel install automatically.
 
-> **Upgrading from the old repository?** NZB-DAV used to be distributed from a
-> Kodi repository at `https://appz4fun.github.io/nzbdavkodi/`. That URL now hosts
-> this project's documentation, not add-on metadata, so installs made from it no
-> longer auto-update. Install the Appz4Fun repository above once to resume
-> updates, then remove the old `nzbdav` file-manager source and the old
-> **NZB-DAV Repository** add-on.
+Kodi only updates a third-party add-on from the repository it was installed
+from, so to switch channels (or move an existing install onto the new
+repository), install the other repository zip, then open NZB-DAV's add-on info
+page → **Versions** and pick the version listed under that repository. See
+[Beta channel and beta features](https://appz4fun.github.io/nzbdavkodi/getting-started/beta-channel/)
+for what the beta adds and how to switch.
+
+> **Upgrading from the old repository?** NZB-DAV used to be distributed from the
+> **NZB-DAV Repository** add-on (`repository.nzbdav`) at
+> `https://appz4fun.github.io/nzbdavkodi/`. That URL now hosts this project's
+> documentation, not add-on metadata, so installs made from it no longer
+> update. Install an Appz4Fun repository zip as above, reinstall NZB-DAV from it
+> through **Versions** (settings are kept), then remove the old `nzbdav`
+> file-manager source and the old **NZB-DAV Repository** add-on.
 
 ### Manual install
 
-Download `plugin.video.nzbdav.zip` from the
-[releases page](https://github.com/Appz4Fun/nzbdavkodi/releases), then
-**Settings → Add-ons → Install from zip file**. Manual installs don't
-auto-update.
+Download `plugin.video.nzbdav-<version>.zip` from the
+[releases page](https://github.com/Appz4Fun/nzbdavkodi/releases) (releases
+marked **Pre-release** are beta builds), then **Settings → Add-ons → Install
+from zip file**. Manual installs don't auto-update.
 
 Full steps: [Install the add-on](https://appz4fun.github.io/nzbdavkodi/getting-started/installation/).
 
@@ -126,7 +140,8 @@ Full walkthrough:
   remux and fMP4 HLS tiers for large or Dolby Vision files.
 - **Self-healing fallback streams** that switch to a verified, byte-identical
   alternate release mid-playback without stopping or rewinding.
-- **Optional NZBGet backend** as an alternative to nzbdav, with
+- **Optional NZBGet backend** *(beta)* as an alternative to nzbdav, playing
+  from an SMB share or a local/mounted folder, with
   [Smart Duplicates failover](https://appz4fun.github.io/nzbdavkodi/features/nzbget-backend/#smart-duplicates-failover)
   to a same-release backup when a download turns out unrepairable.
 
@@ -149,7 +164,7 @@ and pure Python.
 just test          # Run the default unit test suite
 just lint          # ruff + black + pylint + vermin
 just lint-fix      # Auto-fix lint/format issues
-just release       # Build plugin.video.nzbdav.zip
+just release       # Build plugin.video.nzbdav-<version>.zip
 just ship          # Test, then build the release zip
 just docs          # Build the documentation site into ./site (strict)
 just docs-serve    # Serve the docs site locally with live reload
@@ -187,7 +202,10 @@ tests/                        # pytest suite (Kodi mocks in conftest.py)
 
 The Release workflow builds the zip and creates a GitHub Release, then notifies
 the [Appz4Fun Kodi repository](https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo) to
-rebuild and republish. Pre-release tags are published to the Beta channel.
+rebuild and republish. Pre-release tags (any tag with a hyphen, such as
+`v2.0.0-beta.3`) are published to the Beta channel only. Note that Kodi ranks
+`2.0.0-beta.N` above `2.0.0`, so beta users auto-update only to a higher base
+version; see [AGENTS.md](AGENTS.md#release-checklist).
 
 ## Compatibility
 

@@ -43,7 +43,7 @@ just test          # Run all tests
 just lint          # ruff + black + pylint + vermin
 just lint-fix      # Auto-fix lint/format issues, then re-run just lint
 just ci            # Same checks as GitHub CI: lint + test + Python 3.8 compileall gate
-just release       # Build plugin.video.nzbdav.zip
+just release       # Build plugin.video.nzbdav-<version>.zip
 just ship          # test + release
 just deploy-addon  # Push the addon tree to the CoreELEC box and restart Kodi
 just version       # Print the current addon version from addon.xml
@@ -210,3 +210,12 @@ Before cutting a new versioned release:
 
 The Release workflow builds the zip and creates the GitHub Release; the external
 Appz4Fun Kodi repository then rebuilds and republishes NZB-DAV to its users.
+Tags containing a hyphen (for example `v2.0.0-beta.3`) are marked pre-release and
+go to the Beta channel only.
+
+Version ordering caveat: Kodi's `CAddonVersion` splits a version at the first
+`-` and ranks any suffix above none, so Kodi considers `2.0.0-beta.2` newer than
+`2.0.0`. Beta-channel users will not be auto-updated from a `X.Y.Z-beta.N` build
+to a final `X.Y.Z`; they only auto-update to a higher base version (for example
+`X.Y.Z+1`). Git tags cannot contain `~`, so Kodi's `X.Y.Z~beta` pre-release form
+is not usable with the tag == `addon.xml` version check.

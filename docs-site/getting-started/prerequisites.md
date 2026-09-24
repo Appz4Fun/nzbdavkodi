@@ -9,7 +9,7 @@ of these components.
 | Component | What you need | Notes |
 |-----------|---------------|-------|
 | **Kodi 21 (Omega)** or later | A working Kodi install | Runs on CoreELEC, LibreELEC, OSMC, Windows, macOS, and Linux. |
-| **nzbdav** | A running, reachable [nzbdav](https://github.com/nzbdav-dev/nzbdav) instance | Provides both the SABnzbd-compatible submission API and the WebDAV server that streams the file. You don't need a separate SABnzbd. |
+| **nzbdav** | A running, reachable [nzbdav](https://github.com/nzbdav-dev/nzbdav) instance | Provides both the SABnzbd-compatible submission API and the WebDAV server that streams the file. You don't need a separate SABnzbd. (Beta builds can use NZBGet instead — see below.) |
 | **A Usenet provider** | Configured inside nzbdav | nzbdav connects to your news server; NZB-DAV never talks to Usenet directly. |
 | **At least one search provider** | **NZBHydra2**, **Prowlarr**, *or* **direct Newznab indexers** | You can enable more than one; results are merged. See below. |
 | **TMDBHelper** | `plugin.video.themoviedb.helper` installed in Kodi | This is how you browse titles and trigger playback. |
@@ -34,13 +34,23 @@ You need only one of these to start. For details on how each behaves, see
 | Component | Why |
 |-----------|-----|
 | **ffmpeg** on the Kodi device | Enables the optional remux and HLS compatibility tiers for large or awkward files. NZB-DAV works without it — the proxy simply falls back to direct pass-through. |
+| **TMDB API key** | Lets NZB-DAV turn TMDBHelper's TMDB ids into the IMDb (movie) or TVDB (TV) ids that indexers search by, for more accurate results. It's a TMDB key — NZB-DAV doesn't need a TVDB key. Without it, searches use whatever ids TMDBHelper supplies, or the title. See [Configure connections](configuration.md#improve-search-accuracy-optional). |
 
 ## Optional: NZBGet instead of nzbdav
 
+!!! info "Beta feature"
+    Added in 2.0.0-beta.1 — available on the [Beta channel](beta-channel.md).
+    Using a local/mounted path instead of SMB is new on main after
+    2.0.0-beta.2 and ships in the next beta build.
+
 NZB-DAV can use **NZBGet** as the download and playback backend instead of
-nzbdav. In this mode NZB-DAV submits to NZBGet, waits for post-processing, and
-plays the finished file from an SMB share or a local/mounted path. The nzbdav
-streaming and fallback features don't apply in NZBGet mode. See [NZBGet backend](../features/nzbget-backend.md).
+nzbdav. In this mode NZB-DAV submits to NZBGet, waits for it to finish
+downloading and post-processing, and plays the finished file from NZBGet's
+completed-downloads folder. Kodi must be able to read that folder, either as an
+SMB share (`smb://…`) or as a local or mounted path (for example an NFS mount).
+You still need a search provider. nzbdav's WebDAV streaming and live stream
+fallback don't apply in NZBGet mode. NZBGet's own duplicate handling covers
+failover instead. See [NZBGet backend](../features/nzbget-backend.md).
 
 ## About dependencies
 

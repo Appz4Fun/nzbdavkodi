@@ -9,8 +9,15 @@ source goes bad. You never touch an NZB file.
 
 !!! note "This add-on provides software, not content"
     NZB-DAV ships no media and no indexers. You bring your own NZBHydra2 or
-    Prowlarr (or direct Newznab indexers), your own nzbdav server, and your own
-    Usenet provider. NZB-DAV connects those pieces to Kodi.
+    Prowlarr (or direct Newznab indexers), your own nzbdav server (or NZBGet),
+    and your own Usenet provider. NZB-DAV connects those pieces to Kodi.
+
+!!! info "Stable 1.2.3 and Beta 2.0.0"
+    NZB-DAV is published on a **Stable** channel (currently 1.2.3) and a
+    **Beta** channel (currently 2.0.0-beta.2). This site documents the newest
+    code, so some features are marked **Beta feature** or **Coming in the next
+    beta**. See [Beta channel and beta features](getting-started/beta-channel.md)
+    for what's new and how to switch.
 
 ## What it does
 
@@ -63,6 +70,14 @@ seeking, on-the-fly remuxing, and mid-playback source switching.
 
     [:octicons-arrow-right-24: Fallback streams](features/fallback-streams.md)
 
+-   :material-download-network: __NZBGet backend__ *(beta)*
+
+    Use NZBGet instead of nzbdav. NZB-DAV downloads, then plays the finished
+    file from SMB or a local folder, with automatic failover to a backup
+    release and exact season-pack episode reuse.
+
+    [:octicons-arrow-right-24: NZBGet backend](features/nzbget-backend.md)
+
 </div>
 
 ## Get started
@@ -72,7 +87,8 @@ a few minutes:
 
 1. [Check the prerequisites](getting-started/prerequisites.md).
 2. [Install the add-on](getting-started/installation.md) from the Appz4Fun Kodi
-   repository.
+   repository, on the Stable or
+   [Beta](getting-started/beta-channel.md) channel.
 3. [Configure your connections](getting-started/configuration.md) and test them.
 4. [Set up TMDBHelper](getting-started/tmdbhelper.md) to use NZB-DAV as a player.
 5. [Play your first title](getting-started/first-playback.md).
