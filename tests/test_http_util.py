@@ -229,6 +229,24 @@ def test_redact_url_preserves_url_without_apikey():
     assert result == url
 
 
+def test_redact_url_hides_getnzb_path_credentials():
+    """Newznab links may put account/API credentials in the path."""
+    url = "https://indexer.example/getnzb/id.nzb&i=12345&r=secretkey123"
+    result = redact_url(url)
+
+    assert "12345" not in result
+    assert "secretkey123" not in result
+    assert "&i=REDACTED" in result
+    assert "&r=REDACTED" in result
+
+
+def test_redact_url_preserves_short_params_outside_getnzb_paths():
+    """Short i/r parameters are not credentials in arbitrary URLs."""
+    url = "https://example.com/report&i=12345&r=summary"
+
+    assert redact_url(url) == url
+
+
 def test_redact_url_hides_extended_credential_keys():
     """TODO.md §H.2-H2c: the redaction set covers more than just apikey.
     `key`, `access_token`, `bearer`, `session`, `sessionid`, `password`,
@@ -283,6 +301,35 @@ def test_redact_text_redacts_multiple_credential_params():
     # Non-credential params are untouched.
     assert "imdbid=tt1" in result
     assert "t=movie" in result
+
+
+def test_redact_text_hides_getnzb_path_credentials():
+    """Free-form HTTP errors must scrub non-standard Newznab path secrets."""
+    msg = (
+        "fetch failed for "
+        "https://indexer.example/getnzb/id.nzb&i=12345&r=secretkey123"
+    )
+    result = redact_text(msg)
+
+    assert "12345" not in result
+    assert "secretkey123" not in result
+    assert "&i=REDACTED" in result
+    assert "&r=REDACTED" in result
+
+
+def test_redact_text_scopes_getnzb_path_credentials_to_url():
+    """Short Newznab credential names must not redact unrelated message data."""
+    msg = (
+        "fetch failed for "
+        "https://indexer.example/getnzb/id.nzb&i=12345&r=secretkey123 "
+        "while callback metadata remained &i=keep&r=visible"
+    )
+    result = redact_text(msg)
+
+    assert "12345" not in result
+    assert "secretkey123" not in result
+    assert "&i=REDACTED&r=REDACTED" in result
+    assert "metadata remained &i=keep&r=visible" in result
 
 
 def test_redact_text_redacts_digit_prefixed_values():
