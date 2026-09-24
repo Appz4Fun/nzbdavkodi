@@ -31,7 +31,9 @@ These must stay true or Kodi playback, shutdown, or updates can break:
 - Every resolvable plugin route (`/play`, `/direct_play`, and `resolver.resolve(handle, ...)`) must call `xbmcplugin.setResolvedUrl(...)` on every path: success with `True`, failure or cancellation with `False`.
 - Handle-less playback paths have no plugin handle. They are the TMDBHelper `RunScript(addon.py,tmdb_play,...)` player, `/resolve`, `/resolve-v2`, `/search` (after `endOfDirectory`), and `resolve_and_play`.
 - Handle-less paths start playback with `xbmc.Player().play(...)` instead of `setResolvedUrl`.
-- On failure, handle-less paths notify the user and clean up. If a change deliberately revises this, update the tests to match.
+- On failure, handle-less paths notify the user.
+- On failure, handle-less paths also close their progress dialogs and stop background fallback workers.
+- If a change deliberately revises that failure handling, update the tests to match.
 - The NZBGet backend supports both kinds of entry path.
 - Kodi polling loops must use `xbmc.Monitor.waitForAbort()` instead of `time.sleep()` so Kodi can shut down cleanly.
 - Settings must be defined in `resources/settings.xml` and read through `xbmcaddon.Addon().getSetting(...)`.
@@ -99,7 +101,14 @@ Use `pr_agent_context.py` when starting a PR review or addressing comments from 
 
 ## Architecture Snapshot
 
-NZB-DAV (`plugin.video.nzbdav`) is a player/resolver add-on for Kodi 21. It searches NZBHydra2, Prowlarr, or direct Newznab indexers for NZB files (Usenet download manifests). It submits the chosen NZB to a backend and plays the file once it's ready. It also registers as a TMDBHelper player.
+An NZB (Usenet download manifest) file lists the posts that make up a release.
+
+The add-on, `plugin.video.nzbdav`, is a player and resolver for Kodi 21. It:
+
+- searches NZBHydra2, Prowlarr, or direct Newznab indexers for NZB files;
+- submits the chosen NZB to a backend;
+- plays the file once it's ready;
+- registers as a TMDBHelper player.
 
 External services:
 
