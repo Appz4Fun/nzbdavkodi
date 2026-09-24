@@ -92,8 +92,7 @@ a few levels deep, XML parsed with entity declarations refused). It then chooses
 the playable file:
 
 - Video extensions recognized: `.mkv`, `.mp4`, `.avi`, `.m4v`, `.ts`, `.m2ts`,
-  `.wmv`, `.mov`. (`.m2ts` Blu-ray stream files are new on main after
-  2.0.0-beta.2.)
+  `.wmv`, `.mov`.
 - For a **TV season pack**, NZB-DAV matches the requested season/episode against
   filenames — handling multi-episode and range patterns — and recurses into
   subfolders when needed. A named wrong episode fails closed rather than being
@@ -112,8 +111,7 @@ After a confirmed completed-folder inventory, a folder containing at least two
 reliably named episodes from exactly one season is recorded for later reuse.
 For nzbdav/WebDAV, recording is deferred until the selected stream passes body
 validation; NZBGet records from the reachable completed-folder inventory on its
-SMB or local/mounted completed-downloads path (2.0.0-beta.2 records only
-from an `smb://` root; local-path recording is in the next beta). The catalog is stored in the add-on profile at
+SMB or local/mounted completed-downloads path. The catalog is stored in the add-on profile at
 `special://profile/addon_data/plugin.video.nzbdav/season_packs.json` and is
 bounded to the 100 most recently confirmed jobs.
 

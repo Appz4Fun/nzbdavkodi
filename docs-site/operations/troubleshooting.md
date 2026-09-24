@@ -103,29 +103,19 @@ Check the search backend first:
 3. For Prowlarr, fill in **Prowlarr Indexer IDs (comma-separated)**. The
    setting's help text says Prowlarr search needs it.
 4. Search results are cached for **Cache duration** (Advanced → Search Cache;
-   60 s on current builds, 300 s on 1.2.3 and 2.0.0-beta.2). After you fix a
+   60 s by default). After you fix a
    provider, open the NZB-DAV add-on and choose **Clear Cache**, then search
    again.
 5. Try a popular movie or episode that you know has a Usenet release.
 
-If results were found but your filters rejected all of them, what you see
-depends on your version:
-
-- **1.2.3 and 2.0.0-beta.x:** a prompt asks **All N results were filtered out.
-  Show unfiltered?**
-- **Current builds:** the picker opens straight into its show-all view, with
-  the header **Showing all N sources (filters off)**. Each rejected row carries
-  a **FILTERED:** tag that names the first filter that rejected it
-  (`resolution`, `HDR`, `audio`, `codec`, `language`, `keyword`, `group`, or
-  `size`). Loosen that filter. If some results do pass, press **C** (the
-  context-menu key) in the picker to switch between filtered and all results.
-  On Linux and CoreELEC, you can also hold **OK** for five seconds to turn the
-  filters off.
-
-!!! info "Coming in the next beta"
-    The show-all toggle, the **FILTERED:** reasons, and the five-second OK
-    hold are new on `main` after 2.0.0-beta.2. They ship in the next beta
-    build.
+If results were found but your filters rejected all of them, the picker opens
+straight into its show-all view, with the header **Showing all N sources
+(filters off)**. Each rejected row carries a **FILTERED:** tag that names the
+first filter that rejected it (`resolution`, `HDR`, `audio`, `codec`,
+`language`, `keyword`, `group`, or `size`). Loosen that filter. If some results
+do pass, press **C** (the context-menu key) in the picker to switch between
+filtered and all results. On Linux and CoreELEC, you can also hold **OK** for
+five seconds to turn the filters off.
 
 The **Other / Unknown** option in each filter group lets through releases whose
 title doesn't name a recognized value. Turning it off, or turning off **SDR**,
@@ -195,8 +185,7 @@ NZB-DAV needs both the nzbdav API credentials and the WebDAV credentials.
   URL, **NZBGet Username**, and **NZBGet Password**.
 - **Completed folder not reachable** (from **Test Completed Folder**): Kodi
   can't see the completed folder. Check the `smb://` URL and its credentials,
-  or check your mount. On 2.0.0-beta.2 this setting is called **SMB Completed
-  Folder**, and the test says **SMB share not reachable**.
+  or check your mount.
 - **Video file is listed but not readable. If this persists, check the share
   or mount and restart Kodi.** The file shows up in the folder but won't open.
   After a download, NZB-DAV keeps trying to read the file for up to 60 seconds
@@ -204,9 +193,7 @@ NZB-DAV needs both the nzbdav API credentials and the WebDAV credentials.
   session going stale: new SMB sessions can read the file, but Kodi's cached
   one gets "Permission denied". Restarting Kodi resets that session.
   `kodi.log` shows
-  `NZB-DAV: video is listable but not readable through Kodi's VFS: …`. On
-  2.0.0-beta.2 the notification says **Video is not readable over SMB. If this
-  persists, restart Kodi.**
+  `NZB-DAV: video is listable but not readable through Kodi's VFS: …`.
 - **No video file found in completed folder**: check **NZBGet Category**.
   NZBGet puts completed downloads in a subfolder named after the category.
   Also check that the completed folder points at NZBGet's completed-downloads
@@ -217,9 +204,6 @@ NZB-DAV needs both the nzbdav API credentials and the WebDAV credentials.
 - **Download failed in NZBGet**: NZBGet couldn't repair or unpack the release,
   and no duplicate backup took over. Pick another release.
 
-A local or mounted path works as the completed folder on the current beta too.
-There the setting is labelled **SMB Completed Folder** and the test button
-**Test SMB Share**. On 2.0.0-beta.2, season-pack reuse needs an `smb://` root.
 For the full setup, see [NZBGet backend](../features/nzbget-backend.md).
 
 ## Playback starts, then fails

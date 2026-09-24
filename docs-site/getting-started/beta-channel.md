@@ -61,19 +61,9 @@ These features are in 2.0.0-beta.1 or 2.0.0-beta.2 and are **not** in Stable
 - **Security:** every XML parser that reads network data now goes through one
   hardened parser.
 
-## Coming in the next beta
-
-These changes are merged on `main` after 2.0.0-beta.2 and will ship in the next
-beta. The pages they link to already describe them.
-
-| Change | Details |
-|--------|---------|
-| **More media filters.** Many more resolution, HDR, audio, video-codec, and language options. Each group gets its own **Other / Unknown** switch (on by default), so releases the parser can't classify don't disappear. | [Quality filtering](../features/quality-filtering.md) |
-| **New relevance ranking.** Results rank by resolution, then HDR, then Hybrid REMUX / REMUX, then three editable preferred-group tiers (seeded from the TRaSH remux tiers). | [Quality filtering](../features/quality-filtering.md) |
-| **Show hidden results in the picker.** Press ++c++ (the context-menu key) to switch between filtered and all results. Hidden rows show why they were filtered. On Linux devices such as CoreELEC, you can also hold OK for five seconds. If nothing passes your filters, the picker opens on the full list instead of an empty one. | [Play your first title](first-playback.md) |
-| **Movie IMDb lookup.** With a TMDB API key set, movie searches also get the IMDb id from TMDB. The search cache now defaults to 60 seconds. | [Search and indexers](../features/search-and-indexers.md) |
-| **NZBGet completed folder relabelled.** **SMB Completed Folder** becomes **Completed Folder (SMB or Local Path)**. Local and mounted paths already play on the current beta; the next beta also lets season-pack reuse work from them. | [NZBGet backend](../features/nzbget-backend.md) |
-| **Blu-ray `.m2ts` files** are recognized as playable video. | — |
+Changes merged since the latest beta, which will ship in the next beta build,
+are listed under **Unreleased** at the top of the
+[changelog](https://github.com/Appz4Fun/nzbdavkodi/blob/main/CHANGELOG.md#unreleased--main).
 
 ## Joining the beta
 
@@ -93,8 +83,7 @@ its own.
    Repository**). It no longer affects NZB-DAV.
 
 Your settings stay in place. The 2.0.0 settings screen adds an **NZBGet**
-category (and, from the next beta, a **Languages** category). Every new setting
-starts at its default.
+category, and every new setting starts at its default.
 
 ## Switching channels
 

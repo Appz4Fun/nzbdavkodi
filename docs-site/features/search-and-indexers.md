@@ -90,8 +90,7 @@ the search simply uses the ids and title it already has.
 
 !!! info "Beta feature"
     TVDB lookup for episodes was added in 2.0.0-beta.1 and is available on the
-    [Beta channel](../getting-started/beta-channel.md). The movie IMDb lookup
-    is new on main after 2.0.0-beta.2 and ships in the next beta build.
+    [Beta channel](../getting-started/beta-channel.md).
 
 ## How results are combined
 
@@ -127,10 +126,6 @@ time from the add-on's main menu (**Clear Cache**).
 
 The cache applies to NZB-DAV's own plugin search and play routes. The
 TMDBHelper player always runs a fresh search.
-
-!!! info "Default changed on main"
-    The default was 300 seconds in 1.2.3 and the 2.0.0 betas. The 60-second
-    default is new on main after 2.0.0-beta.2 and ships in the next beta build.
 
 For the internal mechanics — the query planner, caps handling, and the exact
 result fields — see [How it works → Search pipeline](../how-it-works/search-pipeline.md).

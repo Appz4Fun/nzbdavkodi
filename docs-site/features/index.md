@@ -53,9 +53,7 @@ flowchart TD
 
 !!! info "Stable vs Beta"
     Several features on these pages first shipped in 2.0.0-beta.x and are
-    marked **Beta feature**. Stable (1.2.3) doesn't have them yet. Some are
-    merged but not released yet, and are marked **Coming in the next beta**.
-    See [Beta channel and beta features](../getting-started/beta-channel.md).
+    marked **Beta feature**. Stable (1.2.3) doesn't have them yet. See [Beta channel and beta features](../getting-started/beta-channel.md).
 
 Every one of these stages is configurable. The
 [Settings reference](../reference/settings.md) documents each setting; the

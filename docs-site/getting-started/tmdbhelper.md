@@ -31,8 +31,7 @@ NZB-DAV protects your data while doing this:
 !!! tip "Re-run the install after updating NZB-DAV"
     Updating the add-on doesn't update an installed player file. Select
     **Install TMDBHelper Player** again after an update to pick up player file
-    changes. For example, builds after 2.0.0-beta.2 pass TMDBHelper's TVDB id
-    for episodes (player schema version 7).
+    changes.
 
 <!--
 Screenshot placeholder — Capture the NZB-DAV Player Installation settings tab

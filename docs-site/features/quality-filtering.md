@@ -19,11 +19,6 @@ Every quality toggle is **on by default**, which means "show everything." Turn
 off the attributes you never want. NZB-DAV reads each release's attributes by
 parsing its name.
 
-!!! info "Coming in the next beta"
-    The expanded option lists below, the **Other / Unknown** toggles, and the
-    stricter HDR tag rules are new on main after 2.0.0-beta.2 and ship in the
-    next beta build. Earlier builds offer fewer options per group.
-
 | Group | Options |
 |-------|---------|
 | **Resolution** | 4320p / 8K, 2160p / 4K, 1440p / QHD, 1080p(i), 720p(i), 576p(i), 540p, 480p(i), 360p, 240p |
@@ -109,10 +104,6 @@ When you sort by **Relevance**, NZB-DAV ranks releases by this priority order:
    other formats, and finally no audio tag.
 6. **Size** — larger files win the final tie-break.
 
-!!! info "Coming in the next beta"
-    This ranking order and the three preferred-group tiers are new on main
-    after 2.0.0-beta.2 and ship in the next beta build.
-
 The three editable, comma-separated preferred group lists default to the
 [TRaSH tier 1](https://github.com/TRaSH-Guides/Guides/blob/master/docs/json/radarr/cf/remux-tier-01.json),
 [tier 2](https://github.com/TRaSH-Guides/Guides/blob/master/docs/json/radarr/cf/remux-tier-02.json), and
@@ -155,11 +146,6 @@ always shows the shortcuts available.
 
 If no release passes your filters, the picker opens straight into the
 all-results view, so you can still choose something.
-
-!!! info "Coming in the next beta"
-    The show-all toggle with per-row filter reasons and the hold-OK bypass are
-    new on main after 2.0.0-beta.2 and ship in the next beta build. Earlier
-    builds instead ask whether to show unfiltered results when nothing passes.
 
 For the exact ranking math and filter internals, see
 [How it works → Search pipeline](../how-it-works/search-pipeline.md).

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
+| **[Unreleased](#unreleased--main)** | on `main` | Complete media filters with Other / Unknown switches, resolution-then-HDR-then-REMUX ranking with three editable group tiers, picker show-all toggle with filter reasons, movie IMDb lookup, 60 s search cache, NZBGet local-path season-pack reuse, `.m2ts` playback |
 | **[2.0.0-beta.2](#200-beta2--2026-07-18)** | 2026-07-18 | Exact season-pack episode reuse, SMB readability gate before playback, results-dialog label scrolling, unified XML-safety parsing |
 | **[2.0.0-beta.1](#200-beta1--2026-07-09)** | 2026-07-09 | NZBGet backend + Smart Duplicates, tiered fallback/dropout hardening, manual indexer manager, TVDB-aware TV search, versioned settings.xml with per-option help text, unified XXE protection, large complexity-reduction refactor, MkDocs documentation site |
 | **[1.2.3](#123--2026-05-08)** | 2026-05-08 | Proxy fallback hardening, repo install checksum fix, RunScript path reliability |
@@ -61,6 +62,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Bolded** versions are either major features or recommended upgrades.
 
 ---
+
+## [Unreleased][] — main
+
+> Merged on `main` after 2.0.0-beta.2 and not in any release yet. These
+> changes ship in the next beta build.
+
+### Added
+
+- **Complete media filters.** Many more options in each filter group:
+  resolutions from 240p to 4320p, HDR / HDR10+ / Dolby Vision / HLG / SDR,
+  18 audio formats, 14 video codecs, and 48 languages. Languages moved to
+  their own **Languages** settings category. Every group has its own
+  **Other / Unknown** switch, on by default, so releases the parser can't
+  classify are no longer silently dropped. Audio aliases and false language
+  matches were corrected. (#502)
+- **Release ranking and preferred-group tiers.** Relevance now ranks by
+  resolution, then HDR, then Hybrid REMUX / REMUX, then three editable
+  **Preferred groups: Tier 1/2/3** lists seeded from the TRaSH remux tiers.
+  These replace the single preferred-groups list and its **Configure
+  Preferred Groups...** button. Explicitly cleared tiers stay cleared. (#502)
+- **Show filtered-out results in the picker.** Press **C** (the context-menu
+  key) to switch between filtered and all results. Hidden rows carry a
+  **FILTERED:** chip naming the first filter that rejected them. On Linux
+  devices such as CoreELEC, holding OK for five seconds also shows all
+  results. A search where nothing passes your filters now opens the picker on
+  the full list instead of asking a yes/no question. DL tags, completed-job
+  reuse, and backup selection work for revealed rows too. (#449, #502)
+- **Movie IMDb lookup.** With a TMDB API key set, movie searches resolve the
+  IMDb id from the TMDB id for more accurate indexer results. The TMDBHelper
+  player file moves to schema 7 and passes `tvdb={tvdb}` for episodes; re-run
+  **Install TMDBHelper Player** to pick it up. (#502)
+
+### Changed
+
+- **Search cache default lowered from 300 to 60 seconds.** (#502)
+- **NZBGet completed folder relabelled.** **SMB Completed Folder** is now
+  **Completed Folder (SMB or Local Path)** and **Test SMB Share** is **Test
+  Completed Folder**. Local and mounted paths already worked for playback;
+  season-pack reuse now accepts them too (beta.2 required an `smb://` root
+  there). (#463)
+
+### Fixed
+
+- **Blu-ray `.m2ts` files are recognized as playable video.** Raw BD-rip main
+  titles (for example `00000.m2ts`) were not recognized in NZBGet reuse or
+  WebDAV discovery, so an already-downloaded release was submitted again.
+  `.ts` / `.m2ts` streams now get a `video/mp2t` MIME hint. (#440)
+- Regression test guarding SMB playback paths against double
+  percent-encoding. (#446)
+
+### Documentation
+
+- Documentation site re-verified against the code: new **Beta channel and
+  beta features** page, rewritten install guide for the Appz4Fun Stable/Beta
+  repositories, and corrected settings, playback, fallback, NZBGet, and
+  internals pages.
 
 ## [2.0.0-beta.2][] — 2026-07-18
 
@@ -1346,6 +1403,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[Unreleased]: https://github.com/Appz4Fun/nzbdavkodi/compare/v2.0.0-beta.2...main
 [2.0.0-beta.2]: https://github.com/Appz4Fun/nzbdavkodi/compare/v2.0.0-beta.1...v2.0.0-beta.2
 [2.0.0-beta.1]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.3...v2.0.0-beta.1
 [1.2.3]: https://github.com/Appz4Fun/nzbdavkodi/compare/v1.2.2...v1.2.3

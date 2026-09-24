@@ -38,7 +38,7 @@ A shared planner builds each provider's query from the title and any ids:
 - When an episode request has no TVDB id, `tvdb_resolver.py` looks it up once
   from the TMDB/IMDb id through the TMDB API (cached on disk, fail-soft) so every
   provider shares it. A movie request carrying only a TMDB id gets its IMDb id
-  the same way; this movie lookup is new on main after 2.0.0-beta.2.
+  the same way.
 
 **Prowlarr** is a special case: its native search API doesn't take id parameters,
 so NZB-DAV embeds them as tokens inside the query text — `{tvdbid:…}`,
@@ -94,8 +94,6 @@ format category has a default-enabled **Other / Unknown** option. Missing HDR
 is unknown, while an explicit SDR tag is SDR. Addon-owned tag normalization
 corrects audio families, HDR aliases, dimensions, and language names without
 editing vendored PTT. See [Quality filtering](../features/quality-filtering.md).
-The **Other / Unknown** options and the relevance order below are new on main
-after 2.0.0-beta.2; beta.2 and stable builds rank differently.
 
 `filter_results()` returns both the surviving rows and the full parsed list.
 Every row is tagged with the **first** filter that rejected it, checked in this
@@ -130,16 +128,12 @@ With **Auto-select best match (skip result list)** on (**Sorting › Auto-Select
 the top filtered result plays with no picker and no tagging pass. Otherwise
 `results_dialog.py` opens the full-screen picker on the filtered view.
 
-!!! info "Show-all toggle"
-    New on main after 2.0.0-beta.2; ships in the next beta build.
-
 The picker receives the unfiltered rows as well as the filtered ones. Pressing
 **C** (context menu) switches between the filtered view and a **show all**
 view. Rows that a filter rejected carry a `FILTERED: <reason>` chip naming that
 filter. On devices where `results_input.py` can read the remote's key state,
 holding **OK** for five seconds also switches to show-all. If nothing survives
-filtering, the picker opens straight into show-all. This replaces the yes/no
-prompt that 2.0.0-beta.2 showed in that case. DL tags
+filtering, the picker opens straight into show-all. DL tags
 are computed over the full row set, so rows revealed by show-all keep them.
 
 ## Caching
@@ -147,8 +141,8 @@ are computed over the full row set, so rows revealed by show-all keep them.
 The merged, **pre-filter** results are cached on disk, keyed by a SHA-256 of the
 search type, title, year, season/episode, and ids. That means:
 
-- Re-opening the same title is instant within the cache duration (default 60 s
-  on main after 2.0.0-beta.2; capped at 86400 s).
+- Re-opening the same title is instant within the cache duration (default 60 s,
+  capped at 86400 s).
 - Changing filter or sort settings takes effect immediately — no new search
   needed, because filtering runs fresh on every read.
 - The cache self-limits to 50 MB and 1000 entries, evicting the oldest first,

@@ -15,8 +15,7 @@ source goes bad. You never touch an NZB file.
 !!! info "Stable 1.2.3 and Beta 2.0.0"
     NZB-DAV is published on a **Stable** channel (currently 1.2.3) and a
     **Beta** channel (currently 2.0.0-beta.2). This site documents the newest
-    code, so some features are marked **Beta feature** or **Coming in the next
-    beta**. See [Beta channel and beta features](getting-started/beta-channel.md)
+    code, so some features are marked **Beta feature**. See [Beta channel and beta features](getting-started/beta-channel.md)
     for what's new and how to switch.
 
 ## What it does

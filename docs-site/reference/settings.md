@@ -66,8 +66,7 @@ reachability.
 
 !!! info "Beta feature"
     Added in 2.0.0-beta.1 (TV lookup), available on the
-    [Beta channel](../getting-started/beta-channel.md). The movie IMDb lookup
-    is new on main after 2.0.0-beta.2 and ships in the next beta build.
+    [Beta channel](../getting-started/beta-channel.md).
 
 ## NZBGet
 
@@ -78,10 +77,7 @@ after you enable the backend.
 
 !!! info "Beta feature"
     Added in 2.0.0-beta.1, available on the
-    [Beta channel](../getting-started/beta-channel.md). The current beta
-    already accepts a local/mounted completed folder for playback; it labels
-    the setting **SMB Completed Folder**. The next beta adds the new label
-    and season-pack reuse from local paths.
+    [Beta channel](../getting-started/beta-channel.md).
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
@@ -153,11 +149,6 @@ Every format toggle defaults to `true`. **Other / Unknown** independently
 controls missing or unlisted metadata in each category, including HDR.
 See [Quality filtering](../features/quality-filtering.md) for the full options.
 
-!!! info "Coming in the next beta"
-    The extra resolution, HDR, audio, codec, and language options and every
-    **Other / Unknown** toggle are new on main after 2.0.0-beta.2 and ship in
-    the next beta build. Earlier builds have a shorter list of each.
-
 | Group | Settings (id) |
 |-------|---------------|
 | **Resolution** | `filter_4320p`, `filter_2160p`, `filter_1440p`, `filter_1080p` (p/i), `filter_720p` (p/i), `filter_576p` (p/i), `filter_540p`, `filter_480p` (p/i), `filter_360p`, `filter_240p`, `filter_unknown_resolution` |
@@ -185,11 +176,6 @@ Chinese also accepts Cantonese and Urdu under the configured grouping.
 
 **Action:** *Configure Excluded Groups...* opens a multi-select of 94 known
 release groups. An empty list means no exclusions.
-
-!!! info "Coming in the next beta"
-    The three preferred-group tiers are new on main after 2.0.0-beta.2 and ship
-    in the next beta build. They replace the single preferred-groups list and
-    its *Configure Preferred Groups* button in earlier builds.
 
 ## Sorting
 
@@ -224,10 +210,6 @@ These tune polling, caching, stream resilience, fallback streams, and the proxy.
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
 | Cache duration (seconds, 0=disabled) | `cache_ttl` | `60` | How long to cache search results. `0` disables the cache. Clamped to 0–86400. Stores raw pre-filter results, so filter/sort changes take effect immediately. The TMDBHelper player always runs a fresh search. |
-
-!!! info "Default changed on main"
-    The default is `300` in 1.2.3 and the 2.0.0 betas; `60` is new on main
-    after 2.0.0-beta.2 and ships in the next beta build.
 
 ### Stream resilience
 

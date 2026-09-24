@@ -25,8 +25,9 @@ Which build each channel serves right now:
 
 !!! note "This site documents the newest code"
     These pages follow the `main` branch, which is ahead of the Stable
-    channel. Anything marked **Beta feature** needs the Beta channel. Features
-    marked **Coming in the next beta** are merged but not released yet.
+    channel. Anything marked **Beta feature** needs the Beta channel. Changes
+    merged since the latest beta are listed under **Unreleased** in the
+    [changelog](https://github.com/Appz4Fun/nzbdavkodi/blob/main/CHANGELOG.md#unreleased--main).
 
 Pick **Stable** if you want the most-tested build. Pick **Beta** if you want
 the 2.0.0 features now and are happy to report problems. You can switch later

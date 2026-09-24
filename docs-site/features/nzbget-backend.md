@@ -42,13 +42,6 @@ NZBGet. **Download timeout (seconds)** defaults to 3600 and is clamped to
 60–86400. If the timeout runs out, NZB-DAV reports "Download timed out" and
 leaves the job running in NZBGet, so it can finish for a later play.
 
-!!! note "Local paths on 2.0.0-beta.1 and beta.2"
-    A local or mounted path already works for playback on the current beta.
-    On those builds the setting is labelled **SMB Completed Folder** and its
-    test button **Test SMB Share**. The only beta.2 limit is season-pack
-    reuse, which needs an `smb://` root there. The next beta renames the
-    setting and adds local-path support to season-pack reuse.
-
 <!--
 Screenshot placeholder: capture the NZBGet settings tab with the backend
 toggle, connection fields, and the two test actions.
@@ -82,7 +75,7 @@ flowchart LR
   configured completed folder. It uses NZBGet's `DestDir` option when it can
   read it, and otherwise works it out from the category. It then scans up to
   three folder levels deep for a playable video: `.mkv`, `.mp4`, `.m4v`,
-  `.avi`, `.ts`, `.m2ts` (new on main), `.wmv`, or `.mov`. It keeps retrying
+  `.avi`, `.ts`, `.m2ts`, `.wmv`, or `.mov`. It keeps retrying
   for up to 60 seconds while NZBGet's moved files become visible. For movies, the largest
   video wins. For episode requests, samples, trailers, featurettes, and other
   extras are excluded, and a file named for the exact requested season and

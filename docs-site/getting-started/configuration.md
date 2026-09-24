@@ -95,9 +95,8 @@ details. You can enable more than one — results are merged and de-duplicated.
 ## Improve search accuracy (optional)
 
 !!! info "Beta feature"
-    The TV lookup was added in 2.0.0-beta.1 and is available on the
-    [Beta channel](beta-channel.md). The movie lookup is new on main after
-    2.0.0-beta.2 and ships in the next beta build.
+    Added in 2.0.0-beta.1 and available on the
+    [Beta channel](beta-channel.md).
 
 The last group on the **Connection** tab, **TV search accuracy**, has one
 setting: **TMDB API key (optional, movies and TV)**. Enter a key from TMDB

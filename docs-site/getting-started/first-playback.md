@@ -34,9 +34,6 @@ filters. If nothing passed, the picker opens anyway.
 
 ### Show filtered-out releases
 
-!!! info "Coming in the next beta"
-    New on main after 2.0.0-beta.2; ships in the next beta build.
-
 Press ++c++ (or your remote's context-menu button) to switch between the
 filtered list and **all** results. The footer shows how many releases are
 hidden. In the all-results view, each release your filters would have removed
