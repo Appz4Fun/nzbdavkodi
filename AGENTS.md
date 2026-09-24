@@ -32,7 +32,8 @@ These must stay true or Kodi playback, shutdown, or updates can break:
 - Handle-less playback paths have no plugin handle. They are the TMDBHelper `RunScript(addon.py,tmdb_play,...)` player, `/resolve`, `/resolve-v2`, `/search` (after `endOfDirectory`), and `resolve_and_play`.
 - Handle-less paths start playback with `xbmc.Player().play(...)` instead of `setResolvedUrl`.
 - On failure, handle-less paths notify the user.
-- On failure, handle-less paths also close their progress dialogs and stop background fallback workers.
+- Handle-less failure cleanup closes open progress dialogs.
+- Handle-less failure cleanup also stops background fallback workers.
 - If a change deliberately revises that failure handling, update the tests to match.
 - The NZBGet backend supports both kinds of entry path.
 - Kodi polling loops must use `xbmc.Monitor.waitForAbort()` instead of `time.sleep()` so Kodi can shut down cleanly.
