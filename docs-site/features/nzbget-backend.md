@@ -195,7 +195,9 @@ flowchart LR
 ```
 
 - **Submission:** NZB-DAV fetches the NZB itself and uploads it through
-  NZBGet's JSON-RPC `append` method with HTTP Basic auth.
+  NZBGet's JSON-RPC `append` method with HTTP Basic auth. Over `http://` the
+  username and password travel unencrypted, so use an `https://` **NZBGet
+  URL** unless NZBGet runs on the same machine or a network you trust.
 - **Post-processing:** NZBGet handles this itself, with par2 repair and
   unpack. The progress dialog shows a "Post-processing..." stage while it
   runs.

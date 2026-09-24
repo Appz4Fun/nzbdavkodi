@@ -3,8 +3,8 @@
 Usenet retention is imperfect. A release can lose articles at any time, and a
 source that starts fine can fail partway through. **Fallback streams** protect
 your playback against this. If the source you're watching goes bad mid-stream,
-NZB-DAV switches to a verified alternate upload of the same file. A length
-check and sampled SHA-256 fingerprints first confirm that the bytes match.
+NZB-DAV switches to a verified alternate upload of the same file. An exact
+length check and SHA-256 fingerprints of sampled byte ranges must match first.
 Playback then continues from the same byte position, without stopping or
 rewinding.
 
@@ -94,14 +94,19 @@ watching.
 
 ## How the switch is verified
 
-Switching sources mid-stream is safe only if the bytes line up exactly.
-NZB-DAV runs a two-stage check before any switch:
+Switching sources mid-stream only works if the bytes line up exactly.
+NZB-DAV runs a two-stage, sampled check before any switch:
 
 1. **Length check:** the alternate's total size must exactly equal the current
    source's size.
 2. **Fingerprint sweep:** NZB-DAV compares SHA-256 hashes of matching 4 KiB
    ranges sampled across both files: 20 samples for files under 1 GiB and 100
    for larger files. Every sampled range must match.
+
+These checks sample the file rather than compare every byte, so they give
+strong evidence that the files match, not proof. In practice a different
+encode or a corrupted upload almost always fails the length check or one of
+the samples.
 
 Backups are checked in the background as soon as they're ready, so a switch
 can happen instantly when it's needed. A candidate that fails the check is

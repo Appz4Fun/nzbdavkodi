@@ -248,9 +248,9 @@ behave the same way for fallback submission.
 
 ## Byte-Stream Verification
 
-A fallback candidate may take over only once it's proven **byte-identical**.
-The proof is `content_length` equality plus SHA-256 fingerprints of sampled
-byte ranges.
+A fallback candidate may take over only once it passes **sampled byte-stream
+verification**: `content_length` equality plus SHA-256 fingerprints of sampled
+byte ranges. This checks selected ranges rather than every byte.
 
 **Stage 1: content_length equality.** A source whose `content_length` differs
 from the expected length is a definitive MISMATCH
@@ -285,7 +285,7 @@ A digest that's present and different is a MISMATCH. An empty digest, a probe
   fingerprint and only probes the current range. A lazy full match also sets
   `validated = True`.
 
-**The `validated` flag** means the source was byte-proven in this session, so
+**The `validated` flag** means the source passed verification in this session, so
 it isn't fingerprinted again. It's also stamped on a **demoted** primary at
 cutover (`_demote_active_source`, `stream_proxy_handler_cutover.py`). That
 source was actively serving these exact bytes, so it's identical by

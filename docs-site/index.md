@@ -48,7 +48,7 @@ tab.
 |---|---|---|
 | **How it plays** | Streams straight from Usenet over WebDAV while the release is still being fetched. | NZBGet downloads the whole release, repairs and unpacks it, then Kodi plays the finished file from your NAS. |
 | **Time to first frame** | Seconds. | Minutes. On a fast connection a typical release takes a few minutes, and a huge BD100 disc remux can take 15–30 minutes. |
-| **Missing or broken articles** | Can't be repaired while streaming. NZB-DAV works around them with [gap recovery and fallback streams](features/fallback-streams.md), but a badly damaged release can still stall or drop out mid-stream. | NZBGet repairs damage with the release's **par2** parity files before you press play. Only a fully verified file is played, and [Smart Duplicates](features/nzbget-backend.md#smart-duplicates-failover) falls back to another copy if a release can't be repaired. |
+| **Missing or broken articles** | Can't be repaired while streaming. NZB-DAV works around them with [gap recovery and fallback streams](features/fallback-streams.md), but a badly damaged release can still stall or drop out mid-stream. | NZBGet checks and repairs the download with the release's **par2** parity files (when the release has them and NZBGet's par check is enabled) before you press play. NZB-DAV plays the file only after NZBGet reports success, and [Smart Duplicates](features/nzbget-backend.md#smart-duplicates-failover) falls back to another copy if a release can't be repaired. |
 | **What you need** | An nzbdav or InfiniDysk server. | An NZBGet server plus storage that Kodi can read, ideally a NAS [mounted over NFS](features/nzbget-backend.md#recommended-mount-the-completed-folder-over-nfs). |
 
 **Which one should I use?**
@@ -58,8 +58,9 @@ tab.
   drop-in replacement: NZB-DAV connects to it through the same
   nzbdav connection settings.
 - **NZBGet is the most reliable option of all**, as long as you're willing to
-  wait for the download to finish. The file is complete and parity-checked
-  before playback starts, so missing articles can't interrupt the stream.
+  wait for the download to finish. The file is fully downloaded (and
+  par2-repaired when the release includes parity files) before playback
+  starts, so missing articles can't interrupt the stream.
 - If playback through nzbdav **drops out mid-stream**, especially with
   releases that often have broken articles, and you have a NAS or storage
   server, switching to NZBGet is highly recommended. NZBGet is the only

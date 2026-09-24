@@ -148,7 +148,7 @@ Full walkthrough:
 - **A local stream proxy** that preserves seeking, rewrites tail-`moov` MP4s in
   pure Python, recovers from missing articles, and offers optional Matroska
   remux and fMP4 HLS tiers for large or Dolby Vision files.
-- **Self-healing fallback streams** that switch to a verified, byte-identical
+- **Self-healing fallback streams** that switch to a verified (same length, matching sampled fingerprints)
   alternate release mid-playback without stopping or rewinding.
 - **Optional NZBGet backend** *(beta)* as an alternative to nzbdav, playing
   from an SMB share or a local/mounted folder, with

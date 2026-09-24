@@ -113,13 +113,17 @@ TMDBHelper RunScript(addon.py,tmdb_play,...)
 -> hydra.py / prowlarr.py / direct_indexers.py
 -> filter.py with PTT parsing
 -> user selects result (results_dialog.py)
--> resolver.py submits to nzbdav and polls   (or nzbget_resolver.py for NZBGet)
--> webdav.py checks availability
--> stream_proxy.py serves or remuxes stream
+-> streaming backend (nzbdav/InfiniDysk):
+     resolver.py submits and polls
+     -> webdav.py checks availability
+     -> stream_proxy.py serves or remuxes the stream
+   NZBGet backend:
+     nzbget_resolver.py submits over JSON-RPC and waits for SUCCESS
+     -> the finished file is played straight from the SMB or local completed folder (no WebDAV, no proxy)
 -> xbmc.Player().play(...) starts playback   (no plugin handle on this path)
 ```
 
-The resolvable `plugin://` routes (`/play`, `/direct_play`) follow the same pipeline but finish with `xbmcplugin.setResolvedUrl(...)`.
+The resolvable `plugin://` `/play` route runs the same search and submit pipeline but finishes with `xbmcplugin.setResolvedUrl(...)`. `/direct_play` is a separate diagnostic entry path: it receives a `primary_url` (plus optional fallback URLs), validates it, and hands the proxy URL to Kodi; it shares only the `setResolvedUrl` completion with `/play`, not the search/submit pipeline.
 
 The background service (`service.py`) runs `StreamProxy`. MP4 sources may be rewritten or remuxed to avoid Kodi/CoreELEC cache and moov-atom issues. MKV and other formats are proxied directly with Range request support unless the user enables force-remux settings.
 

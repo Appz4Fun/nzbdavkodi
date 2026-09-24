@@ -90,8 +90,9 @@ clamped to **Maximum standby fallback streams**.
 
 ## Verifying a switch is safe
 
-Switching is only safe if the alternate's bytes line up exactly, so NZB-DAV proves it
-in two stages:
+Switching only works if the alternate's bytes line up exactly, so NZB-DAV checks
+this in two sampled stages (strong evidence of identical bytes, not a proof of
+every byte):
 
 1. **Content-length equality.** The alternate's total size must **exactly** equal
    the current source's. A mismatch permanently rejects that candidate.

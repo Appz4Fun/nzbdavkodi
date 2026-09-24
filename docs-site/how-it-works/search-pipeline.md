@@ -17,9 +17,9 @@ flowchart TD
     NORM --> DEDUPE[De-duplicate by download link]
     DEDUPE --> STORE[Store in cache<br/>plugin:// path only]
     STORE --> RANK[Filter + rank<br/>record first rejecting filter]
-    RANK --> PICK{Auto-select best?}
-    PICK -->|on| PLAY[Resolve top filtered result]
-    PICK -->|off| TAG[Tag already-downloaded results]
+    RANK --> PICK{Auto-select best on<br/>and any result passed filters?}
+    PICK -->|yes| PLAY[Resolve top filtered result]
+    PICK -->|no| TAG[Tag already-downloaded results]
     TAG --> DLG[Picker: filtered view<br/>show-all toggle reveals rejected rows]
 ```
 

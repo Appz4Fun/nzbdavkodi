@@ -214,8 +214,10 @@ For the full setup, see [NZBGet backend](../features/nzbget-backend.md).
 
 ## Playback starts, then fails
 
-Playback goes through NZB-DAV's local proxy so Kodi can avoid WebDAV and
-large-file edge cases.
+With nzbdav or InfiniDysk, playback goes through NZB-DAV's local proxy so
+Kodi can avoid WebDAV and large-file edge cases. In NZBGet mode there is no
+proxy: Kodi plays the finished file straight from the completed folder, so
+check the share or mount first (see [NZBGet backend problems](#nzbget-backend-problems) above).
 
 1. Try another release for the same title.
 2. Confirm the source is still available on your backend.
@@ -251,7 +253,7 @@ For the internals behind these behaviors, see
 - Kodi version and platform.
 - NZB-DAV add-on version, and whether you're on the Stable or Beta channel.
 - Whether the problem affects all titles or just one.
-- Which search providers and which backend (nzbdav or NZBGet) you use.
+- Which search providers and which backend (nzbdav, InfiniDysk, or NZBGet) you use.
 - Whether your backend accepted, completed, or failed the job.
 - Sanitized NZB-DAV settings relevant to the failure.
 - Relevant `kodi.log` lines (the `NZB-DAV:` lines around the failure), with

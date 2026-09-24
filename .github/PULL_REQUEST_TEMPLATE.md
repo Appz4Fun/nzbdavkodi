@@ -11,4 +11,4 @@ Brief description of the changes.
 - [ ] `just test` passes
 - [ ] `just lint` passes
 - [ ] Tested in Kodi (if applicable)
-- [ ] Updated `CHANGELOG.md` and `docs-site/` (if user-facing)
+- [ ] Updated `README.md`, `CHANGELOG.md`, and `docs-site/` (if user-facing)
