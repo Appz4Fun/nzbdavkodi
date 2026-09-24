@@ -1,8 +1,10 @@
 import re
-import re as regex
 from typing import Callable, List, Optional, Union
 
 _ORDINAL_RE = re.compile(r"(\d+)(st|nd|rd|th)", re.IGNORECASE)
+_NON_DIGITS_RE = re.compile(r"\D")
+_DIGITS_RE = re.compile(r"\d+")
+_NON_WORD_RE = re.compile(r"\W+")
 
 
 def _arrow_fmt_to_strptime(fmt: str) -> str:
@@ -57,7 +59,7 @@ def integer(input_value: str) -> Optional[int]:
     :return: The integer value or None if conversion fails.
     """
     try:
-        input_value = regex.sub(r"\D", "", input_value)
+        input_value = _NON_DIGITS_RE.sub("", input_value)
         return int(input_value)
     except ValueError:
         return None
@@ -71,7 +73,10 @@ def first_integer(input_value: str) -> Optional[int]:
     :return: The first integer value or None if conversion fails.
     """
     try:
-        return int(regex.findall(r"\d+", input_value)[0])
+        match = _DIGITS_RE.search(input_value)
+        if match:
+            return int(match.group(0))
+        return None
     except ValueError:
         return None
 
@@ -120,6 +125,11 @@ month_mapping = {
     r"\bDece\b": "Dec",
 }
 
+_COMPILED_MONTHS = [
+    (re.compile(pattern, re.IGNORECASE), shortened)
+    for pattern, shortened in month_mapping.items()
+]
+
 
 def convert_months(date_str: str) -> str:
     """
@@ -128,8 +138,8 @@ def convert_months(date_str: str) -> str:
     :param date_str: The input date string.
     :return: The date string with shortened month names.
     """
-    for month, shortened in month_mapping.items():
-        date_str = regex.sub(month, shortened, date_str, flags=regex.IGNORECASE)
+    for pattern, shortened in _COMPILED_MONTHS:
+        date_str = pattern.sub(shortened, date_str)
     return date_str
 
 
@@ -144,7 +154,7 @@ def date(date_format: Union[str, List[str]]) -> Callable[[str], Optional[str]]:
     def inner(input_value: str) -> Optional[str]:
         from datetime import datetime as _datetime
 
-        sanitized = regex.sub(r"\W+", " ", input_value).strip()
+        sanitized = _NON_WORD_RE.sub(" ", input_value).strip()
         sanitized = convert_months(sanitized)
         formats = [date_format] if not isinstance(date_format, list) else date_format
         for fmt in formats:
@@ -171,7 +181,7 @@ def range_func(input_str: str) -> Optional[List[int]]:
     :param input_str: The input string.
     :return: A list of integers representing the range, or None if invalid.
     """
-    numbers = [int(x) for x in regex.findall(r"\d+", input_str)]
+    numbers = [int(x) for x in _DIGITS_RE.findall(input_str)]
 
     if len(numbers) == 2 and numbers[0] < numbers[1]:
         return list(range(numbers[0], numbers[1] + 1))
@@ -194,7 +204,7 @@ def range_x_of_y_func(input_str: str) -> Optional[List[int]]:
     :param input_str: The input string.
     :return: A list of integers representing the range, or None if invalid.
     """
-    numbers = [int(x) for x in regex.findall(r"\d+", input_str)]
+    numbers = [int(x) for x in _DIGITS_RE.findall(input_str)]
     if len(numbers) != 1:
         return None
     return list(range(1, numbers[0] + 1))
@@ -207,7 +217,7 @@ def year_range(input_value: str) -> Optional[str]:
     :param input_value: The input string.
     :return: The year range as a string, or None if invalid.
     """
-    parts = regex.findall(r"\d+", input_value)
+    parts = _DIGITS_RE.findall(input_value)
     if not parts:
         return None
 
