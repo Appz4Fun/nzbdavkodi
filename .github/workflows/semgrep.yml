@@ -33,7 +33,7 @@ jobs:
     container:
       image: semgrep/semgrep@sha256:7810f1d7884974ab6dda7bef8f4a2c8e165ea2142fd8260515d380e4f1407263 # 1.160.0
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run Semgrep
         # `semgrep ci` requires SEMGREP_APP_TOKEN (Semgrep AppSec
