@@ -69,6 +69,7 @@ devdocs
 !/.nojekyll
 !/.coderabbit.yaml
 !.env.example
+!/.github/
 
 
 
