@@ -3869,7 +3869,9 @@ def test_resolve_overlaps_bookmark_cleanup_with_existing_completed_fast_path(
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver._get_poll_settings")
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 def test_resolve_uses_picker_completed_job_hint_without_history_lookup(
+    mock_body_available,
     mock_poll_settings,
     mock_gui,
     mock_xbmc,
@@ -3943,7 +3945,9 @@ def test_resolve_uses_picker_completed_job_hint_without_history_lookup(
 @patch("resources.lib.resolver.xbmc")
 @patch("resources.lib.resolver.xbmcgui")
 @patch("resources.lib.resolver._get_poll_settings")
+@patch("resources.lib.resolver._completed_stream_body_available", return_value=True)
 def test_resolve_picker_completed_hint_skips_progress_dialog_startup_latency(
+    mock_body_available,
     mock_poll_settings,
     mock_gui,
     mock_xbmc,
