@@ -48,8 +48,8 @@ These features are in 2.0.0-beta.1 or 2.0.0-beta.2 and are **not** in Stable
 ### Improvements
 
 - **Fallback streams** match alternate releases in tiers and search more
-  widely for same-content peers. The byte-fingerprint check samples 100 points
-  instead of 20. See [Fallback streams](../features/fallback-streams.md).
+  widely for same-content peers. For files of 1 GiB or more, the byte-fingerprint
+  check samples 100 points instead of 20. See [Fallback streams](../features/fallback-streams.md).
 - **SMB playback is checked before it starts** (beta.2). A file that lists over
   SMB but can't be read yet is retried until it can. If it never becomes
   readable, you get a "restart Kodi" hint instead of a failed player.

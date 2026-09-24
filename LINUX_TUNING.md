@@ -8,6 +8,15 @@ All tuning is applied via `/storage/.config/autostart.sh` (sysctls/sysfs) and
 systemd units in `/storage/.config/system.d/`. CoreELEC uses a read-only
 squashfs root, so persistent files must live under `/storage/`.
 
+> **Scope.** This is an optional, device-specific worked example. The NZB-DAV
+> add-on does not apply, ship, or require any of it: nothing in the add-on,
+> the `justfile`, or `scripts/` touches sysctls, sysfs, zram, or systemd units.
+> The "warmup services" below are separate TMDBHelper cache-warming jobs that
+> were running on the tuned box; they are not part of NZB-DAV. The summary and
+> the NZB-DAV-side settings that matter here (read-ahead buffer, stall wait,
+> and Kodi's `<cache><memorysize>0</memorysize></cache>`) are on the docs site:
+> [CoreELEC and Linux tuning](https://appz4fun.github.io/nzbdavkodi/operations/coreelec-tuning/).
+
 ---
 
 ## 1. USB Storage — UAS Driver (queue_depth 1 → 30)
