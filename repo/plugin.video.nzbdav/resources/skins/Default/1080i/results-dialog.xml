@@ -62,6 +62,17 @@
       <texture>white.png</texture>
     </control>
 
+    <!-- Empty state label -->
+    <control type="label">
+      <left>0</left><top>60</top><width>1920</width><height>975</height>
+      <label>No results found</label>
+      <font>font14</font>
+      <textcolor>FF9CA3AF</textcolor>
+      <align>center</align>
+      <aligny>center</aligny>
+      <visible>Integer.IsEqual(Container(50).NumItems,0)</visible>
+    </control>
+
     <!-- Results list — 2 lines per item, 66px each -->
     <control type="list" id="50">
       <left>0</left><top>60</top><width>1910</width><height>975</height>
