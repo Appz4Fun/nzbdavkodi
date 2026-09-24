@@ -91,6 +91,20 @@ def _route_resolve(params):
     )
 
 
+def _route_resolve_v2(params):
+    from resources.lib.resolver import resolve_and_play
+    from resources.lib.source_manifest import load_source_manifest
+
+    manifest = load_source_manifest(params.get("manifest_url", ""))
+    if manifest is None:
+        xbmc.log(
+            "NZB-DAV: /resolve-v2 received an invalid source manifest", xbmc.LOGERROR
+        )
+        return
+    title, primary_url, source_urls = manifest
+    resolve_and_play(primary_url, title, params={"_source_urls": source_urls})
+
+
 def _route_clear_cache(_params):
     import resources.lib.router as _router
     from resources.lib.cache import clear_cache
@@ -140,6 +154,7 @@ def _dispatch_action_route(path, params):
 
     actions = {
         "/resolve": _route_resolve,
+        "/resolve-v2": _route_resolve_v2,
         "/install_player": _route_install_player,
         "/install_player_other": _route_install_player_other,
         "/clear_cache": _route_clear_cache,

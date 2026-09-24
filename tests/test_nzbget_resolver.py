@@ -3,10 +3,12 @@ import sys
 import time as _time_module
 from unittest.mock import MagicMock, patch
 
+import pytest
 from resources.lib.nzbget_resolver import (
     _HEALTHCHECK_WARNED,
     _dupe_check_disabled,
     _handle_poll_failure,
+    _manifest_dupe_submission,
     _read_poll_interval,
     _read_settings,
     _snapshot_conn_getter,
@@ -1826,6 +1828,57 @@ def test_play_nzbget_missing_config_does_not_start_player():
     with patch.object(sys.modules["xbmc"], "Player", MagicMock(return_value=player)):
         play_nzbget("http://i/x.nzb", "X", settings_getter=_settings({}))
     player.play.assert_not_called()
+
+
+@pytest.mark.parametrize("outcome", ["failed", "canceled"])
+def test_play_nzbget_submits_every_manifest_source(outcome):
+    with patch("resources.lib.nzbget_resolver.threading.Thread", _InlineThread), patch(
+        "resources.lib.nzbget_resolver._dupe_check_disabled", return_value=False
+    ), patch("resources.lib.nzbget_resolver._warn_if_healthcheck_pauses"), patch(
+        "resources.lib.nzbget_resolver._copy_vetoed_after_append", return_value=False
+    ), patch(
+        "resources.lib.nzbget_resolver.nzbget_api.append_nzb",
+        side_effect=[(42, None), (43, None)],
+    ) as append, patch(
+        "resources.lib.nzbget_resolver.poll_nzbget_job",
+        return_value={"outcome": outcome, "status": "FAILURE/UNPACK"},
+    ) as poll, patch(
+        "resources.lib.nzbget_resolver.nzbget_api.cancel_jobs"
+    ) as cancel:
+        play_nzbget(
+            "http://i/primary.nzb",
+            "The.Road",
+            params={"_source_urls": ["http://i/primary.nzb", "http://i/alternate.nzb"]},
+            settings_getter=_full_settings(),
+        )
+    assert [call.args[0] for call in append.call_args_list] == [
+        "http://i/primary.nzb",
+        "http://i/alternate.nzb",
+    ]
+    pick, backup = append.call_args_list
+    assert pick.kwargs["dupe_key"] == backup.kwargs["dupe_key"]
+    assert pick.kwargs["dupe_score"] > backup.kwargs["dupe_score"]
+    assert poll.call_args.kwargs["dupe_key"] == pick.kwargs["dupe_key"]
+    assert poll.call_args.kwargs["fleet"]["owned_nzbids"]() == [42, 43]
+    if outcome == "canceled":
+        assert set(cancel.call_args.args[0]) == {42, 43}
+    else:
+        cancel.assert_not_called()
+
+
+def test_manifest_fleet_deduplicates_without_truncating_explicit_group():
+    sources = ["https://indexer/{}/?apikey=secret".format(i) for i in range(8)]
+    dupe = _manifest_dupe_submission(
+        sources[3], "Movie", {"_source_urls": sources + sources}
+    )
+    assert [b["link"] for b in dupe["backups"]] == sources[:3] + sources[4:]
+    assert len(dupe["backups"]) == dupe["max_backups"] == 7
+    assert all(b["score"] < dupe["pick_score"] for b in dupe["backups"])
+    assert "secret" not in dupe["key"]
+    reordered = _manifest_dupe_submission(
+        sources[0], "Movie", {"_source_urls": sources}
+    )
+    assert reordered["key"] == dupe["key"]
 
 
 def test_read_settings_none_uses_single_arg_getsetting():
