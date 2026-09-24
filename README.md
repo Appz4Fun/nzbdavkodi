@@ -10,14 +10,16 @@
 
 A Kodi 21 (Omega) player/resolver add-on that streams Usenet media through
 [TMDBHelper](https://github.com/jurialmunkey/plugin.video.themoviedb.helper). You
-browse a movie or TV episode in TMDBHelper, pick an NZB, and NZB-DAV searches
-your indexers, downloads through [nzbdav](https://github.com/nzbdav-dev/nzbdav),
-and streams the file — with a progress bar, seeking, and automatic recovery when
-a source goes bad. No manual NZB handling required.
+browse a movie or TV episode in TMDBHelper, NZB-DAV searches your indexers, you
+pick a release, and NZB-DAV streams it through
+[nzbdav](https://github.com/nzbdav-dev/nzbdav) or
+[InfiniDysk](https://github.com/infinidysk/infinidysk) — with a progress bar,
+seeking, and automatic recovery when a source goes bad. No manual NZB handling
+required. An optional download-first NZBGet backend is also available.
 
 > **This add-on provides software, not content.** You bring your own indexers
-> (NZBHydra2, Prowlarr, or direct Newznab), your own nzbdav server, and your own
-> Usenet provider.
+> (NZBHydra2, Prowlarr, or direct Newznab), your own nzbdav, InfiniDysk, or
+> NZBGet server, and your own Usenet provider.
 
 ## 📖 Full documentation
 
@@ -46,16 +48,19 @@ flowchart LR
     F -->|range requests, gap recovery| G[Kodi player]
 ```
 
-nzbdav handles both downloading and serving over WebDAV — no separate SABnzbd
-needed. A background stream proxy adds seeking, on-the-fly remuxing, and
-mid-playback source switching.
+nzbdav (or InfiniDysk) handles both fetching and serving over WebDAV — no
+separate download client needed. A background stream proxy adds seeking,
+on-the-fly remuxing, and mid-playback source switching. With the optional
+NZBGet backend, NZBGet downloads the whole file first and Kodi plays it from an
+SMB share or a local/mounted folder.
 
 ## Requirements
 
 | Component | Description |
 |-----------|-------------|
 | **Kodi 21 (Omega)** | Or later |
-| **nzbdav** | Running and reachable (SABnzbd-compatible API + WebDAV) |
+| **InfiniDysk** *(recommended)* or **nzbdav** | Running and reachable (submission API + WebDAV). InfiniDysk is the maintained nzbdav fork and uses the same settings |
+| **NZBGet** *(optional, instead of nzbdav)* | JSON-RPC API plus a completed folder Kodi can read |
 | **NZBHydra2**, **Prowlarr**, *or* **direct Newznab indexers** | At least one search provider |
 | **TMDBHelper** | To browse titles and trigger playback |
 | **ffmpeg** *(recommended)* | Enables the optional remux tiers; without it the proxy uses pass-through |
@@ -69,36 +74,55 @@ for details.
 
 NZB-DAV is distributed through the
 [Appz4Fun Kodi repository](https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo), which
-delivers automatic updates on a **Stable** or **Beta** channel.
+delivers automatic updates on one of two channels:
+
+| Channel | Repository add-on | NZB-DAV today |
+|---------|-------------------|---------------|
+| **Stable** | `repository.appz4fun.stable` | 1.2.3 |
+| **Beta** | `repository.appz4fun.beta` | 2.0.0-beta.2 (pre-releases included) |
 
 1. Open [appz4fun.github.io/Appz4Fun-Kodi-Repo](https://appz4fun.github.io/Appz4Fun-Kodi-Repo/)
-   and download the channel zip (for example `repository.appz4fun.stable-1.0.0.zip`).
+   and download the channel zip (for example `repository.appz4fun.stable-1.0.1.zip`).
 2. In Kodi: **Settings → System → Add-ons** → enable **Unknown sources**.
 3. **Settings → Add-ons → Install from zip file** → select the channel zip.
-4. **Settings → Add-ons → Install from repository → Appz4Fun Repository** →
-   install **NZB-DAV**. Future updates install automatically.
+4. **Settings → Add-ons → Install from repository → Appz4Fun Repository** (or
+   **Appz4Fun Repository (Beta)**) → **Video add-ons** → install **NZB-DAV**.
+   Future updates on that channel install automatically.
 
-> **Upgrading from the old repository?** NZB-DAV used to be distributed from a
-> Kodi repository at `https://appz4fun.github.io/nzbdavkodi/`. That URL now hosts
-> this project's documentation, not add-on metadata, so installs made from it no
-> longer auto-update. Install the Appz4Fun repository above once to resume
-> updates, then remove the old `nzbdav` file-manager source and the old
-> **NZB-DAV Repository** add-on.
+Kodi only updates a third-party add-on from the repository it was installed
+from, so to switch channels (or move an existing install onto the new
+repository), install the other repository zip, then open NZB-DAV's add-on info
+page → **Versions** and pick the version listed under that repository. See
+[Beta channel and beta features](https://appz4fun.github.io/nzbdavkodi/getting-started/beta-channel/)
+for what the beta adds and how to switch.
+
+> **Upgrading from the old repository?** NZB-DAV used to be distributed from the
+> **NZB-DAV Repository** add-on (`repository.nzbdav`) at
+> `https://appz4fun.github.io/nzbdavkodi/`. That URL now hosts this project's
+> documentation, not add-on metadata, so installs made from it no longer
+> update. Install an Appz4Fun repository zip as above, reinstall NZB-DAV from it
+> through **Versions** (settings are kept), then remove the old `nzbdav`
+> file-manager source and the old **NZB-DAV Repository** add-on.
 
 ### Manual install
 
-Download `plugin.video.nzbdav.zip` from the
-[releases page](https://github.com/Appz4Fun/nzbdavkodi/releases), then
-**Settings → Add-ons → Install from zip file**. Manual installs don't
-auto-update.
+Download `plugin.video.nzbdav-<version>.zip` from the
+[releases page](https://github.com/Appz4Fun/nzbdavkodi/releases) (releases
+marked **Pre-release** are beta builds), then **Settings → Add-ons → Install
+from zip file**. Manual installs don't auto-update.
 
 Full steps: [Install the add-on](https://appz4fun.github.io/nzbdavkodi/getting-started/installation/).
 
 ## Quick setup
 
 1. Open **My add-ons → Video add-ons → NZB-DAV → Configure** and enter your
-   **nzbdav** URL + API key and **WebDAV** credentials. Use the **Test** actions.
-2. Enable a search provider (NZBHydra2, Prowlarr, or direct indexers) and test it.
+   **nzbdav** URL + API key and **WebDAV** credentials (InfiniDysk uses the same
+   fields). Use the **Test** actions. To use NZBGet instead, fill in the
+   **NZBGet** tab and enable **Use NZBGet instead of nzbdav for playback**.
+2. Enable a search provider and test it. [NZBHydra2](https://github.com/theotherp/nzbhydra2)
+   is recommended over entering each indexer's API on the Indexers tab: it's
+   easier to manage and highly configurable, and results still show which
+   indexer they came from.
 3. On the **Player Installation** tab, select **Install TMDBHelper Player**.
 4. Restart Kodi (or run TMDBHelper **Players → Update players**), then set
    **Default player (Movies)** and **Default player (TV Shows)** to **NZB-DAV**.
@@ -124,9 +148,10 @@ Full walkthrough:
 - **A local stream proxy** that preserves seeking, rewrites tail-`moov` MP4s in
   pure Python, recovers from missing articles, and offers optional Matroska
   remux and fMP4 HLS tiers for large or Dolby Vision files.
-- **Self-healing fallback streams** that switch to a verified, byte-identical
+- **Self-healing fallback streams** that switch to a verified (same length, matching sampled fingerprints)
   alternate release mid-playback without stopping or rewinding.
-- **Optional NZBGet backend** as an alternative to nzbdav, with
+- **Optional NZBGet backend** *(beta)* as an alternative to nzbdav, playing
+  from an SMB share or a local/mounted folder, with
   [Smart Duplicates failover](https://appz4fun.github.io/nzbdavkodi/features/nzbget-backend/#smart-duplicates-failover)
   to a same-release backup when a download turns out unrepairable.
 
@@ -149,7 +174,8 @@ and pure Python.
 just test          # Run the default unit test suite
 just lint          # ruff + black + pylint + vermin
 just lint-fix      # Auto-fix lint/format issues
-just release       # Build plugin.video.nzbdav.zip
+just ci            # lint + test + the Python 3.8 compile check CI runs
+just release       # Build plugin.video.nzbdav-<version>.zip
 just ship          # Test, then build the release zip
 just docs          # Build the documentation site into ./site (strict)
 just docs-serve    # Serve the docs site locally with live reload
@@ -187,7 +213,10 @@ tests/                        # pytest suite (Kodi mocks in conftest.py)
 
 The Release workflow builds the zip and creates a GitHub Release, then notifies
 the [Appz4Fun Kodi repository](https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo) to
-rebuild and republish. Pre-release tags are published to the Beta channel.
+rebuild and republish. Pre-release tags (any tag with a hyphen, such as
+`v2.0.0-beta.3`) are published to the Beta channel only. Note that Kodi ranks
+`2.0.0-beta.N` above `2.0.0`, so beta users auto-update only to a higher base
+version; see [AGENTS.md](AGENTS.md#release-checklist).
 
 ## Compatibility
 

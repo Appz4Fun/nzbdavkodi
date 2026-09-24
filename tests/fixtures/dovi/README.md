@@ -40,7 +40,7 @@ fixtures in this directory.
 
 [license]: https://github.com/quietvoid/dovi_tool/blob/main/LICENSE
 
-```
+```text
 MIT License
 
 Copyright (c) 2021 quietvoid

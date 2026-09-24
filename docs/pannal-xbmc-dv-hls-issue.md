@@ -21,7 +21,7 @@ This issue isolates the divergence to `BitstreamConverter::Open()` in `xbmc/util
 
 1. Take any HEVC P8.1 + TrueHD Matroska source that plays correctly via normal Kodi playback.
 2. Remux to fragmented MP4 HLS:
-   ```
+   ```bash
    ffmpeg -fflags +fastseek -i INPUT.mkv \
      -map 0:v:0 -map 0:a \
      -c:v copy -c:a copy -sn -copyts \

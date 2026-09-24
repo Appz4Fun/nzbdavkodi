@@ -61,6 +61,9 @@ markdown_extensions:
   - toc:
       permalink: true
   - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
@@ -88,6 +91,7 @@ nav:
   - Get started:
       - Prerequisites: getting-started/prerequisites.md
       - Install the add-on: getting-started/installation.md
+      - Beta channel and beta features: getting-started/beta-channel.md
       - Configure connections: getting-started/configuration.md
       - Set up TMDBHelper: getting-started/tmdbhelper.md
       - Play your first title: getting-started/first-playback.md

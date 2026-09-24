@@ -7,16 +7,20 @@ you see in the picker.
 
 ```mermaid
 flowchart TD
-    Q[Play / search request] --> CACHE{Cache hit?}
+    Q[Play / search request] --> SRC{Entry path}
+    SRC -->|plugin:// play or search| CACHE{Cache hit?}
+    SRC -->|TMDBHelper RunScript| PLAN
     CACHE -->|yes| RANK
     CACHE -->|no| PLAN[Plan Newznab query<br/>tvdbid / imdbid / title]
     PLAN --> FAN[Run enabled providers<br/>serial if one, threaded if many]
     FAN --> NORM[Normalize to common result dict]
     NORM --> DEDUPE[De-duplicate by download link]
-    DEDUPE --> STORE[Store in cache]
-    STORE --> RANK[Filter + rank]
-    RANK --> TAG[Tag already-downloaded results]
-    TAG --> PICK[Picker or auto-select]
+    DEDUPE --> STORE[Store in cache<br/>plugin:// path only]
+    STORE --> RANK[Filter + rank<br/>record first rejecting filter]
+    RANK --> PICK{Auto-select best on<br/>and any result passed filters?}
+    PICK -->|yes| PLAY[Resolve top filtered result]
+    PICK -->|no| TAG[Tag already-downloaded results]
+    TAG --> DLG[Picker: filtered view<br/>show-all toggle reveals rejected rows]
 ```
 
 ## Query planning
@@ -31,6 +35,10 @@ A shared planner builds each provider's query from the title and any ids:
   defaults.
 - If an id-based query returns nothing, NZB-DAV retries by title so a missing or
   mismatched id never leaves you empty-handed.
+- When an episode request has no TVDB id, `tvdb_resolver.py` looks it up once
+  from the TMDB/IMDb id through the TMDB API (cached on disk, fail-soft) so every
+  provider shares it. A movie request carrying only a TMDB id gets its IMDb id
+  the same way.
 
 **Prowlarr** is a special case: its native search API doesn't take id parameters,
 so NZB-DAV embeds them as tokens inside the query text — `{tvdbid:…}`,
@@ -40,8 +48,10 @@ so NZB-DAV embeds them as tokens inside the query text — `{tvdbid:…}`,
 
 Each enabled provider runs as a job. A single provider runs inline; multiple
 providers run concurrently, one worker thread each. Direct indexers additionally
-fan out across themselves in parallel with a bounded worker pool and a fan-out
-deadline, so one slow indexer can't stall the search.
+fan out across themselves in parallel with a bounded pool (at most four
+workers) and a fan-out deadline, so one slow indexer can't stall the search.
+Worker threads read settings from a snapshot taken up front, never from Kodi's
+settings API directly.
 
 ## Result normalization
 
@@ -85,12 +95,17 @@ is unknown, while an explicit SDR tag is SDR. Addon-owned tag normalization
 corrects audio families, HDR aliases, dimensions, and language names without
 editing vendored PTT. See [Quality filtering](../features/quality-filtering.md).
 
+`filter_results()` returns both the surviving rows and the full parsed list.
+Every row is tagged with the **first** filter that rejected it, checked in this
+order: resolution, HDR, audio, codec, language, keyword, group, size. The
+`max_results` cap applies only to the filtered list.
+
 Under **Relevance** sort, results are ordered by this priority tuple:
 
 ```mermaid
 flowchart LR
     A[Resolution: highest first]
-    A --> B[HDR: DV > HDR10+ > HDR10 > HLG]
+    A --> B[HDR: DV > HDR10+ > HDR10 > HLG > SDR / other > none]
     B --> R[Hybrid REMUX > REMUX > other]
     R --> C[Preferred tier 1 > 2 > 3]
     C --> D[Audio]
@@ -100,18 +115,45 @@ flowchart LR
 The preferred tiers apply to all releases. Explicit size or age sorting
 bypasses the relevance priorities.
 
+## Tagging and the picker
+
+When the picker is going to open, results already present in your download
+backend get a **DL** tag. A tag needs a name match plus a size match (and a consistent post
+date) against nzbdav's completed history, or NZBGet's history in NZBGet mode.
+An episode request can also get an already-downloaded season-pack row
+prepended (see
+[Playback pipeline](playback-pipeline.md#remembering-completed-season-packs)).
+
+With **Auto-select best match (skip result list)** on (**Sorting › Auto-Select**),
+the top filtered result plays straight away, with no picker and no
+picker-wide tagging pass. Otherwise
+`results_dialog.py` opens the full-screen picker on the filtered view.
+
+The picker receives the unfiltered rows as well as the filtered ones. Pressing
+**C** (context menu) switches between the filtered view and a **show all**
+view. Rows that a filter rejected carry a `FILTERED: <reason>` chip naming that
+filter. On Linux and CoreELEC, where `results_input.py` can read the OK-key
+state from `/dev/input`, holding **OK** for five seconds also switches to
+show-all. If nothing survives
+filtering, the picker opens straight into show-all. DL tags are computed over
+the full row set, so rows revealed by show-all keep them.
+
 ## Caching
 
 The merged, **pre-filter** results are cached on disk, keyed by a SHA-256 of the
-search type, title, year, and ids. That means:
+search type, title, year, season/episode, and ids. That means:
 
-- Re-opening the same title is instant within the cache duration (default 60 s).
+- Re-opening the same title is instant within the cache duration (default 60 s,
+  capped at 86400 s).
 - Changing filter or sort settings takes effect immediately — no new search
   needed, because filtering runs fresh on every read.
 - The cache self-limits to 50 MB and 1000 entries, evicting the oldest first,
   and writes atomically.
 
-Set **Cache duration** to `0` to disable caching, or clear it any time from the
-add-on's main menu.
+The cache is used by the `plugin://` play and search routes. The TMDBHelper
+RunScript path always queries providers fresh.
+
+Set **Cache duration (seconds, 0=disabled)** (**Advanced › Search Cache**) to
+`0` to disable caching, or clear it any time from the add-on's main menu.
 
 Next: the [Playback pipeline](playback-pipeline.md).

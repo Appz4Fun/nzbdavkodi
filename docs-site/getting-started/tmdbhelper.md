@@ -12,14 +12,26 @@ player.
 3. Select **Install TMDBHelper Player**.
 
 This writes a small `nzbdav.json` player file into TMDBHelper's players folder
-and registers **NZB-DAV** as a selectable playback source. NZB-DAV protects your
-data while doing this:
+(`addon_data/plugin.video.themoviedb.helper/players/`) and registers
+**NZB-DAV** as a selectable playback source. It also turns on TMDBHelper's
+`only_resolve_strm` setting. Without that setting, TMDBHelper doesn't run
+NZB-DAV's script action directly (see [below](#why-nzb-dav-uses-a-script-player)).
+You get a **Player installed to: TMDBHelper** notification.
+
+NZB-DAV protects your data while doing this:
 
 - It refuses to write anywhere outside Kodi's add-on data folder.
-- If a compatible player file is already present, it's preserved; an older
-  version is backed up to a `.bak` file before being replaced.
-- If the write fails, you get a clear "Failed to install" message rather than a
-  false success.
+- If a player file with the same schema version is already present, it's kept
+  as is, so your manual edits survive. A file from an older schema version is
+  backed up to `nzbdav.bak` and then replaced. If the backup can't be written,
+  the install stops and your existing file stays in place.
+- If the write fails, you get a **Failed to install to: …** message rather than
+  a false success.
+
+!!! tip "Re-run the install after updating NZB-DAV"
+    Updating the add-on doesn't update an installed player file. Select
+    **Install TMDBHelper Player** again after an update to pick up player file
+    changes.
 
 <!--
 Screenshot placeholder — Capture the NZB-DAV Player Installation settings tab
@@ -30,11 +42,14 @@ comment with:  ![Install TMDBHelper Player](../images/install-player.png)
 
 ### Install into another add-on's player list
 
-If you use a different front end that reads TMDBHelper-style player files, select
-**Install Player Other**. NZB-DAV scans your installed add-ons for any that
-already have a `players` folder, lists them, and installs `nzbdav.json` into the
-one you choose. There's no fixed list of supported add-ons — the targets are
-whatever compatible player add-ons you have installed.
+If you use a different front end that reads TMDBHelper-style player files,
+select **Install Player Other** on the same tab. NZB-DAV scans Kodi's add-on
+data folders (`addon_data/*/players/`) for add-ons that already have a
+`players` folder, apart from TMDBHelper and NZB-DAV itself. It lists them and
+installs `nzbdav.json` into the one you choose, with the same safeguards as
+above. There's no fixed list of supported add-ons. If no add-on has a
+`players` folder yet, you get a notification and nothing is written. This
+route doesn't change any setting in the other add-on.
 
 ## Set NZB-DAV as your default player
 

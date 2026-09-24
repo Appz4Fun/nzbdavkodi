@@ -19,9 +19,9 @@ We will respond within 72 hours and work to release a fix promptly.
 
 ## Scope
 
-This addon runs locally on your Kodi device and communicates with your own NZBHydra2 and nzbdav instances. Security concerns include:
+This addon runs locally on your Kodi device and communicates only with services you configure: your search provider (NZBHydra2, Prowlarr, or direct Newznab indexers) and your backend (nzbdav, InfiniDysk, or NZBGet). Security concerns include:
 
 - API key handling and storage
-- WebDAV credential management
+- WebDAV, NZBGet, and SMB (Windows/Samba file sharing) credential management
 - URL construction and validation
-- XML parsing of NZBHydra2 responses
+- XML parsing of search-provider and WebDAV responses (see `resources/lib/xml_safety.py`)

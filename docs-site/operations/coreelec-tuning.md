@@ -41,9 +41,27 @@ lsmod | grep uas                              # expect uas loaded
 
 ## How this relates to NZB-DAV
 
-NZB-DAV's own read-ahead buffer and stall-wait settings (see
-[Stream proxy](../how-it-works/stream-proxy.md)) address playback smoothness at
-the application layer. The tuning above addresses the same goal at the OS layer —
-keeping storage and network responsive while Kodi and any warmup services compete
-for a small pool of RAM and a single-queue NIC. On a roomier device (more RAM, a
-multi-queue NIC, native SATA), most of this is unnecessary.
+NZB-DAV doesn't apply or depend on any of the OS tuning above. Nothing in the
+add-on changes kernel, sysctl, or systemd settings. The tuning is a separate
+layer that keeps storage and the network responsive when Kodi and background
+warmup services compete for a small pool of RAM and a single-queue NIC. On a
+roomier device (more RAM, a multi-queue NIC, native SATA), most of it isn't
+needed.
+
+These NZB-DAV settings address playback smoothness at the application layer
+(Advanced → **Pass-through validation**):
+
+- **Read-ahead buffer size in MB** (default 256, 0 turns it off). Keeps
+  filling while playback is paused.
+- **Max seconds to wait for a slow/stalled backend before giving up** (default
+  120, 0 turns it off).
+
+See [Stream proxy](../how-it-works/stream-proxy.md) for how they work. Both
+were added in 2.0.0-beta.1 and are available on the
+[Beta channel](../getting-started/beta-channel.md).
+
+The one Kodi-side change NZB-DAV itself recommends is in
+`advancedsettings.xml`: set `<cache><memorysize>0</memorysize></cache>` so
+large files can play in pass-through mode with full seeking on 32-bit Kodi
+builds. NZB-DAV only suggests this in a dialog; it never edits the file. See
+[advancedsettings.xml and seeking](../reference/advancedsettings.md).
