@@ -54,9 +54,9 @@ of CI.
 
 ## How distribution works
 
-- **CI** (`ci.yml`) runs on every push to `main` and on every pull request:
-  `just lint` and `just test` on Python 3.14, plus a `compat-3-8` job that
-  byte-compiles the add-on on Python 3.8.
+- **CI** (`ci.yml`) runs on every push to `main` and on pull requests against
+  `main`: `just lint` and `just test` on Python 3.14, plus a `compat-3-8` job
+  that byte-compiles the add-on on Python 3.8.
 - **Releases** are built by the `Release` workflow when a `v*` tag is pushed. It
   runs the tests, verifies the version in `addon.xml` matches the tag, builds
   the zip, and creates a GitHub Release. Tags with a hyphen (for example

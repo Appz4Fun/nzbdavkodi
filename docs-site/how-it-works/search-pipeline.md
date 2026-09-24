@@ -105,7 +105,7 @@ Under **Relevance** sort, results are ordered by this priority tuple:
 ```mermaid
 flowchart LR
     A[Resolution: highest first]
-    A --> B[HDR: DV > HDR10+ > HDR10 > HLG > other > none]
+    A --> B[HDR: DV > HDR10+ > HDR10 > HLG > SDR / other > none]
     B --> R[Hybrid REMUX > REMUX > other]
     R --> C[Preferred tier 1 > 2 > 3]
     C --> D[Audio]
@@ -117,24 +117,26 @@ bypasses the relevance priorities.
 
 ## Tagging and the picker
 
-When the picker is going to open, results already present in your download backend get a
-**DL** tag. A tag needs a name match plus a size match (and a consistent post
+When the picker is going to open, results already present in your download
+backend get a **DL** tag. A tag needs a name match plus a size match (and a consistent post
 date) against nzbdav's completed history, or NZBGet's history in NZBGet mode.
 An episode request can also get an already-downloaded season-pack row
 prepended (see
 [Playback pipeline](playback-pipeline.md#remembering-completed-season-packs)).
 
 With **Auto-select best match (skip result list)** on (**Sorting › Auto-Select**),
-the top filtered result plays with no picker and no tagging pass. Otherwise
+the top filtered result plays straight away, with no picker and no
+picker-wide tagging pass. Otherwise
 `results_dialog.py` opens the full-screen picker on the filtered view.
 
 The picker receives the unfiltered rows as well as the filtered ones. Pressing
 **C** (context menu) switches between the filtered view and a **show all**
 view. Rows that a filter rejected carry a `FILTERED: <reason>` chip naming that
-filter. On devices where `results_input.py` can read the remote's key state,
-holding **OK** for five seconds also switches to show-all. If nothing survives
-filtering, the picker opens straight into show-all. DL tags
-are computed over the full row set, so rows revealed by show-all keep them.
+filter. On Linux and CoreELEC, where `results_input.py` can read the OK-key
+state from `/dev/input`, holding **OK** for five seconds also switches to
+show-all. If nothing survives
+filtering, the picker opens straight into show-all. DL tags are computed over
+the full row set, so rows revealed by show-all keep them.
 
 ## Caching
 
@@ -151,7 +153,7 @@ search type, title, year, season/episode, and ids. That means:
 The cache is used by the `plugin://` play and search routes. The TMDBHelper
 RunScript path always queries providers fresh.
 
-Set **Cache duration (seconds, 0=disabled)** (**Advanced › Search Cache**) to `0` to
-disable caching, or clear it any time from the add-on's main menu.
+Set **Cache duration (seconds, 0=disabled)** (**Advanced › Search Cache**) to
+`0` to disable caching, or clear it any time from the add-on's main menu.
 
 Next: the [Playback pipeline](playback-pipeline.md).

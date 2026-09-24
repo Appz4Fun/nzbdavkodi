@@ -37,7 +37,7 @@ sequenceDiagram
     R->>S: POST /prepare (X-NZBDAV-Token)
     S->>S: build stream context, register session
     S-->>R: local URL (/stream/{uuid} or /hls/{uuid}/playlist.m3u8)
-    R->>K: setResolvedUrl(local URL)
+    R->>K: setResolvedUrl / Player.play (local URL)
     K->>S: GET the local URL (range requests)
 ```
 
@@ -89,11 +89,23 @@ determined is remuxed whenever a remux mode is selected.
 
 | Path | ffmpeg? | Seeking |
 |------|---------|---------|
-| **Pass-through** (default for MKV/other, and for faststart MP4) | No | Native HTTP range seeking. |
-| **Virtual faststart** (tail-`moov` MP4) | No | Native range seeking. The proxy serves a virtual file with the `moov` moved to the front and its `stco`/`co64` chunk offsets rewritten in pure Python. If a 32-bit `stco` table would overflow, it falls back to the next tier. |
-| **Temp-file faststart** (MP4 the rewriter can't handle, ≤ 4 GB) | Yes | Native range seeking over a local `ffmpeg -movflags +faststart` copy. |
-| **Matroska remux** (`ffmpeg -c copy -f matroska pipe:1`) | Yes | No HTTP range: served as one unsized `200` stream with `Accept-Ranges: none`, and ffmpeg is never restarted at a new position (no `-ss`). Seeking is **cache-bounded**: Kodi can only seek within what it has already buffered. |
-| **fMP4 HLS** (VOD playlist + `init.mp4` + segments) | Yes | Full random seek via 6-second segments; the proxy serves ffmpeg's own playlist once it exists (and a proxy-built one before that), and the canonical init segment survives seek respawns. |
+| **Pass-through** (default for MKV/other, and for faststart MP4) | No | Native HTTP range seeking |
+| **Virtual faststart** (tail-`moov` MP4) | No | Native range seeking |
+| **Temp-file faststart** (MP4 the rewriter can't handle, ≤ 4 GB) | Yes | Native range seeking over a local copy |
+| **Matroska remux** | Yes | Cache-bounded: Kodi can only seek within what it has already buffered |
+| **fMP4 HLS** (VOD playlist + `init.mp4` + segments) | Yes | Full random seek via 6-second segments |
+
+- **Virtual faststart** serves a virtual file with the `moov` moved to the front
+  and its `stco`/`co64` chunk offsets rewritten in pure Python. If a 32-bit
+  `stco` table would overflow, the MP4 falls to the next tier.
+- **Temp-file faststart** runs `ffmpeg -movflags +faststart` into a local temp
+  file and serves that file with range support.
+- **Matroska remux** (`ffmpeg -c copy -f matroska pipe:1`) is one unsized `200`
+  response with `Accept-Ranges: none`. ffmpeg is never restarted at a new
+  position (no `-ss`), which is why seeking is bounded by Kodi's cache.
+- **fMP4 HLS** serves ffmpeg's own playlist once it exists (and a proxy-built
+  one before that). The first init segment is kept and re-served across seek
+  respawns.
 
 Pass-through reads upstream in 64 KB chunks (heap-safe on 32-bit), and on a
 mid-stream read failure it **skip-probes forward** to the next readable offset
@@ -115,7 +127,7 @@ session. Defaults in parentheses.
 | **Enable zero-fill budget** (on) | Caps zero-fill at 64 MB per response and 5% of the session; exceeding it ends the stream with a clean error rather than serving mostly-fake bytes. |
 | **Enable retry ladder before skip probe** (on) | Re-issues the original range with 2/4/8-second backoff on transient errors before skip-probing. A fresh open uses a short 0.25/0.5/1-second ladder so playback doesn't hang silently at the start. |
 | **Max seconds to wait for a slow/stalled backend before giving up (0=off)** (120 s, max 600) | For an *established* stream that stalls on a recoverable backend condition (still-downloading or a transient 5xx), holds Kodi's connection open with abortable backoff up to this budget; the clock resets on any real forward byte. Doesn't apply to genuinely missing articles (those zero-fill) or a fresh open. |
-| **Read-ahead buffer size in MB** (256 MB, max 4096) | A bounded forward prefetch that keeps filling even while paused, so resume is instant; `0` is byte-for-byte identical to no buffer. |
+| **Read-ahead buffer size in MB (keeps filling while paused; 0=off)** (256 MB, max 4096) | A bounded forward prefetch, so resuming after a pause is instant. `0` behaves exactly as if there were no buffer. |
 | **Send 200 for no-range pass-through** (off) | Sends `200 OK` instead of `206` when Kodi requests a full object. |
 
 ## Dolby Vision routing

@@ -102,6 +102,18 @@ the playable file:
   instead of selecting one by size. Without episode context, discovery
   preserves the legacy largest-video behavior.
 
+### Guarding against "Completed but broken"
+
+A backend can report *Completed* while the file is really a placeholder or is
+missing its middle article bodies. NZB-DAV runs two guards, and **both fail open**
+(they only reject on positive evidence of a problem, never on missing data):
+
+- **Stub guard** — rejects the folder when its total video bytes are under half
+  the advertised release size, or when the picked file is a tiny fraction of the
+  largest sibling video. This catches nzbdav's ~30-second job-start placeholder.
+- **Body guard** — after a `HEAD`, issues a 64 KiB range `GET` from the middle
+  of the file. A `≥400` or an empty body means the bodies aren't really there.
+
 ## Remembering completed season packs
 
 !!! info "Beta feature"
@@ -111,7 +123,8 @@ After a confirmed completed-folder inventory, a folder containing at least two
 reliably named episodes from exactly one season is recorded for later reuse.
 For nzbdav/WebDAV, recording is deferred until the selected stream passes body
 validation; NZBGet records from the reachable completed-folder inventory on its
-SMB or local/mounted completed-downloads path. The catalog is stored in the add-on profile at
+SMB or local/mounted completed-downloads path. The catalog is stored in the
+add-on profile at
 `special://profile/addon_data/plugin.video.nzbdav/season_packs.json` and is
 bounded to the 100 most recently confirmed jobs.
 
@@ -128,26 +141,14 @@ NZB or substitute a differently named episode. Conclusively missing or changed
 jobs become stale. Transient API, authentication, network, parsing, or storage
 errors fail soft and preserve the record for a later attempt.
 
-### Guarding against "Completed but broken"
-
-A backend can report *Completed* while the file is really a placeholder or is
-missing its middle article bodies. NZB-DAV runs two guards, and **both fail open**
-(they only reject on positive evidence of a problem, never on missing data):
-
-- **Stub guard** — rejects the folder when its total video bytes are under half
-  the advertised release size, or when the picked file is a tiny fraction of the
-  largest sibling video. This catches nzbdav's ~30-second job-start placeholder.
-- **Body guard** — after a `HEAD`, issues a 64 KiB range `GET` from the middle
-  of the file. A `≥400` or an empty body means the bodies aren't really there.
-
 ## Queue clearing
 
 Before submitting, NZB-DAV can clear nzbdav's download queue, controlled by
 **Clear download queue when starting a new download** (**Advanced › Polling**;
-Ask / Always clear / Never, default Ask). It
-excludes this title's own in-flight job, skips clearing when a completed copy you
-could reuse already exists, and — in Ask mode — shows a Keep/Clear prompt *before*
-the progress dialog so it's never hidden behind the modal. Any probe or dialog
+Ask / Always clear / Never, default Ask). It excludes this title's own
+in-flight job, skips clearing when a completed copy you could reuse already
+exists, and — in Ask mode — shows a Keep/Clear prompt *before* the progress
+dialog so it's never hidden behind the modal. Any probe or dialog
 failure leaves the queue untouched.
 
 ## Resume

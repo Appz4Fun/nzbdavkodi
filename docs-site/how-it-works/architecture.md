@@ -5,6 +5,10 @@ TMDBHelper as a player, and when you start a title it runs the whole pipeline:
 search → filter → submit → poll → proxy → play. This page is the technical map;
 the pages that follow drill into each stage.
 
+Throughout these pages, "nzbdav" also covers
+[InfiniDysk](https://github.com/infinidysk/infinidysk), the maintained nzbdav
+fork. It is a drop-in replacement that uses the same nzbdav settings and API.
+
 !!! note "Runtime constraints that shape the design"
     The add-on runtime is **pure Python, 3.8-compatible, with no compiled
     dependencies** — so it runs identically on ARM64 CoreELEC boxes and x86-64
@@ -157,7 +161,7 @@ hangs or crashes Kodi on the target devices:
 flowchart LR
     subgraph Yours
         H[NZBHydra2 / Prowlarr /<br/>direct Newznab]
-        ND[nzbdav<br/>API + WebDAV]
+        ND[nzbdav or InfiniDysk<br/>API + WebDAV]
         NG[NZBGet<br/>JSON-RPC + SMB/local share]
         US[Usenet provider]
     end

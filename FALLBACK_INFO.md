@@ -25,10 +25,11 @@ stream fails at a byte range. Main components:
 | Dead-candidate tracking | `dead_candidates.py` | per-session set of provably-dead releases |
 | Backend submit | `nzbdav_api.py`, `resolver_submit.py` | submits NZB jobs to nzbdav |
 
-The lifecycle is deliberately lazy: a healthy playback that never stalls
-submits **zero** fallback candidates. Backups are only fetched well after the
-video is confirmed playing, so the burst never contends with the fragile
-startup cache-fill window.
+The lifecycle is deliberately delayed: nothing is submitted until the video is
+confirmed playing and `fallback_submit_delay` has passed, so the burst never
+contends with the fragile startup cache-fill window. A playback stopped before
+the delay elapses submits **zero** fallback candidates; steady playback submits
+its standby backups once the delay passes.
 
 Relevant settings (Advanced → Fallback Streams): **Enable fallback streams**
 (`fallback_streams_enabled`, default on), **Maximum standby fallback streams**
@@ -83,7 +84,7 @@ sequenceDiagram
     R->>P: POST /prepare (fallback_sources snapshot)
     P->>PV: _start_fallback_prevalidation(ctx)
     Note over PV: fingerprints candidates,<br/>sets validated / failed
-    R->>R: _finish_direct_playback (handoff to Kodi)
+    R->>R: _finish_direct_playback / _finish_player_playback (handoff to Kodi)
     R->>W: _signal_fallback_playback_started
     Note over W: wakes, waits fallback_submit_delay (default 120s)
     W->>API: submit candidate NZBs
@@ -150,7 +151,9 @@ Every tier hard-rejects (returns `None`) when `_same_content()` fails:
 
 When `require_same_group=True` (`_same_group_resolution_gate`), both the
 **group** and the **resolution** must parse and be equal. This fails closed:
-an unknown or unparsed group or resolution is rejected.
+an unknown or unparsed group or resolution is rejected. On that active path,
+`_shared_profile_fields_match` also rejects a known codec mismatch, so tier 2
+in practice means the codec is unparsed on one side, and tier 3 is unreachable.
 
 `_manifest_group_key()` returns `(kind, name, size)` for video or
 `(kind, name)` for archive, and requires kind, name, and article digest to be
@@ -209,7 +212,8 @@ with `wait_for_playback=True` and `prewarm_delay` set from
 late submit.
 
 **The deliberate delay.** After playback is handed off to Kodi
-(`_finish_direct_playback`), both handoff paths in `resolver_flow.py` call
+(`_finish_direct_playback` or `_finish_player_playback`), both handoff paths in
+`resolver_flow.py` call
 `_signal_fallback_playback_started(fallback_state)`. The worker then waits for
 `prewarm_delay` in `_wait_prewarm_or_inactive()`. That wait aborts early when
 `state['stop']` is set. It also aborts when the cross-process `nzbdav.playing`

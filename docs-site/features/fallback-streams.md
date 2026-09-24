@@ -74,12 +74,12 @@ A candidate is admitted only when it's a plausible copy of the **same file**:
 The admitted candidates are then ranked:
 
 1. **Exact same video filename** first.
-2. Then by **similarity tier**:
-    - **Tier 0:** same resolution, codec, and release group, with a size
-      within 3%.
-    - **Tier 1:** same resolution and codec.
-    - **Tier 2:** same resolution, different codec.
-    - **Tier 3:** same content, otherwise different.
+2. Then by **similarity tier**. Every candidate already has the same release
+   group and resolution, and a known codec mismatch is rejected, so the tiers
+   are:
+    - **Tier 0:** same codec, with a size within 3%.
+    - **Tier 1:** same codec, larger size difference.
+    - **Tier 2:** codec not recognized on one side.
 3. Then by **smallest size difference**.
 
 Uploads posted within an hour of each other are treated as the same upload

@@ -73,14 +73,15 @@ A candidate is admitted only when all of these hold:
 - It isn't a [dead candidate](#dead-candidate-tracking).
 
 Admitted candidates are ordered with exact-same video filename first, then by
-tier, then by smallest size difference:
+tier, then by smallest size difference. Admission already guarantees the same
+group and resolution and rejects a known codec mismatch, so the tiers come down
+to:
 
 | Tier | Criteria |
 |------|----------|
-| 0 | Same resolution, codec, and group; size within **3%** |
-| 1 | Same resolution and codec |
-| 2 | Same resolution, different codec |
-| 3 | Same content, otherwise different |
+| 0 | Same codec; size within **3%** |
+| 1 | Same codec; larger size difference |
+| 2 | Codec not parsed on one side |
 
 Reposts of the same release within the same **hour** are collapsed to the best-
 ranked survivor (anchor-based, no transitive merging), and any candidate posted
@@ -172,7 +173,8 @@ stream no new real upstream bytes, the proxy closes the stream cleanly with
 
 NZB-DAV remembers candidates that are **provably unrecoverable** for the session
 — a missing first article, an NNTP rejection, or a terminal Failed/Deleted state
-— keyed by the indexer download link (the only id stable across resubmits).
+— keyed primarily by the indexer download link (the only id stable across
+resubmits).
 Those are never retried. A **timeout is deliberately not treated as dead**: on a
 slow backend a timeout means load, not a missing post, so the candidate stays
 eligible.
