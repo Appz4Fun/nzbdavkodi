@@ -42,7 +42,7 @@ NZB-DAV plays through one of two kinds of backend. You pick one with the
 **Use NZBGet instead of nzbdav for playback** switch on the **NZBGet** settings
 tab.
 
-| | **Streaming:** [nzbdav](https://github.com/nzbdav-dev/nzbdav) or [InfiniDysk](https://www.infinidysk.com/) | **Download first:** [NZBGet](https://github.com/nzbgetcom/nzbget) *(beta)* |
+| | **Streaming:** [nzbdav](https://github.com/nzbdav-dev/nzbdav) or [InfiniDysk](https://www.infinidysk.com/) ([GitHub](https://github.com/infinidysk/infinidysk)) | **Download first:** [NZBGet](https://github.com/nzbgetcom/nzbget) *(beta)* |
 |---|---|---|
 | **How it plays** | Streams straight from Usenet over WebDAV while the release is still being fetched. | NZBGet downloads the whole release, repairs and unpacks it, then Kodi plays the finished file from your NAS. |
 | **Time to first frame** | Seconds. | Minutes. On a fast connection a typical release takes a few minutes, and a huge BD100 disc remux can take 15–30 minutes. |
@@ -51,8 +51,10 @@ tab.
 
 **Which one should I use?**
 
-- **InfiniDysk** is recommended over nzbdav if you want to stream. It's a fork
-  of nzbdav, and NZB-DAV uses it through the same nzbdav connection settings.
+- **InfiniDysk** is recommended over nzbdav if you want to stream. It's the
+  maintained fork of nzbdav, with the same WebDAV server and SABnzbd-compatible
+  API, so it's a drop-in replacement: NZB-DAV connects to it through the same
+  nzbdav connection settings.
 - **NZBGet is the most reliable option of all**, as long as you're willing to
   wait for the download to finish. The file is complete and parity-checked
   before playback starts, so missing articles can't interrupt the stream.

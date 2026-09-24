@@ -16,7 +16,9 @@ with:  ![NZB-DAV settings](../images/settings.png)
 
 ## Connect to nzbdav
 
-Under **nzbdav**, enter the address and API key of your nzbdav server.
+Under **nzbdav**, enter the address and API key of your nzbdav server. If you
+run [InfiniDysk](https://github.com/infinidysk/infinidysk), the maintained
+nzbdav fork, enter its address and API key here the same way.
 
 | Setting | What to enter |
 |---------|---------------|

@@ -9,7 +9,7 @@ of these components.
 | Component | What you need | Notes |
 |-----------|---------------|-------|
 | **Kodi 21 (Omega)** or later | A working Kodi install | Runs on CoreELEC, LibreELEC, OSMC, Windows, macOS, and Linux. |
-| **nzbdav** | A running, reachable [nzbdav](https://github.com/nzbdav-dev/nzbdav) instance | Provides both the SABnzbd-compatible submission API and the WebDAV server that streams the file. You don't need a separate SABnzbd. (Beta builds can use NZBGet instead — see below.) |
+| **nzbdav** or **InfiniDysk** | A running, reachable [nzbdav](https://github.com/nzbdav-dev/nzbdav) instance, or its maintained fork [InfiniDysk](https://github.com/infinidysk/infinidysk) (recommended) | Provides both the SABnzbd-compatible submission API and the WebDAV server that streams the file. You don't need a separate SABnzbd. (Beta builds can use NZBGet instead — see below.) |
 | **A Usenet provider** | Configured inside nzbdav | nzbdav connects to your news server; NZB-DAV never talks to Usenet directly. |
 | **At least one search provider** | **NZBHydra2**, **Prowlarr**, *or* **direct Newznab indexers** | You can enable more than one; results are merged. See below. |
 | **TMDBHelper** | `plugin.video.themoviedb.helper` installed in Kodi | This is how you browse titles and trigger playback. |
