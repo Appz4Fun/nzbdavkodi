@@ -53,6 +53,14 @@ server error.
 You need at least one provider. Turn on whichever you use and fill in its
 details. You can enable more than one — results are merged and de-duplicated.
 
+!!! tip "Recommended: NZBHydra2"
+    [NZBHydra2](https://github.com/theotherp/nzbhydra2) is the recommended
+    provider. Configure your indexers once in Hydra, which has a better search
+    interface and is highly configurable, instead of entering each indexer's
+    Newznab API on NZB-DAV's **Indexers** tab. Each result still shows which
+    indexer Hydra found it on. See
+    [Search and indexers](../features/search-and-indexers.md#provider-types).
+
 === "NZBHydra2"
 
     | Setting | What to enter |

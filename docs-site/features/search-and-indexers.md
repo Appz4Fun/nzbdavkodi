@@ -9,6 +9,17 @@ results, removes duplicates, and hands the combined list to the
 You can enable any combination of three provider types. If none is enabled,
 NZB-DAV tells you so instead of searching.
 
+!!! tip "Recommended: use NZBHydra2"
+    Rather than adding every indexer's Newznab API key on NZB-DAV's
+    **Indexers** tab, run [NZBHydra2](https://github.com/theotherp/nzbhydra2)
+    and point NZB-DAV at it. Hydra gives you a much better interface for
+    managing indexers and searches, and it's highly configurable: per-indexer
+    limits, categories, and priorities, all in one place. You don't lose
+    anything by going through it. NZB-DAV still shows which indexer each result
+    came from, in the results list's **Indexer** column. On NZBHydra2,
+    [fallback streams](fallback-streams.md) can also find same-release uploads
+    that Hydra merged into a single result.
+
 ### NZBHydra2
 
 NZB-DAV queries NZBHydra2's Newznab XML API and shapes each query to the

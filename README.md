@@ -112,7 +112,10 @@ Full steps: [Install the add-on](https://appz4fun.github.io/nzbdavkodi/getting-s
 
 1. Open **My add-ons → Video add-ons → NZB-DAV → Configure** and enter your
    **nzbdav** URL + API key and **WebDAV** credentials. Use the **Test** actions.
-2. Enable a search provider (NZBHydra2, Prowlarr, or direct indexers) and test it.
+2. Enable a search provider and test it. [NZBHydra2](https://github.com/theotherp/nzbhydra2)
+   is recommended over entering each indexer's API on the Indexers tab: it's
+   easier to manage and highly configurable, and results still show which
+   indexer they came from.
 3. On the **Player Installation** tab, select **Install TMDBHelper Player**.
 4. Restart Kodi (or run TMDBHelper **Players → Update players**), then set
    **Default player (Movies)** and **Default player (TV Shows)** to **NZB-DAV**.
