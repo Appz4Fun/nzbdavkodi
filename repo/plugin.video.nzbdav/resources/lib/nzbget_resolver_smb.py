@@ -180,7 +180,8 @@ def _smb_file_size(path):
 def _is_video_name(name):
     """True when ``name`` ends in one of the playable video extensions."""
     lower = name.lower()
-    return any(lower.endswith(ext) for ext in VIDEO_EXTENSIONS)
+    # ⚡ Bolt: str.endswith natively takes a tuple (faster than any() generator loop)
+    return lower.endswith(VIDEO_EXTENSIONS)
 
 
 def _largest_video_in_dir(folder, files):
