@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Released | What it's about |
 |---|---|---|
-| **[Unreleased](#unreleased--main)** | on `main` | Complete media filters with Other / Unknown switches, resolution-then-HDR-then-REMUX ranking with three editable group tiers, picker show-all toggle with filter reasons, movie IMDb lookup, 60 s search cache, NZBGet local-path season-pack reuse, `.m2ts` playback |
+| **[Unreleased](#unreleased--main)** | on `main` | Complete media filters with Other / Unknown switches, resolution-then-HDR-then-REMUX ranking with three editable group tiers, picker show-all toggle with filter reasons, movie IMDb lookup, 60 s search cache, NZBGet local-path season-pack reuse, `.m2ts` playback, `/resolve-v2` source manifests |
 | **[2.0.0-beta.2](#200-beta2--2026-07-18)** | 2026-07-18 | Exact season-pack episode reuse, SMB readability gate before playback, results-dialog label scrolling, unified XML-safety parsing |
 | **[2.0.0-beta.1](#200-beta1--2026-07-09)** | 2026-07-09 | NZBGet backend + Smart Duplicates, tiered fallback/dropout hardening, manual indexer manager, TVDB-aware TV search, versioned settings.xml with per-option help text, unified XXE protection, large complexity-reduction refactor, MkDocs documentation site |
 | **[1.2.3](#123--2026-05-08)** | 2026-05-08 | Proxy fallback hardening, repo install checksum fix, RunScript path reliability |
@@ -93,6 +93,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IMDb id from the TMDB id for more accurate indexer results. The TMDBHelper
   player file moves to schema 7 and passes `tvdb={tvdb}` for episodes; re-run
   **Install TMDBHelper Player** to pick it up. (#502)
+
+- **`/resolve-v2` source-manifest route.** External callers (btad) can hand
+  NZB-DAV a JSON manifest URL (`manifest_url`) listing a release's `title`,
+  `primary_url`, and ordered `source_urls`. The manifest is fetched and
+  validated (http/https only, primary must be one of the sources, 128 KiB
+  cap); an invalid manifest is logged and ignored. The primary URL plays
+  through the normal resolver. In NZBGet mode the other sources are submitted
+  as the Smart Duplicates backup set under a hashed `btad:` DupeKey, so
+  credentials in the URLs never reach NZBGet's DupeKey. (#504)
 
 ### Changed
 

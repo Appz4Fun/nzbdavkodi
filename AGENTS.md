@@ -29,7 +29,7 @@ Follow these rules before making code, release, or deployment changes:
 These must stay true or Kodi playback, shutdown, or updates can break:
 
 - Every resolvable plugin route (`/play`, `/direct_play`, and `resolver.resolve(handle, ...)`) must call `xbmcplugin.setResolvedUrl(...)` on every path: success with `True`, failure or cancellation with `False`.
-- Handle-less playback paths (the TMDBHelper `RunScript(addon.py,tmdb_play,...)` player, the `/resolve` route, `/search` after it closes its directory with `endOfDirectory`, and `resolve_and_play`) have no plugin handle: they start playback with `xbmc.Player().play(...)` and must notify the user and clean up on failure instead of calling `setResolvedUrl`. The NZBGet backend has both variants and follows whichever entry path invoked it.
+- Handle-less playback paths (the TMDBHelper `RunScript(addon.py,tmdb_play,...)` player, the `/resolve` and `/resolve-v2` routes, `/search` after it closes its directory with `endOfDirectory`, and `resolve_and_play`) have no plugin handle: they start playback with `xbmc.Player().play(...)` and must notify the user and clean up on failure instead of calling `setResolvedUrl`. The NZBGet backend has both variants and follows whichever entry path invoked it.
 - Kodi polling loops must use `xbmc.Monitor.waitForAbort()` instead of `time.sleep()` so Kodi can shut down cleanly.
 - Settings must be defined in `resources/settings.xml` and read through `xbmcaddon.Addon().getSetting(...)`.
 - The stream proxy must preserve HTTP Range behavior; seeking depends on it.
@@ -160,7 +160,7 @@ When changing player behavior, keep the profile-containment guard (writes stay u
 
 ### Playback / Resolver Changes
 
-- On resolvable plugin routes, preserve `setResolvedUrl` on every success, cancellation, timeout, and failure path. On handle-less paths (TMDBHelper `tmdb_play`, `/resolve`, `/search`), keep the user notification and cleanup on every failure path.
+- On resolvable plugin routes, preserve `setResolvedUrl` on every success, cancellation, timeout, and failure path. On handle-less paths (TMDBHelper `tmdb_play`, `/resolve`, `/resolve-v2`, `/search`), keep the user notification and cleanup on every failure path.
 - Use `xbmc.Monitor.waitForAbort()` for polling loops.
 - Check fallback behavior when changing submit, poll, WebDAV discovery, or proxy handoff logic.
 - Keep settings reads safe for Kodi's threading constraints; avoid unsafe service-thread Kodi setting reads.
