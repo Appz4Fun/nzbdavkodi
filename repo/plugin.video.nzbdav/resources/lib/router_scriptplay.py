@@ -51,6 +51,19 @@ def _script_play_recover_episode_info(params, title, season, episode):
     return title, season, episode
 
 
+def _remember_last_episode_pick(params):
+    """Record the season/episode about to be resolved as "last picked".
+
+    Feeds ``router_lastepisode.recall_next_episode``'s next-episode guess for
+    a future blank-season/episode RunScript play of the same show. No-op for
+    movies or when season/episode weren't resolved (nothing numeric to
+    remember).
+    """
+    from resources.lib.router_lastepisode import remember_last_episode
+
+    remember_last_episode(params, params.get("season"), params.get("episode"))
+
+
 def _write_back_episode_params(params, season, episode):
     """Thread recovered season/episode back into ``params`` (skip blanks)."""
     if season:
@@ -77,9 +90,23 @@ def _script_play_resolve_episode_args(
 
     # TMDBHelper Next-Up / widget / home-screen plays often invoke the player
     # with only the series ids and empty season/episode, so an episode search
-    # broadens to the whole show. Recover the numbers from the focused
-    # ListItem, but trust them only when that item is the same show we're
-    # about to search (the focus may have moved by the time the player fires).
+    # broadens to the whole show. When both are blank -- the actual Next-Up
+    # signature -- prefer "one past whatever was last picked for this show"
+    # over the focused-ListItem guess below: after an episode ends, Kodi's UI
+    # focus can reset to the top of the season folder, which the ListItem
+    # probe would misread as "episode 1" instead of "the next episode".
+    if search_type == "episode" and not season and not episode:
+        from resources.lib.router_lastepisode import recall_next_episode
+
+        recalled_season, recalled_episode = recall_next_episode(params)
+        if recalled_season and recalled_episode:
+            season, episode = recalled_season, recalled_episode
+            _write_back_episode_params(params, season, episode)
+            return title, season, episode
+
+    # Recover the numbers from the focused ListItem, but trust them only when
+    # that item is the same show we're about to search (the focus may have
+    # moved by the time the player fires).
     if search_type == "episode" and not (season and episode):
         title, season, episode = _script_play_recover_episode_info(
             params, title, season, episode
@@ -332,6 +359,7 @@ def _script_play_auto_select(params, best, filtered):
     _router._attach_selected_result_metadata(resolver_params, target)
     if best.get("_season_pack"):
         resolver_params["_season_pack"] = best["_season_pack"]
+    _remember_last_episode_pick(params)
     _router._script_play_stage("resolve start '{}'".format(target.get("title", "")))
     resolve_and_play(target["link"], target["title"], params=resolver_params)
     _router._script_play_stage("resolve returned")
@@ -369,6 +397,7 @@ def _script_play_resolve_selected(params, selected, filtered, completed_jobs):
     _router._attach_selected_result_metadata(resolver_params, target)
     if selected.get("_season_pack"):
         resolver_params["_season_pack"] = selected["_season_pack"]
+    _remember_last_episode_pick(params)
     _router._script_play_stage("resolve start '{}'".format(target.get("title", "")))
     resolve_and_play(target["link"], target["title"], params=resolver_params)
     _router._script_play_stage("resolve returned")
