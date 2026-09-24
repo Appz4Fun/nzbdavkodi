@@ -7,7 +7,9 @@ results, removes duplicates, and hands the combined list to the
 ## Provider types
 
 You can enable any combination of three provider types. If none is enabled,
-NZB-DAV tells you so instead of searching.
+TMDBHelper playback tells you so instead of searching. NZB-DAV's own search
+menu and `plugin://` play URLs always query NZBHydra2, even when **Enable
+NZBHydra2** is off.
 
 !!! tip "Recommended: use NZBHydra2"
     Rather than adding every indexer's Newznab API key on NZB-DAV's
@@ -25,11 +27,12 @@ NZB-DAV tells you so instead of searching.
 NZB-DAV queries NZBHydra2's Newznab XML API and shapes each query to the
 search capabilities (caps) Hydra advertises. It fetches those caps on first
 search and caches them. After changing Hydra's URL or its indexers, refresh
-them from **Manage Indexers → Refresh NZBHydra2 Caps** on the **Indexers** tab
-(the button is greyed out until **Enable direct Newznab indexers** is on);
-until then a changed URL is searched with a default query shape. For episodes it prefers a TVDB id (then
-an IMDb id) so results are accurate; for movies it uses the IMDb id. If the
-first query returns nothing, NZB-DAV automatically retries with a plain title
+them from **Manage Indexers → Refresh NZBHydra2 Caps** on the **Indexers** tab.
+That button stays greyed out until **Enable direct Newznab indexers** is on.
+Until you refresh, a changed URL is searched with a default query shape.
+
+For episodes, NZB-DAV prefers a TVDB id, then an IMDb id; for movies it uses
+the IMDb id. If the first query returns nothing, it retries with a plain title
 search, so a missing or mismatched id doesn't leave you with zero results.
 
 ### Prowlarr
@@ -46,8 +49,8 @@ NZB-DAV retries by title, keeping the season and episode tokens.
     from Prowlarr are silently dropped. A torrent-only indexer in your Prowlarr
     indexer list contributes nothing.
 
-Set **Prowlarr Indexer IDs** to a comma-separated list to query specific
-indexers. Prowlarr returns no results if this list is empty, so specify at least one indexer ID.
+Set **Prowlarr Indexer IDs** to a comma-separated list of the indexers to
+query. It's required: with an empty list, NZB-DAV skips Prowlarr entirely.
 
 ### Direct Newznab indexers
 

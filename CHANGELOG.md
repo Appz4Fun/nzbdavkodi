@@ -109,8 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   titles (for example `00000.m2ts`) were not recognized in NZBGet reuse or
   WebDAV discovery, so an already-downloaded release was submitted again.
   `.ts` / `.m2ts` streams now get a `video/mp2t` MIME hint. (#440)
-- Regression test guarding SMB playback paths against double
-  percent-encoding. (#446)
+- Added a regression test that guards NZBGet SMB playback paths against
+  double percent-encoding (no behavior change). (#446)
 
 ### Documentation
 
@@ -118,6 +118,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beta features** page, rewritten install guide for the Appz4Fun Stable/Beta
   repositories, and corrected settings, playback, fallback, NZBGet, and
   internals pages.
+- New **Choose a backend** comparison (nzbdav/InfiniDysk vs NZBGet).
+  InfiniDysk, the maintained nzbdav fork, is now the recommended streaming
+  backend, and NZBHydra2 the recommended search provider. The NZBGet page
+  recommends an NFS hard mount for the completed folder.
 
 ## [2.0.0-beta.2][] — 2026-07-18
 

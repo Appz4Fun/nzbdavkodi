@@ -27,14 +27,13 @@ parsing its name.
 | **Video Codec** | x265 / HEVC, x264 / AVC, AV1, VP9, MPEG-2, MPEG-4 ASP / Xvid / DivX, VC-1, MPEG-1, VP8, WMV, H.263, VVC (also matches H.266), MJPEG, Theora |
 | **Languages** (own tab) | 48 languages, including Cantonese and Urdu; names and abbreviations are matched case-insensitively |
 
-Each group also has **Other / Unknown**, enabled by default. It allows missing
-attributes and values without a dedicated option. Turning it off requires a
-recognized value in that category. An unchecked known format is still excluded;
-Other / Unknown does not override that choice. Turning off every known option
-retains the existing unrestricted behavior for known formats, while the unknown
-option remains independent.
+Each group also has **Other / Unknown**, enabled by default. It allows
+releases whose attribute is missing or has no dedicated option. Turn it off to
+require a recognized value in that group. It never overrides a known format
+you've unchecked. If you uncheck every known option in a group, known formats
+are no longer restricted there; **Other / Unknown** still applies on its own.
 
-No HDR tag now means **Unknown**, rather than SDR. `HDR` selects HDR/HDR10;
+A release with no HDR tag counts as **Other / Unknown**, not SDR. `HDR` selects HDR/HDR10;
 `HDR+`, `HDRPlus`, `HDR10P`, and `HDR10+` select HDR10+. Dolby Vision requires
 `DV`, `DoVi`, or `Dolby Vision`. Multiple explicit HDR tags are retained, and a
 release passes when any selected format matches. `HLG` and explicit `SDR` are
@@ -46,9 +45,8 @@ Resolution aliases share their filters: `2560x1440` is 1440p, `8K` and
 
 Language abbreviations such as `fr` select French, and Latino/Latin American
 Spanish select Spanish. A multilingual release passes when any selected
-language matches. Cantonese and Urdu retain their own identities and options.
-Under the configured grouping, selecting Chinese also accepts Cantonese and
-Urdu; the Urdu grouping is a user preference, not a linguistic classification.
+language matches. Cantonese and Urdu have their own toggles, but with
+**Chinese** enabled, releases tagged Cantonese or Urdu also pass.
 
 ## Keyword and group filters
 

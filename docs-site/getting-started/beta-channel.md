@@ -37,7 +37,7 @@ These features are in 2.0.0-beta.1 or 2.0.0-beta.2 and are **not** in Stable
 |---------|--------------|---------|
 | **NZBGet backend** | Use NZBGet instead of nzbdav. NZB-DAV submits the NZB, shows download and post-processing progress, then plays the finished file from your completed-downloads folder. | [NZBGet backend](../features/nzbget-backend.md) |
 | **Smart Duplicates failover** (NZBGet) | Other same-name results are queued as backups. If your pick can't be repaired, NZBGet switches to a backup and playback follows it. | [Smart Duplicates](../features/nzbget-backend.md#smart-duplicates-failover) |
-| **Exact season-pack episode reuse** (beta.2) | A finished season pack plays the episode you asked for, not the largest file. Later episodes from the same pack play from it without downloading again. | [NZBGet backend](../features/nzbget-backend.md) |
+| **Exact season-pack episode reuse** (beta.2) | A finished season pack plays the episode you asked for, not the largest file. Later episodes from the same pack play from it without downloading again. | [Reuse a completed season pack](first-playback.md#reuse-a-completed-season-pack) |
 | **Indexer manager** | Add, edit, and remove direct Newznab indexers from a preset list of known indexers, with searches that respect each indexer's capabilities. | [Search and indexers](../features/search-and-indexers.md) |
 | **TVDB-aware TV search** | With an optional TMDB API key, NZB-DAV looks up the show's TVDB id and searches indexers by id instead of by title. | [Search and indexers](../features/search-and-indexers.md) |
 | **Read-ahead buffer** | While a stream plays, and while it's paused, NZB-DAV reads ahead of the playhead so a pause builds real buffer. Default 256 MB. | [Settings reference](../reference/settings.md) |
@@ -61,8 +61,8 @@ These features are in 2.0.0-beta.1 or 2.0.0-beta.2 and are **not** in Stable
 - **Security:** every XML parser that reads network data now goes through one
   hardened parser.
 
-Changes merged since the latest beta, which will ship in the next beta build,
-are listed under **Unreleased** at the top of the
+Changes on `main` that aren't in a release yet are listed under
+**Unreleased** at the top of the
 [changelog](https://github.com/Appz4Fun/nzbdavkodi/blob/main/CHANGELOG.md#unreleased--main).
 
 ## Joining the beta
@@ -89,8 +89,9 @@ category, and every new setting starts at its default.
 
 To go back to Stable, use the same **Versions** list: open NZB-DAV's add-on
 info, choose **Versions**, and pick the version listed under **Appz4Fun
-Repository**. Kodi never downgrades an add-on on its own, because the Stable
-version (1.2.3) is lower than the beta (2.0.0-beta.x).
+Repository**. You have to do this by hand: Stable (1.2.3) is a lower version
+than the beta (2.0.0-beta.x), and Kodi never downgrades an add-on on its own.
+See [Going back from Beta to Stable](../operations/troubleshooting.md#going-back-from-beta-to-stable).
 
 After you switch either way, check that **Auto-update** is still on in the
 add-on info page.

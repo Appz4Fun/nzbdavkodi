@@ -8,8 +8,11 @@ assignees: ''
 
 **Environment**
 - Kodi version:
-- OS/device (e.g., CoreELEC on Odroid N2+):
-- Addon version:
+- Platform/device (e.g., CoreELEC on Odroid N2+):
+- NZB-DAV version:
+- Channel (Stable / Beta / manual zip):
+- Backend (nzbdav / InfiniDysk / NZBGet):
+- Search provider (NZBHydra2 / Prowlarr / direct indexers):
 
 **Describe the bug**
 A clear description of what happened.
@@ -23,4 +26,4 @@ A clear description of what happened.
 What you expected to happen.
 
 **Kodi log**
-Paste relevant lines from `kodi.log` (Settings > System > Logging > Enable debug logging).
+Paste relevant lines from `kodi.log` (lines starting with `NZB-DAV:`), with API keys, passwords, and server URLs removed. Enable debug logging under Settings > System > Logging if needed.

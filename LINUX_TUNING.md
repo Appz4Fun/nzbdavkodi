@@ -135,7 +135,7 @@ emergency direct reclaim. 32 MB gives the allocator breathing room.
 
 **File:** `/storage/.config/system.d/zram.service`
 
-```
+```text
 2 GB zram device, lz4 compression, swap priority 100
 ```
 

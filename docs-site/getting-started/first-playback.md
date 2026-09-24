@@ -40,8 +40,8 @@ hidden. In the all-results view, each release your filters would have removed
 carries a yellow **FILTERED:** chip naming the first filter that rejected it:
 `resolution`, `HDR`, `audio`, `codec`, `language`, `keyword`, `group`, or
 `size`. This view isn't capped by **Max results**. You can still pick any of
-those rows, and NZB-DAV plays exactly that release. Press ++c++ again to return to the
-filtered list. Your saved filter settings don't change.
+those rows, and NZB-DAV plays exactly that release. Press ++c++ again to
+return to the filtered list. Your saved filter settings don't change.
 
 - If every release was filtered out, the picker opens directly in the
   all-results view.
@@ -58,19 +58,18 @@ filters themselves.
 !!! info "Beta feature"
     Added in 2.0.0-beta.2 — available on the [Beta channel](beta-channel.md).
 
-When a completed backend job contains multiple reliably named episodes,
-NZB-DAV remembers the episodes in that job. A later request for one of them
-shows **Already downloaded season pack - Episodes …** as the first row in the
-picker. Auto-select plays that row first. Selecting that row reuses the completed
-download without submitting another NZB.
+When a completed backend job contains several clearly named episodes,
+NZB-DAV remembers which episodes it holds. When you later play one of them,
+the picker's first row is **Already downloaded season pack - Episodes …**.
+Selecting it, or letting auto-select pick it, reuses the completed download
+without submitting another NZB.
 
-Before playback, NZB-DAV rechecks the exact backend job and its original
-completed folder, inventories it again, and selects the requested
-season/episode from the filename. A missing requested episode never falls back
-to a differently named episode. If the job or folder was conclusively removed,
-the saved row becomes stale; temporary network, authentication, or server
-errors leave it saved for a later attempt while normal online results remain
-available.
+Before playback, NZB-DAV rechecks that backend job and its completed folder
+and picks the file whose name matches the requested season and episode. It
+never plays a different episode in its place. If the job or folder has been
+removed, NZB-DAV forgets the pack. A temporary network, login, or server error
+doesn't: the pack stays saved for next time, and the normal search results
+are still there to pick from.
 
 ## Watch the download progress
 
@@ -87,9 +86,11 @@ dialog. See [NZBGet backend](../features/nzbget-backend.md).
 | Downloading… *n*% | Actively downloading. |
 | Paused | The backend paused the job. |
 
-Playback starts automatically as soon as enough of the file is ready. If the
-release turns out to be a placeholder or has missing article bodies, NZB-DAV
-detects it and moves on rather than playing a broken file.
+Playback starts automatically once the video file is available over WebDAV.
+NZB-DAV waits past the small placeholder file nzbdav creates at job start, and
+checks that the middle of the file can actually be read. If it can't, you get
+**Download completed but the video file is incomplete** instead of a broken
+player. See [Troubleshooting](../operations/troubleshooting.md#webdav-or-authentication-errors).
 
 <!--
 Screenshot placeholder — Capture the download progress dialog mid-download (for

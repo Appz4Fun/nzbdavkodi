@@ -5,7 +5,7 @@ Orientation for agents (Claude, Copilot, Codex, etc.) working in this repo. A sh
 ## TL;DR
 
 - Runtime addon code must stay Python 3.8 compatible and pure Python.
-- Preserve `setResolvedUrl`, `waitForAbort`, and HTTP Range behavior.
+- Preserve `setResolvedUrl` (resolvable plugin routes), `waitForAbort`, and HTTP Range behavior.
 - Follow existing Kodi mock, settings, HTTP helper, and player install patterns.
 - Run `just lint` and `just test` before commit or push.
 - For releases, bump only `repo/plugin.video.nzbdav/addon.xml`; the Release workflow builds the zip and the external Appz4Fun Kodi repository republishes it. The Pages workflow publishes documentation, not add-on metadata.
@@ -28,7 +28,8 @@ Follow these rules before making code, release, or deployment changes:
 
 These must stay true or Kodi playback, shutdown, or updates can break:
 
-- Every resolver path must call `xbmcplugin.setResolvedUrl(...)`: success with `True`, failure with `False`.
+- Every resolvable plugin route (`/play`, `/direct_play`, and `resolver.resolve(handle, ...)`) must call `xbmcplugin.setResolvedUrl(...)` on every path: success with `True`, failure or cancellation with `False`.
+- Handle-less playback paths (the TMDBHelper `RunScript(addon.py,tmdb_play,...)` player, the `/resolve` route, `/search` after it closes its directory with `endOfDirectory`, and `resolve_and_play`) have no plugin handle: they start playback with `xbmc.Player().play(...)` and must notify the user and clean up on failure instead of calling `setResolvedUrl`. The NZBGet backend has both variants and follows whichever entry path invoked it.
 - Kodi polling loops must use `xbmc.Monitor.waitForAbort()` instead of `time.sleep()` so Kodi can shut down cleanly.
 - Settings must be defined in `resources/settings.xml` and read through `xbmcaddon.Addon().getSetting(...)`.
 - The stream proxy must preserve HTTP Range behavior; seeking depends on it.
@@ -81,11 +82,13 @@ Use `pr_agent_context.py` when starting a PR review or addressing comments from 
 
 ## Where To Start
 
-- Entry routing: `repo/plugin.video.nzbdav/resources/lib/router.py`
+- Entry routing: `repo/plugin.video.nzbdav/addon.py` -> `resources/lib/router.py` (plugin:// routes, table in `router_dispatch.py`) or `resources/lib/script_player.py` -> `router._handle_script_play` (TMDBHelper `tmdb_play`)
 - NZBHydra2 search: `repo/plugin.video.nzbdav/resources/lib/hydra.py`
 - Prowlarr search: `repo/plugin.video.nzbdav/resources/lib/prowlarr.py`
+- Direct Newznab indexers: `repo/plugin.video.nzbdav/resources/lib/direct_indexers.py`
 - Filtering and result ranking: `repo/plugin.video.nzbdav/resources/lib/filter.py`
-- Submit, poll, and resolve: `repo/plugin.video.nzbdav/resources/lib/resolver.py`
+- Submit, poll, and resolve (nzbdav/InfiniDysk): `repo/plugin.video.nzbdav/resources/lib/resolver.py` and its `resolver_*.py` helpers
+- NZBGet backend: `repo/plugin.video.nzbdav/resources/lib/nzbget_resolver.py` and `nzbget_api.py`
 - WebDAV checks: `repo/plugin.video.nzbdav/resources/lib/webdav.py`
 - Local playback proxy: `repo/plugin.video.nzbdav/resources/lib/stream_proxy.py`
 - TMDBHelper player install: `repo/plugin.video.nzbdav/resources/lib/player_installer.py`
@@ -93,27 +96,30 @@ Use `pr_agent_context.py` when starting a PR review or addressing comments from 
 
 ## Architecture Snapshot
 
-NZB-DAV Kodi addon (`plugin.video.nzbdav`) is a player/resolver for Kodi 21. It searches NZBHydra2 or Prowlarr, submits selected NZBs to nzbdav, polls until the stream is ready on nzbdav's WebDAV server, then plays the result through Kodi. It also registers as a TMDBHelper player.
+NZB-DAV Kodi addon (`plugin.video.nzbdav`) is a player/resolver for Kodi 21. It searches NZBHydra2, Prowlarr, and/or direct Newznab indexers, submits the selected NZB to a backend, waits until the file is playable, then plays it through Kodi. It registers as a TMDBHelper player.
 
 External services:
 
-- **NZBHydra2 / Prowlarr**: Newznab-compatible NZB search APIs
-- **nzbdav**: SABnzbd-compatible API for NZB submission plus WebDAV streaming
+- **NZBHydra2 / Prowlarr / direct Newznab indexers**: NZB search
+- **nzbdav or InfiniDysk** (default streaming backend): SABnzbd-compatible API for NZB submission plus WebDAV streaming
+- **NZBGet** (optional download-first backend): JSON-RPC API; the finished file is played from an SMB share or a local/mounted folder
 - **This addon**: TMDBHelper -> search -> filter -> submit -> poll -> proxy -> Kodi playback
 
-Flow:
+Flow (TMDBHelper player, the default path):
 
 ```text
-TMDBHelper plugin:// URL
--> router.py
--> hydra.py / prowlarr.py
+TMDBHelper RunScript(addon.py,tmdb_play,...)
+-> script_player.run_tmdb_play -> router._handle_script_play
+-> hydra.py / prowlarr.py / direct_indexers.py
 -> filter.py with PTT parsing
--> user selects result
--> resolver.py submits to nzbdav and polls
+-> user selects result (results_dialog.py)
+-> resolver.py submits to nzbdav and polls   (or nzbget_resolver.py for NZBGet)
 -> webdav.py checks availability
 -> stream_proxy.py serves or remuxes stream
--> xbmcplugin.setResolvedUrl(...) starts playback
+-> xbmc.Player().play(...) starts playback   (no plugin handle on this path)
 ```
+
+The resolvable `plugin://` routes (`/play`, `/direct_play`) follow the same pipeline but finish with `xbmcplugin.setResolvedUrl(...)`.
 
 The background service (`service.py`) runs `StreamProxy`. MP4 sources may be rewritten or remuxed to avoid Kodi/CoreELEC cache and moov-atom issues. MKV and other formats are proxied directly with Range request support unless the user enables force-remux settings.
 
@@ -125,7 +131,7 @@ The background service (`service.py`) runs `StreamProxy`. MP4 sources may be rew
 - `http_util.py` owns shared `http_get()` and `notify()` helpers.
 - PTT is vendored with `regex` replaced by `re` and `arrow` replaced by `datetime`.
 - Some PTT regex patterns can trigger `FutureWarning` on newer Python. Escape `[` inside character classes when fixing them.
-- Test/lint tooling runs on Python 3.14 with exact pins in `requirements-dev.txt` (pytest, pylint, ruff, black) executed via uv, even though addon runtime code must remain Python 3.8 compatible.
+- Test/lint tooling runs on Python 3.14 with exact pins in `requirements-dev.txt` (pytest, pytest-cov, pylint, ruff, black, vermin) executed via uv, even though addon runtime code must remain Python 3.8 compatible.
 
 ## When In Doubt
 
@@ -154,7 +160,7 @@ When changing player behavior, keep the profile-containment guard (writes stay u
 
 ### Playback / Resolver Changes
 
-- Preserve `setResolvedUrl` on every success, cancellation, timeout, and failure path.
+- On resolvable plugin routes, preserve `setResolvedUrl` on every success, cancellation, timeout, and failure path. On handle-less paths (TMDBHelper `tmdb_play`, `/resolve`, `/search`), keep the user notification and cleanup on every failure path.
 - Use `xbmc.Monitor.waitForAbort()` for polling loops.
 - Check fallback behavior when changing submit, poll, WebDAV discovery, or proxy handoff logic.
 - Keep settings reads safe for Kodi's threading constraints; avoid unsafe service-thread Kodi setting reads.
@@ -170,7 +176,7 @@ When changing player behavior, keep the profile-containment guard (writes stay u
 
 ### Search / Filter Changes
 
-- Keep NZBHydra2 and Prowlarr behavior aligned where practical.
+- Keep NZBHydra2, Prowlarr, and direct-indexer behavior aligned where practical.
 - Preserve PTT parsing compatibility and avoid adding non-stdlib dependencies.
 - Add tests for ranking, filtering, and edge-case titles.
 
@@ -191,7 +197,7 @@ Prefer evidence first, restart second. If Kodi is actively wedged and logs are a
 
 ## CI/CD
 
-- CI runs on every push to `main` and PRs: `just lint` (ruff + black + pylint) and `just test` on Python 3.14, plus a `compat-3-8` job that `compileall`s the addon on Python 3.8.
+- CI runs on every push to `main` and PRs: `just lint` (ruff + black + pylint + vermin) and `just test` on Python 3.14, plus a `compat-3-8` job that `compileall`s the addon on Python 3.8.
 - Release workflow triggers on `v*` tags: runs tests, verifies `addon.xml` version matches the tag, builds the zip, creates a GitHub Release, and pings the external Appz4Fun Kodi repository to rebuild.
 - Add-on distribution lives in the external multi-channel Kodi repository at `https://github.com/Appz4Fun/Appz4Fun-Kodi-Repo` (served from its own Pages site). This repo no longer self-hosts a Kodi repository.
 - The Docs workflow (`pages.yml`) builds the MkDocs site from `docs-site/` and deploys it to GitHub Pages at `https://appz4fun.github.io/nzbdavkodi/`.

@@ -1,8 +1,10 @@
 # Playback, remux, and seeking
 
-Every playback request goes through a local HTTP proxy that NZB-DAV runs as a
-background service. Kodi talks only to this proxy on `127.0.0.1`, never directly
-to your WebDAV server. This design avoids a Kodi bug where scanning the parent
+On the nzbdav backend, every playback request goes through a local HTTP proxy
+that NZB-DAV runs as a background service. Kodi talks only to this proxy on
+`127.0.0.1`, never directly to your WebDAV server. (The
+[NZBGet backend](nzbget-backend.md) plays finished files straight from the
+completed folder instead.) This design avoids a Kodi bug where scanning the parent
 directory over WebDAV throws an `Open - Unhandled exception`, and it lets
 NZB-DAV add seeking, format handling, and recovery on top of the raw stream.
 

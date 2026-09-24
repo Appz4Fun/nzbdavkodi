@@ -93,8 +93,8 @@ details. You can enable more than one — results are merged and de-duplicated.
     2. Under **Popular Indexers**, turn on the ones you use (NZB.life / NZB.su,
        NZBGeek, NZBFinder, DrunkenSlug, NZBPlanet, DOGnzb) and enter each
        **API Key**. For any other Newznab indexer, fill in one of the three
-       **Custom Newznab Indexers** slots (name, API URL, API key). On beta
-       builds you can also use **Manage Indexers**.
+       **Custom Newznab Indexers** slots (name, API URL, API key), or use
+       **Manage Indexers** (beta builds) to pick from a longer preset list.
     3. Select **Test Direct Indexers**. It queries each enabled indexer's
        capabilities endpoint. It shows **Direct indexers OK: n/n** when all of
        them respond, or the first error when one fails.
@@ -128,12 +128,21 @@ key or a lookup fails, NZB-DAV falls back to the supplied ids or the title.
 
 ## Using NZBGet instead of nzbdav
 
-If you use NZBGet as your backend, fill in the **NZBGet** tab as well. Turn on
-**Use NZBGet instead of nzbdav for playback**, enter the NZBGet URL,
-credentials, and category, and set **Completed Folder (SMB or Local Path)**.
-Then run **Test NZBGet Connection** and **Test Completed Folder**. See
-[NZBGet backend](../features/nzbget-backend.md) for details. This is a beta
-feature. See [Prerequisites](prerequisites.md#optional-nzbget-instead-of-nzbdav).
+!!! info "Beta feature"
+    Added in 2.0.0-beta.1 — available on the [Beta channel](beta-channel.md).
+
+If you use NZBGet as your backend, fill in the **NZBGet** tab as well:
+
+1. Turn on **Use NZBGet instead of nzbdav for playback**.
+2. Enter the **NZBGet URL**, **NZBGet Username**, **NZBGet Password**, and
+   **NZBGet Category**.
+3. Set **Completed Folder (SMB or Local Path)** to NZBGet's completed-downloads
+   folder as Kodi sees it. An
+   [NFS hard mount](../features/nzbget-backend.md#recommended-mount-the-completed-folder-over-nfs)
+   is recommended over `smb://`.
+4. Run **Test NZBGet Connection** and **Test Completed Folder**.
+
+See [NZBGet backend](../features/nzbget-backend.md) for details.
 
 ## Next step
 

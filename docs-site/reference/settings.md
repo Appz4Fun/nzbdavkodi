@@ -40,7 +40,7 @@ credentials.
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
-| Enable NZBHydra2 | `nzbhydra_enabled` | `false` | Use NZBHydra2 as a search provider. |
+| Enable NZBHydra2 | `nzbhydra_enabled` | `false` | Use NZBHydra2 as a search provider. TMDBHelper playback honors this switch; NZB-DAV's own search menu and `plugin://` play URLs query NZBHydra2 even when it's off. |
 | NZBHydra2 URL | `hydra_url` | `http://localhost:5076` | Base URL of your NZBHydra2 instance. |
 | API Key | `hydra_api_key` | *(empty)* | NZBHydra2 API key. Stored hidden. |
 
@@ -86,7 +86,7 @@ after you enable the backend.
 | NZBGet Username | `nzbget_username` | `nzbget` | NZBGet control username. |
 | NZBGet Password | `nzbget_password` | *(empty)* | NZBGet control password. Stored hidden. |
 | NZBGet Category | `nzbget_category` | *(empty)* | Category to submit under; also used to locate the completed file. |
-| Completed Folder (SMB or Local Path) | `nzbget_smb_root` | *(empty)* | `smb://` URL or local/mounted path of NZBGet's completed-downloads base. |
+| Completed Folder (SMB or Local Path) | `nzbget_smb_root` | *(empty)* | `smb://` URL or local/mounted path of NZBGet's completed-downloads base. An [NFS hard mount](../features/nzbget-backend.md#recommended-mount-the-completed-folder-over-nfs) is recommended. |
 
 **Actions:** *Test NZBGet Connection*, *Test Completed Folder*.
 
@@ -158,16 +158,16 @@ See [Quality filtering](../features/quality-filtering.md) for the full options.
 
 ## Languages
 
-A separate tab after Quality Filters: 48 language toggles (`filter_arabic` …
-`filter_vietnamese`), plus **Other / Unknown Language**
-(`filter_unknown_language`). All default to `true`. Spanish includes Latino;
-Chinese also accepts Cantonese and Urdu under the configured grouping.
+A separate tab after Quality Filters: 48 language toggles, one per language
+(`filter_<language>`, from `filter_arabic` to `filter_vietnamese`), plus **Other / Unknown Language**
+(`filter_unknown_language`). All default to `true`. Spanish includes Latino.
+With **Chinese** enabled, releases tagged Cantonese or Urdu also pass.
 
 ## Keyword Filters
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
-| Preferred groups: Tier 1 / 2 / 3 | `filter_remux_tier_1`, `filter_remux_tier_2`, `filter_remux_tier_3` | TRaSH remux tiers 1/2/3 | Editable comma-separated group names; empty disables that tier. Relevance ranks Tier 1 before Tier 2, then Tier 3, for all releases after resolution, HDR, and REMUX priority. Ranking only — never hides a release. |
+| Preferred groups: Tier 1 / 2 / 3 | `filter_remux_tier_1`, `filter_remux_tier_2`, `filter_remux_tier_3` | TRaSH remux tiers 1/2/3 | Editable comma-separated group names; empty disables that tier. Under Relevance, Tier 1 groups rank above Tier 2, then Tier 3 (after resolution, HDR, and REMUX). Ranking only — never hides a release. |
 | Excluded release groups | `filter_exclude_release_group` | *(empty)* | Comma-separated groups to **remove**. Not shown as a field; edit it with *Configure Excluded Groups...*. |
 | Min size (MB, 0=no limit) | `filter_min_size` | `0` | Remove releases smaller than this. A size that can't be read counts as 0 MB. |
 | Max size (MB, 0=no limit) | `filter_max_size` | `0` | Remove releases larger than this. If max < min, the size filter is disabled. |
@@ -218,8 +218,8 @@ These drive the background playback monitor.
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
 | Auto-retry on stream failure | `stream_auto_retry` | `true` | Retry a failed stream automatically. |
-| Max retry attempts | `stream_max_retries` | `3` | How many times to retry. |
-| Retry delay (seconds) | `stream_retry_delay` | `5` | Wait between retries. |
+| Max retry attempts | `stream_max_retries` | `3` | How many times to retry. Clamped to 0–10. |
+| Retry delay (seconds) | `stream_retry_delay` | `5` | Wait between retries. Clamped to 1–300. |
 
 ### Fallback streams
 
@@ -238,8 +238,8 @@ See [Playback and remux](../features/playback-and-remux.md) and
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
-| Convert MP4 subtitles to SRT | `proxy_convert_subs` | `true` | Convert MP4 `mov_text` subtitles to SRT during remux so embedded subs survive. |
-| Force ffmpeg remux above (MB, 0=off) | `force_remux_threshold_mb` | `15000` | Size at which the chosen remux mode applies. `0` disables remux entirely (everything streams pass-through). |
+| Convert MP4 subtitles to SRT | `proxy_convert_subs` | `true` | During a Matroska remux, convert MP4 `mov_text` subtitles to SRT so embedded subs survive. MKV subtitle tracks are copied unchanged. |
+| Force ffmpeg remux above (MB, 0=off) | `force_remux_threshold_mb` | `15000` | Size at which the chosen remux mode applies to non-MP4 files. `0` turns size-based remux off, so those files always stream pass-through. No effect while the mode is Direct pass-through. |
 | Large non-MP4 stream mode | `force_remux_mode` | `0` (Direct pass-through) | `0` Direct pass-through (default, no ffmpeg), `1` fMP4 HLS (compatibility, experimental), `2` Matroska remux (compatibility). |
 
 ### Pass-through validation
@@ -252,7 +252,7 @@ See [Playback and remux](../features/playback-and-remux.md) and
 | Enable retry ladder before skip probe | `retry_ladder_enabled` | `true` | Re-issue the original range request with backoff on transient upstream errors before skip-filling. |
 | Max seconds to wait for a slow/stalled backend before giving up (0=off) | `passthrough_stall_wait` | `120` | For an established stream that stalls on a recoverable backend condition, hold the connection open up to this budget. `0` closes immediately. Clamped to 0–600. |
 | Read-ahead buffer size in MB (keeps filling while paused; 0=off) | `readahead_buffer_mb` | `256` | Per-session forward read-ahead prefetch. Keeps filling while paused. `0` disables. Clamped to 0–4096. |
-| Send 200 for no-range pass-through | `send_200_no_range` | `false` | Send `200 OK` instead of `206 Partial Content` when Kodi requests a full object. Off until validated on your build. |
+| Send 200 for no-range pass-through | `send_200_no_range` | `false` | Send `200 OK` instead of `206 Partial Content` when Kodi requests the whole file without a Range header. Leave off unless you've validated it on your build. |
 
 ### Hidden settings
 

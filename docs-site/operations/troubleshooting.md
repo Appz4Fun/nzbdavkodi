@@ -96,16 +96,20 @@ Check the search backend first:
 
 1. Confirm NZBHydra2, Prowlarr, or your direct indexers are reachable from the
    Kodi device.
-2. Run the matching test action: **Test NZBHydra Connection**, **Test Prowlarr
-   Connection**, or **Test Direct Indexers**. Each one shows a notification.
-   **… connection OK** means it works. **… unexpected response** usually means
-   a wrong API key. **… URL not configured** means the URL is empty.
-3. For Prowlarr, fill in **Prowlarr Indexer IDs (comma-separated)**. The
-   setting's help text says Prowlarr search needs it.
-4. Search results are cached for **Cache duration** (Advanced → Search Cache;
-   60 s by default). After you fix a
-   provider, open the NZB-DAV add-on and choose **Clear Cache**, then search
-   again.
+2. Run the matching test action and read the notification:
+    - **Test NZBHydra Connection** or **Test Prowlarr Connection**:
+      **… connection OK** means it works. **…: unexpected response** means
+      the server answered but didn't accept the request, often because of a
+      wrong API key. **… URL not configured** means the URL is empty. Any
+      other message is the connection error itself.
+    - **Test Direct Indexers**: **Direct indexers OK: n/n** means every
+      enabled indexer answered. **Direct indexers failed: …** names the first
+      failure.
+3. For Prowlarr, fill in **Prowlarr Indexer IDs (comma-separated)**. NZB-DAV
+   skips the Prowlarr search when it's empty.
+4. Search results are cached for **Cache duration** (Advanced → Search Cache,
+   default 60 s). After you fix a provider, open the NZB-DAV add-on, choose
+   **Clear Cache**, and search again.
 5. Try a popular movie or episode that you know has a Usenet release.
 
 If results were found but your filters rejected all of them, the picker opens
@@ -154,9 +158,9 @@ NZB-DAV needs both the nzbdav API credentials and the WebDAV credentials.
 1. Confirm **nzbdav URL** points to the nzbdav server.
 2. If WebDAV uses the same address as **nzbdav URL**, **clear the WebDAV URL**
    so NZB-DAV reuses the nzbdav URL. On 2.0.0 builds this field defaults to
-   `http://localhost:8080`. That address only works if Kodi can actually reach
-   WebDAV there, and this is the most common cause of WebDAV errors. (On 1.2.3
-   the field starts out empty.)
+   `http://localhost:8080` (on 1.2.3 it starts empty). Leaving that default in
+   place when Kodi can't reach WebDAV there is the most common cause of WebDAV
+   errors.
 3. If you use a separate WebDAV endpoint, confirm **WebDAV URL** points to it.
 4. Confirm the WebDAV **Username** and **Password** match nzbdav's WebDAV
    settings.
@@ -194,8 +198,7 @@ NZB-DAV needs both the nzbdav API credentials and the WebDAV credentials.
   one gets "Permission denied". Restarting Kodi resets that session. To avoid
   it altogether, mount the completed folder as an
   [NFS hard mount](../features/nzbget-backend.md#recommended-mount-the-completed-folder-over-nfs)
-  instead of using `smb://`.
-  `kodi.log` shows
+  instead of using `smb://`. `kodi.log` shows
   `NZB-DAV: video is listable but not readable through Kodi's VFS: …`.
 - **No video file found in completed folder**: check **NZBGet Category**.
   NZBGet puts completed downloads in a subfolder named after the category.
@@ -225,9 +228,9 @@ large-file edge cases.
    settings before you try the remux modes.
 5. For full seeking on large files, set Kodi's cache to `0`. See
    [advancedsettings.xml and seeking](../reference/advancedsettings.md). If a
-   remux starts and this setting is missing, NZB-DAV offers the snippet in a
-   dialog. It shows once per Kodi session, or never again if you choose
-   **Never ask**.
+   stream you start from TMDBHelper is remuxed and this setting is missing,
+   NZB-DAV shows the snippet in a dialog, at most once per Kodi session (or
+   never again if you choose **Never ask**). It never edits the file itself.
 6. Check `kodi.log` for proxy, WebDAV, ffmpeg, or fallback messages.
 
 Notifications during playback tell you what the proxy is doing:

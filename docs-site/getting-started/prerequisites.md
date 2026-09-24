@@ -10,7 +10,7 @@ of these components.
 |-----------|---------------|-------|
 | **Kodi 21 (Omega)** or later | A working Kodi install | Runs on CoreELEC, LibreELEC, OSMC, Windows, macOS, and Linux. |
 | **nzbdav** or **InfiniDysk** | A running, reachable [nzbdav](https://github.com/nzbdav-dev/nzbdav) instance, or its maintained fork [InfiniDysk](https://github.com/infinidysk/infinidysk) (recommended) | Accepts the NZB and serves the file over WebDAV for streaming. No separate download client is needed. (Beta builds can use NZBGet instead — see below.) |
-| **A Usenet provider** | Configured inside nzbdav | nzbdav connects to your news server; NZB-DAV never talks to Usenet directly. |
+| **A Usenet provider** | Configured in your backend (nzbdav, InfiniDysk, or NZBGet) | The backend connects to your news server. NZB-DAV never talks to Usenet directly. |
 | **At least one search provider** | **NZBHydra2**, **Prowlarr**, *or* **direct Newznab indexers** | You can enable more than one; results are merged. [NZBHydra2](https://github.com/theotherp/nzbhydra2) is recommended. See below. |
 | **TMDBHelper** | `plugin.video.themoviedb.helper` installed in Kodi | This is how you browse titles and trigger playback. |
 
@@ -18,13 +18,14 @@ of these components.
 
 NZB-DAV supports three provider types. Enable any combination:
 
-- **NZBHydra2** — a Newznab aggregator that fronts many indexers. Best if you
-  already run Hydra.
+- **NZBHydra2** (recommended) — a Newznab aggregator that fronts many
+  indexers. You set up your indexers once in Hydra instead of entering each
+  one in NZB-DAV, and every result still shows which indexer it came from.
 - **Prowlarr** — an alternative aggregator. NZB-DAV queries Prowlarr's native
   search API and keeps only Usenet (not torrent) results.
 - **Direct Newznab indexers** — connect straight to individual indexers
-  (NZBGeek, NZBFinder, NZBPlanet, DrunkenSlug, DOGnzb, NZB.su/NZB.life, and
-  more, plus custom entries). Use this when you don't run Hydra or Prowlarr.
+  (NZB.life / NZB.su, NZBGeek, NZBFinder, DrunkenSlug, NZBPlanet, DOGnzb,
+  and more, plus custom entries). Use this when you don't run Hydra or Prowlarr.
 
 You need only one of these to start. For details on how each behaves, see
 [Search and indexers](../features/search-and-indexers.md).
@@ -45,10 +46,12 @@ NZB-DAV can use **NZBGet** as the download and playback backend instead of
 nzbdav. In this mode NZB-DAV submits to NZBGet, waits for it to finish
 downloading and post-processing, and plays the finished file from NZBGet's
 completed-downloads folder. Kodi must be able to read that folder, either as an
-SMB share (`smb://…`) or as a local or mounted path (for example an NFS mount).
-You still need a search provider. nzbdav's WebDAV streaming and live stream
-fallback don't apply in NZBGet mode. NZBGet's own duplicate handling covers
-failover instead. See [NZBGet backend](../features/nzbget-backend.md).
+SMB share (`smb://…`) or as a local or mounted path. An
+[NFS hard mount](../features/nzbget-backend.md#recommended-mount-the-completed-folder-over-nfs)
+is recommended. You still need a search provider. nzbdav's WebDAV streaming and
+live stream fallback don't apply in NZBGet mode; NZBGet's own duplicate
+handling covers failover instead. See
+[NZBGet backend](../features/nzbget-backend.md).
 
 ## About dependencies
 

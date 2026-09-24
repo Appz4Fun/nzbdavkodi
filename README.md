@@ -10,14 +10,16 @@
 
 A Kodi 21 (Omega) player/resolver add-on that streams Usenet media through
 [TMDBHelper](https://github.com/jurialmunkey/plugin.video.themoviedb.helper). You
-browse a movie or TV episode in TMDBHelper, pick an NZB, and NZB-DAV searches
-your indexers, downloads through [nzbdav](https://github.com/nzbdav-dev/nzbdav),
-and streams the file — with a progress bar, seeking, and automatic recovery when
-a source goes bad. No manual NZB handling required.
+browse a movie or TV episode in TMDBHelper, NZB-DAV searches your indexers, you
+pick a release, and NZB-DAV streams it through
+[nzbdav](https://github.com/nzbdav-dev/nzbdav) or
+[InfiniDysk](https://github.com/infinidysk/infinidysk) — with a progress bar,
+seeking, and automatic recovery when a source goes bad. No manual NZB handling
+required. An optional download-first NZBGet backend is also available.
 
 > **This add-on provides software, not content.** You bring your own indexers
-> (NZBHydra2, Prowlarr, or direct Newznab), your own nzbdav server, and your own
-> Usenet provider.
+> (NZBHydra2, Prowlarr, or direct Newznab), your own nzbdav, InfiniDysk, or
+> NZBGet server, and your own Usenet provider.
 
 ## 📖 Full documentation
 
@@ -46,16 +48,19 @@ flowchart LR
     F -->|range requests, gap recovery| G[Kodi player]
 ```
 
-nzbdav handles both fetching and serving over WebDAV — no separate download
-client needed. A background stream proxy adds seeking, on-the-fly remuxing, and
-mid-playback source switching.
+nzbdav (or InfiniDysk) handles both fetching and serving over WebDAV — no
+separate download client needed. A background stream proxy adds seeking,
+on-the-fly remuxing, and mid-playback source switching. With the optional
+NZBGet backend, NZBGet downloads the whole file first and Kodi plays it from an
+SMB share or a local/mounted folder.
 
 ## Requirements
 
 | Component | Description |
 |-----------|-------------|
 | **Kodi 21 (Omega)** | Or later |
-| **nzbdav** or **InfiniDysk** | Running and reachable (submission API + WebDAV) |
+| **InfiniDysk** *(recommended)* or **nzbdav** | Running and reachable (submission API + WebDAV). InfiniDysk is the maintained nzbdav fork and uses the same settings |
+| **NZBGet** *(optional, instead of nzbdav)* | JSON-RPC API plus a completed folder Kodi can read |
 | **NZBHydra2**, **Prowlarr**, *or* **direct Newznab indexers** | At least one search provider |
 | **TMDBHelper** | To browse titles and trigger playback |
 | **ffmpeg** *(recommended)* | Enables the optional remux tiers; without it the proxy uses pass-through |
@@ -111,7 +116,9 @@ Full steps: [Install the add-on](https://appz4fun.github.io/nzbdavkodi/getting-s
 ## Quick setup
 
 1. Open **My add-ons → Video add-ons → NZB-DAV → Configure** and enter your
-   **nzbdav** URL + API key and **WebDAV** credentials. Use the **Test** actions.
+   **nzbdav** URL + API key and **WebDAV** credentials (InfiniDysk uses the same
+   fields). Use the **Test** actions. To use NZBGet instead, fill in the
+   **NZBGet** tab and enable **Use NZBGet instead of nzbdav for playback**.
 2. Enable a search provider and test it. [NZBHydra2](https://github.com/theotherp/nzbhydra2)
    is recommended over entering each indexer's API on the Indexers tab: it's
    easier to manage and highly configurable, and results still show which
@@ -167,6 +174,7 @@ and pure Python.
 just test          # Run the default unit test suite
 just lint          # ruff + black + pylint + vermin
 just lint-fix      # Auto-fix lint/format issues
+just ci            # lint + test + the Python 3.8 compile check CI runs
 just release       # Build plugin.video.nzbdav-<version>.zip
 just ship          # Test, then build the release zip
 just docs          # Build the documentation site into ./site (strict)

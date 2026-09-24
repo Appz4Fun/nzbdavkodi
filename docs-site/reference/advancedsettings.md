@@ -10,7 +10,7 @@ pass-through**, which offers native HTTP range seeking. Many CoreELEC and
 Amlogic devices run 32-bit Kodi builds, though. According to NZB-DAV's design
 notes, those builds can fail (`Open - Unhandled exception`) on pass-through
 streams whose advertised size is above roughly 4 GB, and disabling Kodi's
-in-memory cache avoids it. This is Kodi behaviour: NZB-DAV doesn't detect your
+in-memory cache avoids it. This is Kodi behavior: NZB-DAV doesn't detect your
 Kodi build or test for the problem.
 
 There are two ways around this:
@@ -86,6 +86,7 @@ was actually used, the cache isn't already `0`, and you haven't chosen
 NZB-DAV reads `special://profile/advancedsettings.xml` only to decide whether
 to show the prompt above (`kodi_advancedsettings.py`). It never writes to the
 file, and the result doesn't change how streams are served. The setting counts
-only when `<memorysize>` directly under `<cache>` is exactly `0`. After you restart Kodi, play a large title
-again. If it streams in pass-through with a working seek bar, the change took
-effect.
+only when `<memorysize>` directly under `<cache>` is exactly `0`.
+
+After you restart Kodi, play a large title again. If it streams in
+pass-through with a working seek bar, the change took effect.

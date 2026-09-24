@@ -24,9 +24,10 @@ Which build each channel serves right now:
 | Beta | **2.0.0-beta.2** | The 2.0.0 line: NZBGet backend, exact season-pack reuse, the rewritten settings, and more. See [Beta channel and beta features](beta-channel.md). |
 
 !!! note "This site documents the newest code"
-    These pages follow the `main` branch, which is ahead of the Stable
-    channel. Anything marked **Beta feature** needs the Beta channel. Changes
-    merged since the latest beta are listed under **Unreleased** in the
+    These pages follow the `main` branch, which can be ahead of both
+    channels. Anything marked **Beta feature** needs the Beta channel.
+    Changes on `main` that aren't in a release yet are listed under
+    **Unreleased** in the
     [changelog](https://github.com/Appz4Fun/nzbdavkodi/blob/main/CHANGELOG.md#unreleased--main).
 
 Pick **Stable** if you want the most-tested build. Pick **Beta** if you want
