@@ -59,8 +59,9 @@ tab.
   nzbdav connection settings.
 - **NZBGet is the most reliable option of all**, as long as you're willing to
   wait for the download to finish. The file is fully downloaded (and
-  par2-repaired when the release includes parity files) before playback
-  starts, so missing articles can't interrupt the stream.
+  par2-repaired when the release includes parity files and NZBGet's par check
+  is enabled) before playback starts, so missing articles can't interrupt the
+  stream.
 - If playback through nzbdav **drops out mid-stream**, especially with
   releases that often have broken articles, and you have a NAS or storage
   server, switching to NZBGet is highly recommended. NZBGet is the only
