@@ -30,7 +30,7 @@ These settings are in the **NZBGet Backend** group on the **NZBGet** tab:
 | **NZBGet Username** | `nzbget` | NZBGet control username. |
 | **NZBGet Password** | *(empty)* | NZBGet control password. |
 | **NZBGet Category** | *(empty)* | The category to submit under. NZB-DAV also uses it to find the completed file when it can't read NZBGet's own `DestDir`. |
-| **Completed Folder (SMB or Local Path)** | *(empty)* | NZBGet's completed-downloads base as Kodi sees it. This can be an SMB URL, for example `smb://server/downloads/completed`, or a local/mounted path such as an NFS mount, for example `/storage/downloads/completed`. |
+| **Completed Folder (SMB or Local Path)** | *(empty)* | NZBGet's completed-downloads base as Kodi sees it. This can be an SMB URL, for example `smb://server/downloads/completed`, or a local/mounted path such as an NFS mount, for example `/storage/nzbget/downloads`. An NFS hard mount is [recommended](#recommended-mount-the-completed-folder-over-nfs). |
 
 Use **Test NZBGet Connection** to check the control API. Use **Test Completed
 Folder** to check that Kodi can reach the completed folder. Playback fails with
@@ -48,6 +48,138 @@ toggle, connection fields, and the two test actions.
 To add: save it as docs-site/images/nzbget-settings.png, then replace this
 comment with:  ![NZBGet settings](../images/nzbget-settings.png)
 -->
+
+## Recommended: mount the completed folder over NFS
+
+!!! tip "Highly recommended, especially on CoreELEC"
+    For the most reliable playback, have your NAS export NZBGet's download
+    folder over **NFS**. Mount it on the Kodi device as a **hard NFS mount**,
+    and point **Completed Folder** at the local mount path instead of an
+    `smb://` URL.
+
+### Why not SMB
+
+An `smb://` completed folder goes through Kodi's built-in SMB client, which
+keeps a cached session to the server. That cache is a poor fit for NZBGet
+downloads. NZB-DAV looks for the video as soon as NZBGet reports success, and
+Kodi may probe a file while it is still being unpacked or moved. Kodi can then
+keep a stale, half-written view of that file. The finished file lists but won't
+open, often until you restart Kodi. NZB-DAV
+[checks that the file is readable](#how-it-works) before playback and
+tells you to restart Kodi when this happens, but it can't clear Kodi's SMB
+cache for you.
+
+A kernel NFS mount avoids that layer. The operating system does the file
+access, it picks up changes on the server correctly, and Kodi just reads a
+local path. A **hard** mount also waits and retries through a brief network or
+server hiccup instead of returning errors to the player. Kodi's own `nfs://`
+sources are better than SMB but still use Kodi's built-in client, so a
+system-level hard mount is the best option for streaming NZBGet downloads from
+another machine.
+
+### 1. Export the folder over NFS on your NAS
+
+On the storage server, share the folder that contains NZBGet's completed
+downloads over NFS, not only over SMB. Synology, TrueNAS, Unraid, and
+OpenMediaVault all have an NFS option in their share settings. On a plain Linux
+server, an `/etc/exports` line like this gives read-only access to your local
+network:
+
+```text
+/mnt/nzbget  192.168.1.0/24(ro,no_subtree_check)
+```
+
+Run `exportfs -ra` after editing `/etc/exports`.
+
+### 2. Create a systemd mount unit on CoreELEC
+
+CoreELEC's system partition is read-only, so you can't add a unit under `/etc`.
+Put your own units in **`/storage/.config/system.d/`**, the folder CoreELEC
+reads user units from:
+
+```console
+CoreELEC:~ # cd /storage/.config/system.d
+CoreELEC:~/.config/system.d # ls
+README                    nfs-mountd.service        rpcbind.service
+cifs.mount.sample         nfs.mount.sample          ...
+```
+
+systemd requires a mount unit's file name to match the path it mounts. Slashes
+become dashes, so a mount at `/storage/nzbget` must be named
+`storage-nzbget.mount`. Create
+`/storage/.config/system.d/storage-nzbget.mount`:
+
+```ini
+[Unit]
+Description=Mount NFS share 192.168.1.50:/mnt/nzbget
+Requires=network-online.service
+After=network-online.service
+Before=kodi.service
+
+[Mount]
+What=192.168.1.50:/mnt/nzbget
+Where=/storage/nzbget
+Type=nfs
+Options=ro,hard,timeo=30,retrans=2,noatime,nofail,nolock
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Replace `192.168.1.50:/mnt/nzbget` with your NAS address and export path.
+`Before=kodi.service` makes the share available before Kodi starts. The mount
+options do the following:
+
+| Option | Why |
+|--------|-----|
+| `ro` | Read-only. NZB-DAV only lists and reads files in the completed folder. |
+| `hard` | Retry indefinitely through a server or network blip instead of failing the read. |
+| `timeo=30,retrans=2` | Wait 3 seconds (the value is in tenths of a second) before retrying, with 2 retransmissions per cycle. |
+| `noatime` | Don't update access times on every read. |
+| `nofail` | Don't hold up boot if the NAS is offline. |
+| `nolock` | Skip NFS file locking, which a read-only playback mount doesn't need. |
+
+### 3. Enable and start the mount
+
+```console
+CoreELEC:~ # systemctl daemon-reload
+CoreELEC:~ # systemctl enable storage-nzbget.mount
+CoreELEC:~ # systemctl start storage-nzbget.mount
+CoreELEC:~ # systemctl status storage-nzbget.mount
+● storage-nzbget.mount - Mount NFS share 192.168.1.50:/mnt/nzbget
+     Loaded: loaded (/storage/.config/system.d/storage-nzbget.mount; enabled; preset: disabled)
+     Active: active (mounted) since Wed 2026-09-23 09:17:09 CDT; 11h ago
+      Where: /storage/nzbget
+       What: 192.168.1.50:/mnt/nzbget
+```
+
+Once enabled, the share mounts automatically on every boot.
+
+### 4. Point NZB-DAV at the mount
+
+**Completed Folder** must be the Kodi-side path of NZBGet's completed-downloads
+folder, NZBGet's `DestDir` setting (**Settings → Paths**). For example, if
+NZBGet saves to `/mnt/nzbget/downloads` on the server and you mounted
+`/mnt/nzbget` at `/storage/nzbget`, that folder is `/storage/nzbget/downloads`.
+
+1. Check that the folder exists on the Kodi device and contains your completed
+   NZBGet downloads:
+
+    ```console
+    CoreELEC:~ # ls /storage/nzbget/downloads
+    ```
+
+2. On the **NZBGet** tab, set **Completed Folder (SMB or Local Path)** to
+   `/storage/nzbget/downloads`.
+3. Run **Test Completed Folder**.
+
+NZB-DAV maps each job's `DestDir` onto this folder, including any category
+subfolders. Playback then reads straight from the NFS mount.
+
+!!! note "LibreELEC and other Linux systems"
+    LibreELEC uses the same `/storage/.config/system.d/` folder. On a regular
+    Linux install, put the unit in `/etc/systemd/system/` or add an equivalent
+    `/etc/fstab` entry with the same options.
 
 ## How it works
 

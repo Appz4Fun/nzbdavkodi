@@ -191,7 +191,10 @@ NZB-DAV needs both the nzbdav API credentials and the WebDAV credentials.
   After a download, NZB-DAV keeps trying to read the file for up to 60 seconds
   before it gives up. A file that stays unreadable is usually Kodi's cached SMB
   session going stale: new SMB sessions can read the file, but Kodi's cached
-  one gets "Permission denied". Restarting Kodi resets that session.
+  one gets "Permission denied". Restarting Kodi resets that session. To avoid
+  it altogether, mount the completed folder as an
+  [NFS hard mount](../features/nzbget-backend.md#recommended-mount-the-completed-folder-over-nfs)
+  instead of using `smb://`.
   `kodi.log` shows
   `NZB-DAV: video is listable but not readable through Kodi's VFS: …`.
 - **No video file found in completed folder**: check **NZBGet Category**.
