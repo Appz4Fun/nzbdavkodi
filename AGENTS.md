@@ -29,7 +29,10 @@ Follow these rules before making code, release, or deployment changes:
 These must stay true or Kodi playback, shutdown, or updates can break:
 
 - Every resolvable plugin route (`/play`, `/direct_play`, and `resolver.resolve(handle, ...)`) must call `xbmcplugin.setResolvedUrl(...)` on every path: success with `True`, failure or cancellation with `False`.
-- Handle-less playback paths (the TMDBHelper `RunScript(addon.py,tmdb_play,...)` player, the `/resolve` and `/resolve-v2` routes, `/search` after it closes its directory with `endOfDirectory`, and `resolve_and_play`) have no plugin handle: they start playback with `xbmc.Player().play(...)` and must notify the user and clean up on failure instead of calling `setResolvedUrl`. The NZBGet backend has both variants and follows whichever entry path invoked it.
+- Handle-less playback paths have no plugin handle. They are the TMDBHelper `RunScript(addon.py,tmdb_play,...)` player, `/resolve`, `/resolve-v2`, `/search` (after `endOfDirectory`), and `resolve_and_play`.
+- Handle-less paths start playback with `xbmc.Player().play(...)` instead of `setResolvedUrl`.
+- On failure, handle-less paths notify the user and clean up. If a change deliberately revises this, update the tests to match.
+- The NZBGet backend supports both kinds of entry path.
 - Kodi polling loops must use `xbmc.Monitor.waitForAbort()` instead of `time.sleep()` so Kodi can shut down cleanly.
 - Settings must be defined in `resources/settings.xml` and read through `xbmcaddon.Addon().getSetting(...)`.
 - The stream proxy must preserve HTTP Range behavior; seeking depends on it.
@@ -96,13 +99,13 @@ Use `pr_agent_context.py` when starting a PR review or addressing comments from 
 
 ## Architecture Snapshot
 
-NZB-DAV Kodi addon (`plugin.video.nzbdav`) is a player/resolver for Kodi 21. It searches NZBHydra2, Prowlarr, and/or direct Newznab indexers, submits the selected NZB to a backend, waits until the file is playable, then plays it through Kodi. It registers as a TMDBHelper player.
+NZB-DAV (`plugin.video.nzbdav`) is a player/resolver add-on for Kodi 21. It searches NZBHydra2, Prowlarr, or direct Newznab indexers for NZB files (Usenet download manifests). It submits the chosen NZB to a backend and plays the file once it's ready. It also registers as a TMDBHelper player.
 
 External services:
 
 - **NZBHydra2 / Prowlarr / direct Newznab indexers**: NZB search
 - **nzbdav or InfiniDysk** (default streaming backend): SABnzbd-compatible API for NZB submission plus WebDAV streaming
-- **NZBGet** (optional download-first backend): JSON-RPC API; the finished file is played from an SMB share or a local/mounted folder
+- **NZBGet** (optional download-first backend): JSON-RPC (remote procedure call) API; the finished file is played from an SMB (Windows/Samba file sharing) share or a local/mounted folder
 - **This addon**: TMDBHelper -> search -> filter -> submit -> poll -> proxy -> Kodi playback
 
 Flow (TMDBHelper player, the default path):
@@ -123,7 +126,9 @@ TMDBHelper RunScript(addon.py,tmdb_play,...)
 -> xbmc.Player().play(...) starts playback   (no plugin handle on this path)
 ```
 
-The resolvable `plugin://` `/play` route runs the same search and submit pipeline but finishes with `xbmcplugin.setResolvedUrl(...)`. `/direct_play` is a separate diagnostic entry path: it receives a `primary_url` (plus optional fallback URLs), validates it, and hands the proxy URL to Kodi; it shares only the `setResolvedUrl` completion with `/play`, not the search/submit pipeline.
+The resolvable `plugin://` `/play` route runs the same pipeline. It finishes with `xbmcplugin.setResolvedUrl(...)` instead.
+
+`/direct_play` is a separate diagnostic entry path. It validates a `primary_url` (plus optional fallback URLs) and hands Kodi the proxy URL. It shares only the `setResolvedUrl` completion with `/play`.
 
 The background service (`service.py`) runs `StreamProxy`. MP4 sources may be rewritten or remuxed to avoid Kodi/CoreELEC cache and moov-atom issues. MKV and other formats are proxied directly with Range request support unless the user enables force-remux settings.
 
@@ -135,7 +140,7 @@ The background service (`service.py`) runs `StreamProxy`. MP4 sources may be rew
 - `http_util.py` owns shared `http_get()` and `notify()` helpers.
 - PTT is vendored with `regex` replaced by `re` and `arrow` replaced by `datetime`.
 - Some PTT regex patterns can trigger `FutureWarning` on newer Python. Escape `[` inside character classes when fixing them.
-- Test/lint tooling runs on Python 3.14 with exact pins in `requirements-dev.txt` (pytest, pytest-cov, pylint, ruff, black, vermin) executed via uv, even though addon runtime code must remain Python 3.8 compatible.
+- Test and lint tooling runs on Python 3.14 via uv, with exact pins in `requirements-dev.txt` (pytest, pytest-cov, pylint, ruff, black, vermin). Addon runtime code still targets Python 3.8; see the Agent Contract.
 
 ## When In Doubt
 
