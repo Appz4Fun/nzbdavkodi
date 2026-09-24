@@ -16,19 +16,17 @@ Only three areas are active right now:
 
 Follow-ups from the Lizard complexity campaign (PR #388, the #378-#387 rollup).
 The shipped library is done (0 cloud Lizard findings); everything below is
-merge logistics, tests, or scripts.
+post-merge checks, tests, or scripts.
 
-- Merge PR #388, then delete the seven stale superseded branches
-  (`refactor/lizard-a1-fingerprint-cfg` … `a4`, `chore/lizard-reenable-cloud-gate`,
-  `refactor/mega-simplicity-rollup`, `refactor/trim-resolver-fallback-nloc`).
-- Sanity-check the first Codacy cloud analysis of `main` after the merge
+- Sanity-check the first Codacy cloud analysis of `main` after the #388 merge
   (expected clean: shipped lib gauges at 0 findings, and the two accepted
   CCN-9s sit below the cloud's >10 ccn threshold).
 - C1 wave: consolidate test fixtures (43 Lizard parameter-count findings in
-  `tests/`); then remove the module-level R0913 disables from
+  `tests/`); then remove the module-level
+  `too-many-arguments,too-many-positional-arguments` pylint disables from
   `tests/test_resolver.py` and `tests/test_router.py`.
 - C2 wave: split the giant test files (13 file-nloc findings;
-  `tests/test_stream_proxy.py` alone is 12.3k lines).
+  `tests/test_stream_proxy.py` alone is ~16.7k lines).
 - D wave: reduce the 7 Lizard findings in `scripts/`.
 - De-flake the two load-sensitive picker-hint timing tests
   (`test_resolve_uses_picker_completed_job_hint_without_history_lookup`,
@@ -38,18 +36,25 @@ merge logistics, tests, or scripts.
 
 ## Tooling Gaps
 
-- Add a local Python 3.10 + 3.12 test matrix, or document why CI-only is enough.
-- Add a true Python 3.8 import/runtime check, or keep relying on `.pylintrc` `py-version=3.8`.
+- Tests run only on Python 3.14 (locally and in CI). Add a 3.10 + 3.12 test
+  matrix, or document why 3.14 plus the 3.8 floor gates is enough.
+- The 3.8 floor is checked at parse level only (`vermin` in `just lint`, plus
+  `compileall` in `just compat-3-8` and the CI `compat-3-8` job). Add a true
+  Python 3.8 import/runtime check, or document why parse-level is enough.
 
 ## Future Bug-Hunt Seeds
 
-- `_retry_original_range` may retry already-written byte boundaries.
-- `HlsProducer.prepare()` may accept a file before ffmpeg has fully flushed it.
+- `_retry_original_range` (`stream_proxy_handler_proxyserve2.py`) may retry already-written byte boundaries.
+- `HlsProducer.prepare()` (`stream_proxy_hls_ffmpeg.py`) may accept a file before ffmpeg has fully flushed it (it only checks that `init.mp4` and `seg_000000.m4s` exist).
 - Force-quit during submit can orphan an nzbdav job.
 - Metadata filters may be too permissive when PTT cannot parse a release title.
 - WebDAV 401/403/5xx handling should stay typed and visible, not collapsed to "not found".
 - Session/window-property races should be reviewed before larger concurrency changes.
-- NZBGet Smart Duplicates (#372) round 2 — SHIPPED (poll follows the DupeKey group, cancel cleans it up, succeeded members are reused, candidates widened). Round-2 review hardening also landed: the promotion scan excludes the just-failed NZBID (NZBGet's non-atomic queue→history overlap no longer re-selects the failed pick as its own promotion and hangs the poll); the cancel path re-sweeps the group once the worker drains (closes the in-flight-append-survives-cancel race); and the backup widening builds its loader with the thread-safe `_get_script_setting` so the worker never calls `xbmcaddon.getSetting` off-thread. Round 4 (review closeout): DupeScores now ride on a minutes-since-epoch base (`_dupe_score_base`) so a replay whose files are gone outranks the prior SUCCESS and re-downloads instead of being dupe-deleted into a failed play; NZBHydra-collapsed single-row picks submit a loader-only fleet (`_loader_only_dupe_submission`); and group-follow snapshots pre-existing same-key SUCCESS ids at poll start and excludes them, so a stale success with cleaned files can't fail the failover. Remaining nuances worth a later pass: (a) the poll's group-follow uses a fixed `_PROMOTION_GRACE` (20s) window rather than reading NZBGet's hidden `Kind=DUP` history to know precisely when the group is exhausted (the grace waits for the backup submitter and holds on a paused promotion, but the exhaustion signal itself is still time-based); (b) RESOLVED in round 4: backups now submit under their own undecorated release title, so a promoted backup's SUCCESS row matches the picker's exact-name DL-tag lookup and replays reuse its files instead of re-downloading. Round 6 (live-box root cause): NZBGet has a SECOND, content-fingerprint duplicate check (separate from our DupeKey handling) that silently vetoes ANY re-submission of content it has seen before (`WARNING Skipping duplicate <name>, found in history with exactly same content`), landing the item straight in history as `DELETED/COPY` with zero bytes — never entering the queue, so the promotion machinery (which only sees actively-queued siblings) is blind to it and the resolve just burns the grace window. Fixed by a REACTIVE one-shot FORCE rescue: when the pick dies `DELETED/COPY` and the group is otherwise exhausted, the poll re-appends the pick once with `DupeMode=FORCE` (which overrides the content check) and tracks the new NZBID in the same poll; the backup worker additionally treats a COPY-vetoed backup as an unfilled fleet slot and backfills it from the loader-extras pool. Reactive, not preemptive — FORCE from the start would defeat every legitimate dupe protection. Same recovery covers the plain (no-fleet) submit path. New user-facing string 30231 is shown only when the rescue itself can't be performed. Remaining nuance (a) about the time-based `_PROMOTION_GRACE` exhaustion signal still stands, though the COPY branch now uses a short `_COPY_VETO_GRACE` since no server-side promotion can come from a pick that never queued.
+- NZBGet Smart Duplicates (#372): the poll's group-follow still decides the
+  DupeKey group is exhausted with a fixed time window (`_PROMOTION_GRACE`, 20 s,
+  in `nzbget_resolver.py`; the `DELETED/COPY` veto path uses the shorter
+  `_COPY_VETO_GRACE`) instead of reading NZBGet's hidden `Kind=DUP` history to
+  know precisely when no promotion can follow.
 
 ## Backburner
 

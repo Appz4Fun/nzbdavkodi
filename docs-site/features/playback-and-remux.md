@@ -29,7 +29,7 @@ flowchart TD
     B -->|MP4 moov at tail| D[Virtual faststart<br/>pure-Python rewrite]
     B -->|MKV / other| E{Large non-MP4 stream mode<br/>+ size vs threshold}
     E -->|Pass-through default| F[Byte pass-through<br/>native seeking + gap recovery]
-    E -->|Matroska remux| G[ffmpeg -c copy pipe<br/>approximate seek]
+    E -->|Matroska remux| G[ffmpeg -c copy pipe<br/>cache-bounded seek]
     E -->|fMP4 HLS| H[HLS VOD, full random seek<br/>DV-gated]
     D -->|parse fails| T[ffmpeg temp-file faststart<br/>files up to 4 GB]
     T -->|too large or fails| G

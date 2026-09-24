@@ -20,8 +20,9 @@ There are two ways around this:
 - **Leave the cache as it is** and set **Large non-MP4 stream mode** (Advanced
   tab) to a remux tier. NZB-DAV then serves large files through ffmpeg as an
   unsized stream, which hides the true file size from Kodi:
-    - **Matroska remux** works, but seeking is **bounded**. A seek restarts
-      ffmpeg at an approximate position.
+    - **Matroska remux** works, but seeking is **bounded** to what Kodi has
+      already buffered. The pipe has no byte ranges, and ffmpeg isn't
+      restarted at a new position.
     - **fMP4 HLS** gives full random seeking, but it's experimental and gated
       on Dolby Vision profile. See
       [Playback, remux, and seeking](../features/playback-and-remux.md#dolby-vision-handling).
