@@ -20,7 +20,7 @@ Your links to nzbdav, WebDAV, and your search providers.
 
 | Setting | id | Default | Description |
 |---------|----|---------|-------------|
-| nzbdav URL | `nzbdav_url` | `http://localhost:3000` | Base URL of your nzbdav server (SABnzbd-compatible API). |
+| nzbdav URL | `nzbdav_url` | `http://localhost:3000` | Base URL of your nzbdav or InfiniDysk server. |
 | API Key | `nzbdav_api_key` | *(empty)* | nzbdav API key, from **Settings → Usenet → API Key** in nzbdav. Stored hidden. |
 
 **Action:** *Test nzbdav Connection* — verifies the URL and API key.

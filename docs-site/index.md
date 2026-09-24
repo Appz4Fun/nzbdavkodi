@@ -32,8 +32,8 @@ flowchart LR
     F -->|HTTP range, seeking,<br/>gap recovery| G[Kodi player]
 ```
 
-nzbdav handles both downloading and serving over WebDAV, so you don't need a
-separate SABnzbd instance. A background stream proxy inside the add-on gives you
+nzbdav handles both fetching and serving over WebDAV, so you don't need a
+separate download client. A background stream proxy inside the add-on gives you
 seeking, on-the-fly remuxing, and mid-playback source switching.
 
 ## Choose a backend
@@ -52,8 +52,8 @@ tab.
 **Which one should I use?**
 
 - **InfiniDysk** is recommended over nzbdav if you want to stream. It's the
-  maintained fork of nzbdav, with the same WebDAV server and SABnzbd-compatible
-  API, so it's a drop-in replacement: NZB-DAV connects to it through the same
+  maintained fork of nzbdav, with the same WebDAV server and API, so it's a
+  drop-in replacement: NZB-DAV connects to it through the same
   nzbdav connection settings.
 - **NZBGet is the most reliable option of all**, as long as you're willing to
   wait for the download to finish. The file is complete and parity-checked
@@ -61,7 +61,8 @@ tab.
 - If playback through nzbdav **drops out mid-stream**, especially with
   releases that often have broken articles, and you have a NAS or storage
   server, switching to NZBGet is highly recommended. NZBGet is the only
-  download-first client NZB-DAV supports.
+  download-first client NZB-DAV supports; it talks to NZBGet through NZBGet's
+  JSON-RPC API.
 
 See [NZBGet backend](features/nzbget-backend.md) for setup.
 

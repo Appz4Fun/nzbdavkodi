@@ -46,8 +46,8 @@ flowchart LR
     F -->|range requests, gap recovery| G[Kodi player]
 ```
 
-nzbdav handles both downloading and serving over WebDAV — no separate SABnzbd
-needed. A background stream proxy adds seeking, on-the-fly remuxing, and
+nzbdav handles both fetching and serving over WebDAV — no separate download
+client needed. A background stream proxy adds seeking, on-the-fly remuxing, and
 mid-playback source switching.
 
 ## Requirements
@@ -55,7 +55,7 @@ mid-playback source switching.
 | Component | Description |
 |-----------|-------------|
 | **Kodi 21 (Omega)** | Or later |
-| **nzbdav** | Running and reachable (SABnzbd-compatible API + WebDAV) |
+| **nzbdav** or **InfiniDysk** | Running and reachable (submission API + WebDAV) |
 | **NZBHydra2**, **Prowlarr**, *or* **direct Newznab indexers** | At least one search provider |
 | **TMDBHelper** | To browse titles and trigger playback |
 | **ffmpeg** *(recommended)* | Enables the optional remux tiers; without it the proxy uses pass-through |
