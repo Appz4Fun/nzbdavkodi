@@ -111,10 +111,12 @@ stream URL changes each session.
 
 ## One-time seeking setup for large files
 
-The first time NZB-DAV needs the remux tier for a large file, it may show a
-dialog about `advancedsettings.xml`. Setting Kodi's cache memory size to `0`
-lets large files stream in direct pass-through mode with full seeking. This is
-optional but recommended on low-memory or 32-bit devices. See
+If a stream you started from TMDBHelper is served through an ffmpeg remux,
+NZB-DAV may show a dialog about `advancedsettings.xml`, at most once per Kodi
+session. It suggests setting Kodi's cache memory size to `0` so large files can
+use pass-through with full seeking on 32-bit Kodi builds. NZB-DAV only reads
+that file to decide whether to show the dialog. It never edits it or changes
+modes based on it. See
 [advancedsettings.xml and seeking](../reference/advancedsettings.md) for the
 exact steps.
 

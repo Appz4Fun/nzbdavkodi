@@ -62,5 +62,6 @@ were added in 2.0.0-beta.1 and are available on the
 
 The one Kodi-side change NZB-DAV itself recommends is in
 `advancedsettings.xml`: set `<cache><memorysize>0</memorysize></cache>` so
-large files can play in pass-through mode with full seeking. See
+large files can play in pass-through mode with full seeking on 32-bit Kodi
+builds. NZB-DAV only suggests this in a dialog; it never edits the file. See
 [advancedsettings.xml and seeking](../reference/advancedsettings.md).

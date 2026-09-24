@@ -7,16 +7,17 @@ the in-memory cache size. This page explains why and how to set it.
 
 NZB-DAV's default serving mode for large non-MP4 files is **direct
 pass-through**, which offers native HTTP range seeking. Many CoreELEC and
-Amlogic devices run 32-bit Kodi builds, though. In those builds, Kodi's
-file-cache layer has a signed 32-bit offset bug. When a file's advertised size
-is large (roughly above 4 GB), offsets through that cache are miscalculated
-and playback or seeking fails.
+Amlogic devices run 32-bit Kodi builds, though. According to NZB-DAV's design
+notes, those builds can fail (`Open - Unhandled exception`) on pass-through
+streams whose advertised size is above roughly 4 GB, and disabling Kodi's
+in-memory cache avoids it. This is Kodi behaviour: NZB-DAV doesn't detect your
+Kodi build or test for the problem.
 
 There are two ways around this:
 
 - **Set Kodi's cache memory size to `0`** with
-  `<cache><memorysize>0</memorysize></cache>`. Pass-through then streams with
-  **full seeking** at any size.
+  `<cache><memorysize>0</memorysize></cache>`. Per NZB-DAV's design notes,
+  pass-through then plays these files with **full seeking**.
 - **Leave the cache as it is** and set **Large non-MP4 stream mode** (Advanced
   tab) to a remux tier. NZB-DAV then serves large files through ffmpeg as an
   unsized stream, which hides the true file size from Kodi:
@@ -63,11 +64,12 @@ existing file could overwrite your other settings. You add the entry yourself.
 
 ## The in-app prompt
 
-When a stream is served through an ffmpeg remux, this setting could let the
-file play in full-seek pass-through instead. NZB-DAV then shows a dialog that
-explains this, after playback has started. A remux happens when you've chosen
-a remux tier, or when an MP4 needed the ffmpeg remux rescue. The dialog offers
-three choices:
+When a stream is served through an ffmpeg remux, NZB-DAV may show a dialog,
+after playback has started, suggesting this setting so the file could play in
+full-seek pass-through instead. A remux happens when you've chosen a remux tier,
+or when an MP4 needed the ffmpeg remux rescue. The dialog comes only from
+playback started through TMDBHelper; plugin-URL playback doesn't show it. It
+offers three choices:
 
 | Choice | Effect |
 |--------|--------|
@@ -81,8 +83,9 @@ was actually used, the cache isn't already `0`, and you haven't chosen
 
 ## Verifying
 
-NZB-DAV detects the setting by reading `special://profile/advancedsettings.xml`.
-It never writes to the file. The setting counts only when `<memorysize>` directly
-under `<cache>` is exactly `0`. After you restart Kodi, play a large title
+NZB-DAV reads `special://profile/advancedsettings.xml` only to decide whether
+to show the prompt above (`kodi_advancedsettings.py`). It never writes to the
+file, and the result doesn't change how streams are served. The setting counts
+only when `<memorysize>` directly under `<cache>` is exactly `0`. After you restart Kodi, play a large title
 again. If it streams in pass-through with a working seek bar, the change took
 effect.

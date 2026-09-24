@@ -81,14 +81,17 @@ it can't determine. That's safer than serving an unsized pass-through.
 
 ### Full seeking on large files
 
-On 32-bit Kodi, direct pass-through supports full seeking on large files only
-if Kodi's in-memory cache size is set to `0`. Add
-`<cache><memorysize>0</memorysize></cache>` to `advancedsettings.xml` to do this.
-Without it, seeking on large files is limited on 32-bit Kodi. The default mode
-stays pass-through and does **not** switch to remux on its own. For a bounded-seek
-remux instead, set **Large non-MP4 stream mode** to a remux tier. The first time
-a stream is served through an ffmpeg remux, NZB-DAV asks whether you want to set
-the cache to `0`. See
+NZB-DAV's design notes say that some 32-bit Kodi builds (common on
+CoreELEC/Amlogic devices) fail on pass-through streams larger than about 4 GB
+unless Kodi's in-memory cache is disabled with
+`<cache><memorysize>0</memorysize></cache>` in `advancedsettings.xml`. NZB-DAV
+doesn't test for this and doesn't act on it. It never writes
+`advancedsettings.xml`, and the **Large non-MP4 stream mode** setting alone
+decides between pass-through and remux. The only use of the file is a read-only
+check that controls an advisory dialog. When a stream you started from
+TMDBHelper is served through an ffmpeg remux and the cache isn't already `0`,
+NZB-DAV shows the dialog at most once per Kodi session (unless you choose
+**Never ask**). See
 [advancedsettings.xml and seeking](../reference/advancedsettings.md).
 
 ## Dolby Vision handling
