@@ -46,6 +46,16 @@ def _minimal_mp4(sample_bytes):
     return bytes(file_bytes)
 
 
+def _minimal_mp4_with_stbl(stbl_children):
+    ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
+    hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
+    stbl = _box(b"stbl", stbl_children)
+    minf = _box(b"minf", stbl)
+    mdia = _box(b"mdia", hdlr + minf)
+    moov = _box(b"moov", _box(b"trak", mdia))
+    return ftyp + moov
+
+
 class _MockResponse:
     def __init__(self, data):
         self._data = data
@@ -432,3 +442,481 @@ def test_http_range_strips_crlf_from_auth_header():
         )
 
     assert captured_headers.get("authorization") == "Basic abcEvil-Header: pwn"
+
+
+# --- Extra MP4 Parsing Edge Cases ---
+
+
+def test_iter_boxes_truncation():
+    from resources.lib.dv_source import _iter_boxes
+
+    # Test offset + total_size > end
+    # a box of size 10, but end is 9
+    data = struct.pack(">I", 10) + b"test" + b"xx"
+    boxes = list(_iter_boxes(data, 0, 9))
+    assert len(boxes) == 0
+
+    # Test read_box_header returning None (invalid size)
+    data = (
+        struct.pack(">I", 1) + b"test" + struct.pack(">Q", 0)
+    )  # total size 0 is invalid for our probe or let's say total_size < 8
+    boxes = list(_iter_boxes(data, 0, len(data)))
+    assert len(boxes) == 0
+
+
+def test_split_length_prefixed_nals_edge_cases():
+    from resources.lib.dv_source import _split_length_prefixed_nals
+
+    # nal_length_size == 2
+    sample_16 = struct.pack(">H", 4) + b"1234"
+    assert list(_split_length_prefixed_nals(sample_16, 2)) == [b"1234"]
+
+    # nal_length_size == 1
+    sample_8 = b"\x041234"
+    assert list(_split_length_prefixed_nals(sample_8, 1)) == [b"1234"]
+
+    # Unsupported width reads a one-byte size but still advances by the
+    # caller-provided width, so this malformed sample yields no complete NAL.
+    sample_invalid_len = b"\x04123"
+    assert not list(_split_length_prefixed_nals(sample_invalid_len, 3))
+
+    # out of bounds size
+    sample_oob = struct.pack(">H", 10) + b"1234"
+    assert not list(_split_length_prefixed_nals(sample_oob, 2))
+
+    # zero size
+    sample_zero = struct.pack(">H", 0) + b"1234"
+    assert not list(_split_length_prefixed_nals(sample_zero, 2))
+
+
+def test_find_stbl_missing_boxes():
+    from resources.lib.dv_source import _find_first_video_stbl
+
+    # Missing moov
+    assert _find_first_video_stbl(b"abcd") is None
+
+    # moov present but no trak
+    moov_no_trak = _box(b"moov", _box(b"udta", b""))
+    assert _find_first_video_stbl(moov_no_trak) is None
+
+    # trak but not 'trak'
+    moov_fake_trak = _box(b"moov", _box(b"truk", b""))
+    assert _find_first_video_stbl(moov_fake_trak) is None
+
+    # trak present but missing mdia
+    moov_no_mdia = _box(b"moov", _box(b"trak", b""))
+    assert _find_first_video_stbl(moov_no_mdia) is None
+
+    # mdia present but missing hdlr
+    moov_no_hdlr = _box(b"moov", _box(b"trak", _box(b"mdia", b"")))
+    assert _find_first_video_stbl(moov_no_hdlr) is None
+
+    # hdlr present but not vide
+    hdlr_audio = _fullbox(b"hdlr", b"\x00" * 4 + b"soun" + b"\x00" * 12)
+    moov_audio_hdlr = _box(b"moov", _box(b"trak", _box(b"mdia", hdlr_audio)))
+    assert _find_first_video_stbl(moov_audio_hdlr) is None
+
+    # hdlr is vide but missing minf
+    hdlr_vide = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
+    moov_no_minf = _box(b"moov", _box(b"trak", _box(b"mdia", hdlr_vide)))
+    assert _find_first_video_stbl(moov_no_minf) is None
+
+    # minf present but missing stbl
+    moov_no_stbl = _box(
+        b"moov", _box(b"trak", _box(b"mdia", hdlr_vide + _box(b"minf", b"")))
+    )
+    assert _find_first_video_stbl(moov_no_stbl) is None
+
+
+def test_read_chunk_offset_edge_cases():
+    from resources.lib.dv_source import _read_chunk_offset
+
+    stbl_empty = b""
+    assert _read_chunk_offset(stbl_empty, 0, len(stbl_empty)) is None
+
+    # stco truncated body
+    stco_trunc = _box(b"stco", b"123")
+    assert _read_chunk_offset(stco_trunc, 0, len(stco_trunc)) is None
+
+    # stco count < 1 with enough body bytes to reach the count check
+    stco_zero = _fullbox(b"stco", struct.pack(">II", 0, 0))
+    assert _read_chunk_offset(stco_zero, 0, len(stco_zero)) is None
+
+    # co64 truncated body
+    co64_trunc = _box(b"co64", b"1234567")
+    assert _read_chunk_offset(co64_trunc, 0, len(co64_trunc)) is None
+
+    # co64 count < 1 with enough body bytes to reach the count check
+    co64_zero = _fullbox(b"co64", struct.pack(">I", 0) + struct.pack(">Q", 0))
+    assert _read_chunk_offset(co64_zero, 0, len(co64_zero)) is None
+
+
+def test_extract_mp4_first_sample_stsz_edge_cases():
+
+    stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
+    stsc = _fullbox(b"stsc", struct.pack(">I", 1) + struct.pack(">III", 1, 1, 1))
+    stco = _fullbox(b"stco", struct.pack(">I", 1) + struct.pack(">I", 512))
+
+    def make_mp4(stsz):
+        return _minimal_mp4_with_stbl(stsd + stsz + stsc + stco)
+
+    # missing stsz
+    mp4_no_stsz = _minimal_mp4_with_stbl(stsd + stsc + stco)
+
+    mock1 = _mock_urlopen_from_file(mp4_no_stsz)
+    with patch("resources.lib.dv_source.urlopen", side_effect=mock1), patch(
+        "resources.lib.mp4_parser.urlopen", side_effect=mock1
+    ):
+        r1 = probe_dolby_vision_source("http://host/1.mp4", auth_header=None)
+    assert r1.classification == "dv_unknown"
+    assert r1.reason == "mp4_sample_extraction_failed"
+
+    # stsz body too small (<12)
+    stsz_trunc = _box(
+        b"stsz", b"\x00" * 8
+    )  # fullbox header is 4, then 4 bytes = 8 body
+    mock2 = _mock_urlopen_from_file(make_mp4(stsz_trunc))
+    with patch("resources.lib.dv_source.urlopen", side_effect=mock2), patch(
+        "resources.lib.mp4_parser.urlopen", side_effect=mock2
+    ):
+        r2 = probe_dolby_vision_source("http://host/2.mp4", auth_header=None)
+    assert r2.reason == "mp4_sample_extraction_failed"
+
+    # stsz sample_count < 1
+    stsz_zero_cnt = _fullbox(b"stsz", struct.pack(">II", 10, 0))
+    mock3 = _mock_urlopen_from_file(make_mp4(stsz_zero_cnt))
+    with patch("resources.lib.dv_source.urlopen", side_effect=mock3), patch(
+        "resources.lib.mp4_parser.urlopen", side_effect=mock3
+    ):
+        r3 = probe_dolby_vision_source("http://host/3.mp4", auth_header=None)
+    assert r3.reason == "mp4_sample_extraction_failed"
+
+    # stsz sample_size=0, but body < 16
+    stsz_size_0_trunc = _fullbox(b"stsz", struct.pack(">II", 0, 1))
+    mock4 = _mock_urlopen_from_file(make_mp4(stsz_size_0_trunc))
+    with patch("resources.lib.dv_source.urlopen", side_effect=mock4), patch(
+        "resources.lib.mp4_parser.urlopen", side_effect=mock4
+    ):
+        r4 = probe_dolby_vision_source("http://host/4.mp4", auth_header=None)
+    assert r4.reason == "mp4_sample_extraction_failed"
+
+
+def test_extract_mp4_first_sample_stsz_more_edge_cases():
+
+    stsd = _fullbox(b"stsd", struct.pack(">I", 1) + _box(b"hvc1", b""))
+    stsc = _fullbox(b"stsc", struct.pack(">I", 1) + struct.pack(">III", 1, 1, 1))
+
+    # missing chunk offset entirely
+    stsz_valid = _fullbox(b"stsz", struct.pack(">II", 0, 1) + struct.pack(">I", 100))
+    mp4_no_stco = _minimal_mp4_with_stbl(stsd + stsz_valid + stsc)
+
+    mock5 = _mock_urlopen_from_file(mp4_no_stco)
+    with patch("resources.lib.dv_source.urlopen", side_effect=mock5), patch(
+        "resources.lib.mp4_parser.urlopen", side_effect=mock5
+    ):
+        r5 = probe_dolby_vision_source("http://host/5.mp4", auth_header=None)
+    assert r5.reason == "mp4_sample_extraction_failed"
+
+
+def test_iter_boxes_offset_end():
+    from resources.lib.dv_source import _iter_boxes
+
+    # offset + 8 > end
+    data = b"\x00\x00\x00\x04tes"
+    boxes = list(_iter_boxes(data, 0, len(data)))
+    assert len(boxes) == 0
+
+
+def test_find_first_video_stbl_no_stbl():
+
+    ftyp = _box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
+    hdlr = _fullbox(b"hdlr", b"\x00" * 4 + b"vide" + b"\x00" * 12)
+
+    minf_no_stbl = _box(b"minf", b"")
+    mdia_no_stbl = _box(b"mdia", hdlr + minf_no_stbl)
+    moov_no_stbl = _box(b"moov", _box(b"trak", mdia_no_stbl))
+    mp4_no_stbl = ftyp + moov_no_stbl
+
+    mock = _mock_urlopen_from_file(mp4_no_stbl)
+    with patch("resources.lib.dv_source.urlopen", side_effect=mock), patch(
+        "resources.lib.mp4_parser.urlopen", side_effect=mock
+    ):
+        r = probe_dolby_vision_source("http://host/6.mp4", auth_header=None)
+    assert r.reason == "mp4_sample_extraction_failed"
+
+
+def test_read_chunk_offset_co64_without_stco_uses_first_entry():
+    from resources.lib.dv_source import _read_chunk_offset
+
+    co64_first_entry = _fullbox(b"co64", struct.pack(">I", 1) + struct.pack(">Q", 1234))
+    stbl_only_co64 = _box(b"stbl", co64_first_entry)
+    assert _read_chunk_offset(stbl_only_co64, 8, len(stbl_only_co64)) == 1234
+
+
+# --- Extra MKV/EBML Parsing Edge Cases ---
+
+
+def test_classify_parsed_rpu_p7_unproven():
+    from resources.lib.dv_rpu import DolbyVisionRpuInfo
+    from resources.lib.dv_source import _classify_parsed_rpu
+
+    # P7 without el_type (couldn't be parsed from RPU)
+    info = DolbyVisionRpuInfo(profile=7, el_type=None)
+    result = _classify_parsed_rpu(info)
+    assert result.classification == "dv_unknown"
+    assert result.reason == "p7_mel_fel_unproven"
+    assert result.profile == 7
+
+
+def test_ebml_vint_width_missing_bit():
+    import pytest
+    from resources.lib.dv_source import _vint_width
+
+    # 0x00 has no bits set, will fail loop
+    with pytest.raises(ValueError, match="no length-descriptor bit"):
+        _vint_width(0x00)
+
+
+def test_ebml_read_vint_size_truncated():
+    import pytest
+    from resources.lib.dv_source import _read_vint_size
+
+    # Needs width 2 (0x40) but data is only 1 byte
+    with pytest.raises(ValueError, match="EBML VINT truncated"):
+        _read_vint_size(b"\x40", 0)
+
+
+def test_ebml_read_element_id_truncated():
+    import pytest
+    from resources.lib.dv_source import _read_element_id
+
+    # Needs width 2 (0x40) but data is only 1 byte
+    with pytest.raises(ValueError, match="EBML Element ID truncated"):
+        _read_element_id(b"\x40", 0)
+
+
+def test_iter_ebml_payload_end_clamp():
+    from resources.lib.dv_source import _iter_ebml
+
+    # payload_start becomes 3 while end is 2, so the iterator must stop
+    # immediately rather than yielding an invalid child range.
+    elems = list(_iter_ebml(b"\x80\x40\x10", 0, 2))
+    assert len(elems) == 0
+
+
+def test_iter_block_frames_too_short():
+    from resources.lib.dv_source import _iter_block_frames
+
+    # block length < width + 3
+    # block_track and block_id are ignored inside, width=1. length needs to be > 4
+    short_block = b"\x01\x00"
+    frames = list(_iter_block_frames(0xA3, short_block, 1, 1))
+    assert len(frames) == 0
+
+
+def test_find_hevc_track_number_none():
+    from resources.lib.dv_source import _find_hevc_track_number
+
+    # A track that is NOT HEVC
+    codec_id = _elm(b"\x86", b"A_AAC")
+    track_number = _elm(b"\xd7", b"\x01")
+    track_entry = _elm(b"\xae", track_number + codec_id)
+    tracks = _elm(b"\x16\x54\xae\x6b", track_entry)
+
+    assert _find_hevc_track_number(tracks) is None
+
+
+def test_extract_mkv_frame_from_segment_order():
+    from resources.lib.dv_source import _extract_mkv_frame_from_segment
+
+    # Order: Cluster then Tracks
+    codec_id = _elm(b"\x86", b"V_MPEGH/ISO/HEVC")
+    track_number = _elm(b"\xd7", b"\x01")
+    track_entry = _elm(b"\xae", track_number + codec_id)
+    tracks = _elm(b"\x16\x54\xae\x6b", track_entry)
+
+    sample = struct.pack(">I", 4) + b"\x7c\x01dv"
+    cluster = _elm(b"\x1f\x43\xb6\x75", _elm(b"\xa3", _simpleblock(1, sample)))
+    segment = cluster + tracks
+
+    assert _extract_mkv_frame_from_segment(segment) == sample
+
+
+def test_try_read_block_frame_track_mismatch():
+    from resources.lib.dv_source import _try_read_block_frame
+
+    # Block for track 2, we want track 1
+    # Vint(2) = 0x82
+    block = _vint(2) + b"\x00\x00\x00"
+    assert _try_read_block_frame(block, 1, 0xA3) is None
+
+
+def test_iter_ebml_payload_end_failsafe():
+
+    from resources.lib.dv_source import _iter_ebml
+
+    # We want to force payload_end <= offset.
+    # We can mock _read_vint_size to return a negative size.
+    data = b"\x80\x80"  # normal header
+
+    def mock_read(data, offset):
+        return -100, 1
+
+    with patch("resources.lib.dv_source._read_vint_size", side_effect=mock_read):
+        elems = list(_iter_ebml(data))
+    assert len(elems) == 0
+
+
+# --- Extra Probe Exception Handling Edge Cases ---
+
+
+def test_probe_mp4_extraction_exceptions():
+
+    # Force _extract_mp4_first_sample to raise expected exceptions
+    exceptions = [
+        OSError("test io"),
+        ValueError("test val"),
+        struct.error("test struct"),
+        IndexError("test idx"),
+    ]
+
+    for exc in exceptions:
+        with patch(
+            "resources.lib.dv_source._extract_mp4_first_sample", side_effect=exc
+        ):
+            result = probe_dolby_vision_source("http://host/1.mp4", auth_header=None)
+        assert result.classification == "dv_unknown"
+        assert result.reason == "mp4_sample_extraction_failed"
+
+
+def test_probe_mp4_no_sample_returned():
+
+    with patch("resources.lib.dv_source._extract_mp4_first_sample", return_value=b""):
+        result = probe_dolby_vision_source("http://host/1.mp4", auth_header=None)
+    assert result.classification == "dv_unknown"
+    assert result.reason == "mp4_sample_extraction_failed"
+
+
+def test_probe_mp4_no_rpu_nal():
+
+    with patch(
+        "resources.lib.dv_source._extract_mp4_first_sample", return_value=b"sample_data"
+    ):
+        with patch("resources.lib.dv_source._find_unspec62_nal", return_value=None):
+            result = probe_dolby_vision_source("http://host/1.mp4", auth_header=None)
+    assert result.classification == "non_dv"
+    assert result.reason == "no_rpu_nal_found"
+
+
+def test_probe_mp4_rpu_parse_failed():
+
+    exceptions = [
+        ValueError("val"),
+        IndexError("idx"),
+        NotImplementedError("not impl"),
+        UnicodeDecodeError("utf8", b"", 0, 1, "reason"),
+    ]
+
+    for exc in exceptions:
+        with patch(
+            "resources.lib.dv_source._extract_mp4_first_sample",
+            return_value=b"sample_data",
+        ):
+            with patch(
+                "resources.lib.dv_source._find_unspec62_nal", return_value=b"nal_data"
+            ):
+                with patch(
+                    "resources.lib.dv_source.parse_unspec62_nalu", side_effect=exc
+                ):
+                    result = probe_dolby_vision_source(
+                        "http://host/1.mp4", auth_header=None
+                    )
+        assert result.classification == "dv_unknown"
+        assert result.reason == "rpu_parse_failed"
+
+
+def test_probe_mkv_extraction_exceptions():
+
+    exceptions = [
+        OSError("test io"),
+        ValueError("test val"),
+        struct.error("test struct"),
+        IndexError("test idx"),
+    ]
+
+    for exc in exceptions:
+        with patch(
+            "resources.lib.dv_source._extract_mkv_first_sample", side_effect=exc
+        ):
+            result = probe_dolby_vision_source("http://host/1.mkv", auth_header=None)
+        assert result.classification == "dv_unknown"
+        assert result.reason == "mkv_sample_extraction_failed"
+
+
+def test_probe_mkv_no_sample_returned():
+
+    with patch("resources.lib.dv_source._extract_mkv_first_sample", return_value=b""):
+        result = probe_dolby_vision_source("http://host/1.mkv", auth_header=None)
+    assert result.classification == "dv_unknown"
+    assert result.reason == "mkv_sample_extraction_failed"
+
+
+def test_probe_mkv_no_rpu_nal():
+
+    with patch(
+        "resources.lib.dv_source._extract_mkv_first_sample", return_value=b"sample_data"
+    ):
+        with patch("resources.lib.dv_source._find_unspec62_nal", return_value=None):
+            result = probe_dolby_vision_source("http://host/1.mkv", auth_header=None)
+    assert result.classification == "non_dv"
+    assert result.reason == "no_rpu_nal_found"
+
+
+def test_probe_mkv_rpu_parse_failed():
+
+    exceptions = [
+        ValueError("val"),
+        IndexError("idx"),
+        NotImplementedError("not impl"),
+        UnicodeDecodeError("utf8", b"", 0, 1, "reason"),
+    ]
+
+    for exc in exceptions:
+        with patch(
+            "resources.lib.dv_source._extract_mkv_first_sample",
+            return_value=b"sample_data",
+        ):
+            with patch(
+                "resources.lib.dv_source._find_unspec62_nal", return_value=b"nal_data"
+            ):
+                with patch(
+                    "resources.lib.dv_source.parse_unspec62_nalu", side_effect=exc
+                ):
+                    result = probe_dolby_vision_source(
+                        "http://host/1.mkv", auth_header=None
+                    )
+        assert result.classification == "dv_unknown"
+        assert result.reason == "rpu_parse_failed"
+
+
+def test_iter_boxes_end_is_none():
+    from resources.lib.dv_source import _iter_boxes
+
+    data = struct.pack(">I", 8) + b"test"
+    boxes = list(_iter_boxes(data, 0, end=None))
+    assert len(boxes) == 1
+
+
+def test_log_debug_xbmc_exception():
+
+    from resources.lib.dv_source import _log_debug
+
+    # Ensure mock covers the xbmc.log Exception branch exactly.
+    class MockXbmc:  # pylint: disable=too-few-public-methods
+        LOGDEBUG = 1
+
+        def log(self, msg, level):
+            raise RuntimeError("test")
+
+    with patch("resources.lib.dv_source.xbmc", MockXbmc()):
+        _log_debug("test message")  # should swallow exception
